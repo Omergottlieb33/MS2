@@ -36,7 +36,7 @@ class MS2:
             raise ImportError("No GPU access, change your runtime")
         self.model = models.CellposeModel(gpu=True, device=self.device)
     
-    def segment_cells_image(self, image):
+    def segment_cells(self, image):
         mask, flows, styles = self.model.eval(image,
                                               batch_size=1,
                                               flow_threshold=self.flow_threshold,
