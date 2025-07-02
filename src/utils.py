@@ -41,3 +41,30 @@ def get_dice_coefficient(mask1, mask2, smooth=1e-7):
     dice = (2.0 * intersection + smooth) / (total + smooth)
     
     return dice
+
+def max_intensity_projection(stack):
+    """
+    Computes the maximum intensity projection along the z-axis.
+    
+    Parameters:
+        stack (numpy.ndarray): A 4D numpy array of shape (Z, T, H, W),
+                               where Z is the number of slices, T is time.
+                               
+    Returns:
+        numpy.ndarray: A 3D array (Z, H, W) containing the max projection over time.
+    """
+    return np.max(stack, axis=1)
+
+def mean_intensity_projection(stack):
+    """
+    Computes the mean intensity projection along the z-axis.
+    
+    Parameters:
+        stack (numpy.ndarray): A 4D numpy array of shape (Z, T, H, W),
+                               where Z is the number of slices, T is time.
+                               
+    Returns:
+        numpy.ndarray: A 3D array (Z, H, W) containing the mean projection over time.
+    """
+    return np.mean(stack, axis=1)
+        
