@@ -35,7 +35,7 @@ class MS2:
         if core.use_gpu() == False:
             raise ImportError("No GPU access, change your runtime")
         self.model = models.CellposeModel(gpu=True, device=self.device)
-    
+
     def segment_cells(self, image):
         mask, flows, styles = self.model.eval(image,
                                               batch_size=1,
@@ -43,7 +43,7 @@ class MS2:
                                               cellprob_threshold=self.cellprob_threshold,
                                               normalize={"tile_norm_blocksize": self.tile_norm_blocksize})
         return mask, flows, styles
-    
+
     def plot_cell_segmentation(self, image, mask, flows):
         fig = plt.figure(figsize=(12, 5))
         plot.show_segmentation(fig, image, mask, flows[0])
@@ -77,12 +77,26 @@ class MS2:
     def cell_activation(self, mask, fluoroscent):
         pass
 
-    def segment_cells_over_time(self, z, tn=None):
+    def segment_cells_over_time(self, z: int, tn=None):
         if tn is None:
             tn = self.num_frames
         imgs = [self.image_data[0, z, self.microscope_channels[1], t, :, :, 0]
                 for t in tqdm(range(tn), desc="Collecting images")]
         masks, flows, styles = self.model.eval(imgs,
+                                               batch_size=32,
+                                               flow_threshold=self.flow_threshold,
+                                               cellprob_threshold=self.cellprob_threshold,
+                                               normalize={
+                                                   "tile_norm_blocksize": self.tile_norm_blocksize},
+                                               channels=[0, 0])
+        return masks
+
+    def segment_cells_images(self, images: list):
+        if isinstance(images, np.ndarray):
+            images = [images[i] for i in range(len(images))]
+        if not isinstance(images, list):
+            raise ValueError("Input images must be a list of numpy arrays.")
+        masks, flows, styles = self.model.eval(images,
                                                batch_size=32,
                                                flow_threshold=self.flow_threshold,
                                                cellprob_threshold=self.cellprob_threshold,
@@ -102,12 +116,22 @@ class MS2:
                                                    "tile_norm_blocksize": self.tile_norm_blocksize},
                                                channels=[0, 0])
         return masks
-    
+
     def get_cells_z_projection(self, method='mean'):
         """
         Get the maximum intensity projection of cell masks for a given z-stack.
         """
-        stack = self.image_data[0, :, ms2.microscope_channels[1], :, :, :, 0]
+        stack = self.image_data[0, :, self.microscope_channels[1], :, :, :, 0]
+        if method == 'mean':
+            return mean_intensity_projection(stack)
+        elif method == 'max':
+            return max_intensity_projection(stack)
+
+    def get_ms2_z_projection(self, method='max'):
+        """
+        Get the maximum intensity projection of fluorescence images for a given z-stack.
+        """
+        stack = self.image_data[0, :, self.microscope_channels[0], :, :, :, 0]
         if method == 'mean':
             return mean_intensity_projection(stack)
         elif method == 'max':
@@ -153,7 +177,7 @@ class MS2:
         cell_tracks, next_cell_id, i = self.init_cell_tracks(masks)
         # Dictionary to store tracks: {cell_id: [mask_at_t0, mask_at_t1, ...]}
         # Track cells through subsequent frames
-        for t in tqdm(range(i, self.num_frames - 1), desc="Tracking cells over time"):
+        for t in tqdm(range(i, len(masks) - 1), desc="Tracking cells over time"):
             mask_t = masks[t]
             mask_t_plus_1 = masks[t + 1]
 
@@ -243,20 +267,3 @@ class MS2:
         tracked_cells_4d_tensor = np.stack(tracked_cells, axis=0)
 
         return tracked_cells_4d_tensor
-
-
-if __name__ == "__main__":
-    ms2 = MS2(czi_path='/home/dafei/data/MS2/New-03_I.czi',
-              fluorescence_th=30,
-              device=torch.device('cuda:0'),
-              flow_threshold=0.4,
-              cellprob_threshold=0.0,
-              tile_norm_blocksize=128)
-    z = 0
-    # Use the new cell tracking function
-    tracked_cells = ms2.cell_tracking(z=z, dice_threshold=0.3)
-    output_dir = '/home/dafei/output/MS2/tracked_cells'
-    os.makedirs(output_dir, exist_ok=True)
-    save_path = os.path.join(output_dir, f'tracked_cells_z{z}.npz')
-    np.savez_compressed(save_path, tracked_cells=tracked_cells)
-    print(f"Tracked cells saved to: {save_path}")
