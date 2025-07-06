@@ -1,4 +1,5 @@
 import io
+import pickle
 from PIL import Image
 import matplotlib.pyplot as plt
 
@@ -61,3 +62,15 @@ def create_gif_from_overlay_sequence(base_images, gif_path,
     
     print(f"Overlay GIF saved to: {gif_path}")
     return gif_path
+
+def save_tracked_cells_to_pickle(tracked_cells, file_path):
+    """
+    Save tracked cells to a pickle file.
+    
+    Args:
+        tracked_cells (dict): Dictionary containing tracked cell data
+        file_path (str): Path to save the pickle file
+    """
+    with open(file_path, 'wb') as f:
+        pickle.dump(tracked_cells, f)
+    print(f"Tracked cells saved to: {file_path}")

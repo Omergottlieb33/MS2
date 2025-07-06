@@ -155,8 +155,8 @@ class MS2:
                 flag = True
             else:
                 flag = False
-        for label in range(i+1, max_label_0 + 1):
-            cell_tracks[next_cell_id] = [label]
+        for label in range(1, max_label_0):
+            cell_tracks[next_cell_id] = {i: label}
             next_cell_id += 1
         return cell_tracks, next_cell_id, i
 
@@ -172,89 +172,90 @@ class MS2:
             list: List of 3D tensors (num_frames x height x width) for each tracked cell.
                   Each tensor contains the cell mask at each timepoint, or zeros if no match.
         """
-
         # Get image dimensions
         height, width = masks[0].shape
         cell_tracks, next_cell_id, i = self.init_cell_tracks(masks)
-        # Dictionary to store tracks: {cell_id: [mask_at_t0, mask_at_t1, ...]}
         # Track cells through subsequent frames
         for t in tqdm(range(i, len(masks) - 1), desc="Tracking cells over time"):
-            mask_t = masks[t]
-            mask_t_plus_1 = masks[t + 1]
+            try:
+                mask_t = masks[t]
+                mask_t_plus_1 = masks[t + 1]
 
-            max_label1 = int(mask_t.max())
-            max_label2 = int(mask_t_plus_1.max())
+                max_label1 = int(mask_t.max())
+                max_label2 = int(mask_t_plus_1.max())
 
-            # Keep track of which cells in t+1 have been matched
-            matched_labels_t_plus_1 = set()
+                # Keep track of which cells in t+1 have been matched
+                matched_labels_t_plus_1 = set()
 
-            # For each existing track, try to find a match in the next frame
-            tracks_to_extend = {}
+                # For each existing track, try to find a match in the next frame
+                tracks_to_extend = {}
 
-            # Find the best matches for cells in current frame
-            for cell_id, track in cell_tracks.items():
-                if len(track) == t + 1 - i:  # This track is active (has data up to current frame)
-                    # Get the cell mask at current time
-                    current_cell_mask = track[t-i]
-                    # Find corresponding label in mask_t
-                    relevant_labels_at_t = get_labels_in_radius(current_cell_mask, mask_t, radius=5)
-                    # If no relevant labels found, continue to next cell
-                    if len(relevant_labels_at_t) == 0:
-                        # No relevant labels found, add empty mask
-                        cell_tracks[cell_id].append(0)
-                        continue
-                    # Check if current cell mask matches any label in the current frame
-                    current_label = None
-                    for label in relevant_labels_at_t:
-                        label_mask = (mask_t == label).astype(np.uint8)
-                        if np.array_equal(current_cell_mask, label_mask):
-                            current_label = label
-                            break
+                # Find the best matches for cells in current frame
+                for cell_id, track in cell_tracks.items():
+                    if len(track) == t + 1 - i:  # This track is active (has data up to current frame)
+                        # Get the cell mask at current time
+                        current_cell_label = track[t]
+                        current_cell_mask = (mask_t == current_cell_label).astype(np.uint8)
+                        # Find corresponding label in mask_t
+                        relevant_labels_at_t = get_labels_in_radius(current_cell_mask, mask_t, radius=5)
+                        # If no relevant labels found, continue to next cell
+                        if len(relevant_labels_at_t) == 0:
+                            # # No relevant labels found, add empty mask
+                            # cell_tracks[cell_id].append(0)
+                            continue
+                        # Check if current cell mask matches any label in the current frame
+                        current_label = None
+                        for label in relevant_labels_at_t:
+                            label_mask = (mask_t == label).astype(np.uint8)
+                            if np.array_equal(current_cell_mask, label_mask):
+                                current_label = label
+                                break
 
-                    if current_label is None:
-                        # Cell not found in current frame, add empty mask
-                        cell_tracks[cell_id].append(0)
-                        continue
+                        if current_label is None:
+                            # Cell not found in current frame, add empty mask
+                            #cell_tracks[cell_id].append(0)
+                            continue
 
-                    # # Find best match in next frame
-                    best_dice_coeff = 0
-                    best_match_label = None
-                    relevant_labels_at_t_plus_1 = get_labels_in_radius(
-                        current_cell_mask, mask_t_plus_1, radius=5)
-                    for next_label in relevant_labels_at_t_plus_1:
-                        if next_label in matched_labels_t_plus_1:
-                            continue  # This label is already matched
+                        # # Find best match in next frame
+                        best_dice_coeff = 0
+                        best_match_label = None
+                        relevant_labels_at_t_plus_1 = get_labels_in_radius(
+                            current_cell_mask, mask_t_plus_1, radius=5)
+                        
+                        for next_label in relevant_labels_at_t_plus_1:
+                            if next_label in matched_labels_t_plus_1:
+                                continue  # This label is already matched
 
-                        cell_mask_t_plus_1 = (
-                            mask_t_plus_1 == next_label).astype(np.uint8)
-                        dice_coeff = get_dice_coefficient(
-                            current_cell_mask, cell_mask_t_plus_1)
+                            cell_mask_t_plus_1 = (
+                                mask_t_plus_1 == next_label).astype(np.uint8)
+                            dice_coeff = get_dice_coefficient(
+                                current_cell_mask, cell_mask_t_plus_1)
 
-                        if dice_coeff > best_dice_coeff and dice_coeff >= dice_threshold:
-                            best_dice_coeff = dice_coeff
-                            best_match_label = next_label
+                            if dice_coeff > best_dice_coeff and dice_coeff >= dice_threshold:
+                                best_dice_coeff = dice_coeff
+                                best_match_label = next_label
 
-                    if best_match_label is not None:
-                        # Found a good match
-                        best_match_mask = (
-                            mask_t_plus_1 == best_match_label).astype(np.uint8)
-                        tracks_to_extend[cell_id] = best_match_label
-                        matched_labels_t_plus_1.add(best_match_label)
-                    else:
-                        # No good match found, add empty mask
-                        tracks_to_extend[cell_id] = 0
+                        if best_match_label is not None:
+                            tracks_to_extend[cell_id] = best_match_label
+                            matched_labels_t_plus_1.add(best_match_label)
+                        # else:
+                        #     # No good match found, add empty mask
+                        #     tracks_to_extend[cell_id] = 0
 
-            # Extend existing tracks
-            for cell_id, next_label in tracks_to_extend.items():
-                cell_tracks[cell_id].append(next_label)
+                # Extend existing tracks
+                for cell_id, next_label in tracks_to_extend.items():
+                    cell_tracks[cell_id][t+1] = next_label
 
-            # Add new cells that weren't matched (new cell divisions or cells entering frame)
-            for label in range(1, max_label2 + 1):
-                if label not in matched_labels_t_plus_1:
-                    # Fill previous timepoints with empty masks
-                    new_track = [0 for _ in range(t + 1)]
-                    new_track.append(label)
-                    cell_tracks[next_cell_id] = new_track
-                    next_cell_id += 1
+                # Add new cells that weren't matched (new cell divisions or cells entering frame)
+                for label in range(1, max_label2 + 1):
+                    if label not in matched_labels_t_plus_1:
+                        # Fill previous timepoints with empty masks
+                        cell_tracks[next_cell_id]={t+1:label}
+                        next_cell_id += 1
+                # Clear memory
+                del mask_t, mask_t_plus_1, tracks_to_extend, matched_labels_t_plus_1
+
+            except Exception as e:
+                print(f"Error at frame {t}: {e}")
 
         return cell_tracks
