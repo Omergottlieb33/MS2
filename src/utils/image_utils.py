@@ -1,5 +1,6 @@
 import numpy as np
 import czifile
+from cellpose.plot import image_to_rgb
 
 def load_czi_images(file_path):
     try:
@@ -81,3 +82,13 @@ def mean_intensity_projection(stack):
         numpy.ndarray: A 3D array (Z, H, W) containing the mean projection over time.
     """
     return np.mean(stack, axis=1)
+
+def enhance_cell_image_contrast(image):
+    if image.shape[0] < 4:
+        image = np.transpose(image, (1, 2, 0))
+    if image.shape[-1] < 3 or image.ndim < 3:
+        image = image_to_rgb(image, channels=[0, 0])
+    else:
+        if image.max() <= 50.0:
+            image = np.uint8(np.clip(image, 0, 1) * 255)
+    return image

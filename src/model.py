@@ -156,8 +156,7 @@ class MS2:
             else:
                 flag = False
         for label in range(i+1, max_label_0 + 1):
-            cell_mask = (mask_0 == label).astype(np.uint8)
-            cell_tracks[next_cell_id] = [cell_mask]
+            cell_tracks[next_cell_id] = [label]
             next_cell_id += 1
         return cell_tracks, next_cell_id, i
 
@@ -202,8 +201,7 @@ class MS2:
                     # If no relevant labels found, continue to next cell
                     if len(relevant_labels_at_t) == 0:
                         # No relevant labels found, add empty mask
-                        cell_tracks[cell_id].append(
-                            np.zeros((height, width), dtype=np.uint8))
+                        cell_tracks[cell_id].append(0)
                         continue
                     # Check if current cell mask matches any label in the current frame
                     current_label = None
@@ -215,8 +213,7 @@ class MS2:
 
                     if current_label is None:
                         # Cell not found in current frame, add empty mask
-                        cell_tracks[cell_id].append(
-                            np.zeros((height, width), dtype=np.uint8))
+                        cell_tracks[cell_id].append(0)
                         continue
 
                     # # Find best match in next frame
@@ -241,40 +238,23 @@ class MS2:
                         # Found a good match
                         best_match_mask = (
                             mask_t_plus_1 == best_match_label).astype(np.uint8)
-                        tracks_to_extend[cell_id] = best_match_mask
+                        tracks_to_extend[cell_id] = best_match_label
                         matched_labels_t_plus_1.add(best_match_label)
                     else:
                         # No good match found, add empty mask
-                        tracks_to_extend[cell_id] = np.zeros(
-                            (height, width), dtype=np.uint8)
+                        tracks_to_extend[cell_id] = 0
 
             # Extend existing tracks
-            for cell_id, next_mask in tracks_to_extend.items():
-                cell_tracks[cell_id].append(next_mask)
+            for cell_id, next_label in tracks_to_extend.items():
+                cell_tracks[cell_id].append(next_label)
 
             # Add new cells that weren't matched (new cell divisions or cells entering frame)
             for label in range(1, max_label2 + 1):
                 if label not in matched_labels_t_plus_1:
-                    # This is a new cell, start a new track
-                    new_cell_mask = (mask_t_plus_1 == label).astype(np.uint8)
                     # Fill previous timepoints with empty masks
-                    new_track = [np.zeros((height, width), dtype=np.uint8)
-                                 for _ in range(t + 1)]
-                    new_track.append(new_cell_mask)
+                    new_track = [0 for _ in range(t + 1)]
+                    new_track.append(label)
                     cell_tracks[next_cell_id] = new_track
                     next_cell_id += 1
 
-        # Convert tracks to 3D tensors and return as list
-        tracked_cells = []
-        for cell_id in sorted(cell_tracks.keys()):
-            track = cell_tracks[cell_id]
-            # Ensure all tracks have the same length (some might be shorter if cell appeared later)
-            while len(track) < self.num_frames:
-                track.append(np.zeros((height, width), dtype=np.uint8))
-
-            # Convert to 3D tensor (num_frames x height x width)
-            cell_tensor = np.stack(track, axis=0)
-            tracked_cells.append(cell_tensor)
-        tracked_cells_4d_tensor = np.stack(tracked_cells, axis=0)
-
-        return tracked_cells_4d_tensor
+        return cell_tracks
