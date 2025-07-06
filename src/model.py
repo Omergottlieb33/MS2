@@ -6,7 +6,9 @@ import torch
 from cellpose.utils import masks_to_outlines
 import time
 import os
-from src.utils import load_czi_images, get_dice_coefficient, max_intensity_projection, mean_intensity_projection
+
+from src.utils.image_utils import load_czi_images, max_intensity_projection, mean_intensity_projection, get_labels_in_radius
+from src.utils.eval_utils import get_dice_coefficient
 
 
 class MS2:
@@ -196,8 +198,16 @@ class MS2:
                     # Get the cell mask at current time
                     current_cell_mask = track[t-i]
                     # Find corresponding label in mask_t
+                    relevant_labels_at_t = get_labels_in_radius(current_cell_mask, mask_t, radius=5)
+                    # If no relevant labels found, continue to next cell
+                    if len(relevant_labels_at_t) == 0:
+                        # No relevant labels found, add empty mask
+                        cell_tracks[cell_id].append(
+                            np.zeros((height, width), dtype=np.uint8))
+                        continue
+                    # Check if current cell mask matches any label in the current frame
                     current_label = None
-                    for label in range(1, max_label1 + 1):
+                    for label in relevant_labels_at_t:
                         label_mask = (mask_t == label).astype(np.uint8)
                         if np.array_equal(current_cell_mask, label_mask):
                             current_label = label
@@ -212,8 +222,9 @@ class MS2:
                     # # Find best match in next frame
                     best_dice_coeff = 0
                     best_match_label = None
-
-                    for next_label in range(1, max_label2 + 1):
+                    relevant_labels_at_t_plus_1 = get_labels_in_radius(
+                        current_cell_mask, mask_t_plus_1, radius=5)
+                    for next_label in relevant_labels_at_t_plus_1:
                         if next_label in matched_labels_t_plus_1:
                             continue  # This label is already matched
 
