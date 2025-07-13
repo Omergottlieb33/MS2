@@ -1,4 +1,5 @@
 import numpy as np
+from tqdm import tqdm
 import networkx as nx
 from scipy.ndimage import center_of_mass
 
@@ -71,7 +72,7 @@ def compute_cell_location(centers: np.ndarray, labels:np.array) -> nx.Graph:
     
 
 def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, mask2: np.ndarray, 
-                               distance_threshold: float = 5.0) -> dict:
+                               distance_threshold: float = np.sqrt(3)) -> dict:
     """
     Match points (cells) between consecutive frames using adjacency graphs and spatial proximity.
     
@@ -87,8 +88,8 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     """
     # Get cell centers for both frames
     centers1 = get_cell_centers(mask1)
-    labels_to_pos1 = centers_array_to_label_position_map(centers1)
     centers2 = get_cell_centers(mask2)
+    labels_to_pos1 = centers_array_to_label_position_map(centers1)
     labels_to_pos2 = centers_array_to_label_position_map(centers2)
     
     # Get nodes from graphs
@@ -148,6 +149,8 @@ def match_points_with_graph_features(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarr
     # Get cell centers for both frames
     centers1 = get_cell_centers(mask1)
     centers2 = get_cell_centers(mask2)
+    labels_to_pos1 = centers_array_to_label_position_map(centers1)
+    labels_to_pos2 = centers_array_to_label_position_map(centers2)
     
     # Get nodes and their degrees
     nodes1 = list(g1.nodes())
@@ -163,7 +166,7 @@ def match_points_with_graph_features(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarr
         if cell2 == 0:  # Skip background
             continue
             
-        center2 = centers2[cell2]
+        center2 = labels_to_pos2[cell2]
         degree2 = degrees2[cell2]
         
         best_score = float('inf')
@@ -173,7 +176,7 @@ def match_points_with_graph_features(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarr
             if cell1 == 0 or cell1 in used_nodes1:  # Skip background or already matched cells
                 continue
                 
-            center1 = centers1[cell1]
+            center1 = labels_to_pos1[cell1]
             degree1 = degrees1[cell1]
             
             # Calculate spatial distance
@@ -201,3 +204,44 @@ def match_points_with_graph_features(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarr
             used_nodes1.add(best_match)
     
     return matches
+
+def find_key_for_last_tracklet_value_optimized(tracklets, matches_dict, tracklet_id):
+    """
+    Optimized version using next() with generator expression for early termination.
+    """
+    last_value = tracklets[tracklet_id][-1]
+    
+    # Use next() with generator for immediate return on first match
+    return next((key for key, value in matches_dict.items() if value == last_value), -1)
+
+def create_tracklets(matches:list) -> dict:
+    matches_t0 = matches[0]
+    
+    # Initialize tracklets from first frame matches
+    tracklets = {}
+    for i, (label_t_plus1, label_t) in enumerate(matches_t0.items()):
+        tracklets[i] = [int(label_t), int(label_t_plus1)]
+    
+    for i in tqdm(range(1, len(matches)), desc='Creating tracklets'):
+        matches_t = matches[i]
+        
+        # Track which keys from current matches have been used
+        used_keys = set()
+        
+        # First, extend existing tracklets
+        for tracklet_id, labels in tracklets.items():
+            key = find_key_for_last_tracklet_value_optimized(tracklets, matches_t, tracklet_id)
+            if key != -1:  # Match found
+                labels.append(int(key))
+                used_keys.add(key)
+        
+        # Create new tracklets for unmatched cells
+        max_id = max(tracklets.keys()) if tracklets else -1
+        for key, value in matches_t.items():
+            if key not in used_keys:
+                max_id += 1
+                # A new tracklet starts at time `i`, so pad with `i` placeholders.
+                new_tracklet = [-1] * i + [int(value), int(key)]
+                tracklets[max_id] = new_tracklet
+    
+    return tracklets
