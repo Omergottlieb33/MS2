@@ -15,7 +15,7 @@ def draw_cell_outline_on_image(mask, image):
     imgout[outX, outY] = np.array([255, 0, 0])  # pure red
     return imgout
 
-def show_3d_segmentation_overlay(z_stack, masks,save_path=None):
+def show_3d_segmentation_overlay(z_stack, masks,save_path=None, return_fig=False):
     frames = []
     for i in range(z_stack.shape[0]):
         img = z_stack[i]
@@ -28,11 +28,13 @@ def show_3d_segmentation_overlay(z_stack, masks,save_path=None):
     for i, frame in enumerate(frames):
         ax[i].imshow(frame)
         ax[i].axis('off')
-        ax[i].set_title(f'Frame {i+1}')
+        ax[i].set_title(f'Slice {i+1}')
     plt.tight_layout()
     if save_path is not None:
         fig.savefig(save_path, bbox_inches='tight')
         print(f"Saved overlay images to {save_path}")
+    if return_fig:
+        return fig
     else:
         plt.show()
-    plt.close(fig)
+        plt.close(fig)
