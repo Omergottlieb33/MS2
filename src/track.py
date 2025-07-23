@@ -107,6 +107,7 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     # Calculate the full pairwise distance matrix using vectorized operations (broadcasting).
     # This is much faster than nested loops for large numbers of cells.
     diff = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]
+    #TODO: add cell graph degree to the distance metric, area metric, shape metric, etc.
     cost_matrix = np.sqrt(np.sum(diff**2, axis=2))
 
     # Use the Hungarian algorithm (linear_sum_assignment) to find the optimal assignment

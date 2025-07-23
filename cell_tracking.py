@@ -35,26 +35,30 @@ def get_adjaceny_graphs(masks_paths:list, t:int) -> tuple:
         g_list.append(g)
     return masks, centers_list, g_list
 
-def match_points_over_time(g_list:list, masks:list, t:int, distance_threshold=np.sqrt(3)):
+def match_points_over_time(g_list:list, masks:list, t:int, distance_threshold=np.sqrt(3), degree_weight=0.3):
     matched_points = []
     for i in tqdm(range(t - 1), desc='matching points between frames'):
         g1 = g_list[i]
         g2 = g_list[i + 1]
         z_stack_seg_mask_t0 = masks[i]
         z_stack_seg_mask_t1 = masks[i + 1]
-        matches = match_points_between_frames(g1, g2, z_stack_seg_mask_t0, z_stack_seg_mask_t1,distance_threshold=distance_threshold)
+        matches = match_points_between_frames(
+            g1, g2, z_stack_seg_mask_t0, z_stack_seg_mask_t1,
+            distance_threshold=distance_threshold
+        )
         matched_points.append(matches)
     return matched_points
 
 
 
-def adjacency_graph_tracking(masks_dir:str, t:int, distance_threshold=np.sqrt(3)) -> dict:
+def adjacency_graph_tracking(masks_dir:str, t:int, distance_threshold=np.sqrt(3), degree_weight=0.3) -> dict:
     """
     Perform cell tracking using adjacency graphs.
     Args:
         masks_dir (str): Directory containing segmentation masks.
         t (int): Number of time points to process. If None, processes all available masks.
         distance_threshold (float): Distance threshold for matching points between frames.
+        degree_weight (float): Weight for degree similarity in matching score.
     Returns:
         dict: Tracklets mapping cell IDs across time points.
     """
@@ -63,10 +67,10 @@ def adjacency_graph_tracking(masks_dir:str, t:int, distance_threshold=np.sqrt(3)
         t = len(masks_paths) - 1
     masks, centers_list, g_list = get_adjaceny_graphs(masks_paths, t)
     # match points between consecutive frames
-    matched_points = match_points_over_time(g_list, masks, t, distance_threshold=distance_threshold)
+    matched_points = match_points_over_time(g_list, masks, t, distance_threshold=distance_threshold, degree_weight=degree_weight)
     # create tracklets
     tracklets = create_tracklets(matched_points)
-    save_path = os.path.join(masks_dir, 'tracklets.json')
+    save_path = os.path.join(masks_dir, 'tracklets_hungarian_algorithm_distance_metric.json')
     with open(save_path, 'w') as f:
         json.dump(tracklets, f, indent=4)
     print(f'Tracklets saved to {save_path}')
@@ -77,7 +81,8 @@ def adjacency_graph_tracking(masks_dir:str, t:int, distance_threshold=np.sqrt(3)
 if __name__ == "__main__":
     czi_file_path = '/home/dafei/data/MS2/gRNA2_12.03.25-st-13-II---.czi'
     masks_dir = '/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/masks'
-    t = 10  # Number of time points to process, set to None to process all available masks
+    t = 80  # Number of time points to process, set to None to process all available masks
     threshold = np.sqrt(3)  # Distance threshold for matching points between frames
-    tracklets = adjacency_graph_tracking(masks_dir, t=t, distance_threshold=threshold)
+    degree_w = 0.3 # Weight for degree similarity
+    tracklets = adjacency_graph_tracking(masks_dir, t=t, distance_threshold=threshold, degree_weight=degree_w)
     
