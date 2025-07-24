@@ -178,3 +178,266 @@ def create_tracklets(matches:list) -> dict:
                 tracklets[max_id] = new_tracklet
     
     return tracklets
+
+def match_cells_by_iou(mask1: np.ndarray, mask2: np.ndarray,
+                      min_iou: float = 0.3) -> dict:
+    """
+    Match cells using Intersection over Union (IoU) metric.
+    
+    Parameters:
+        mask1 (np.ndarray): Segmentation mask for frame 1
+        mask2 (np.ndarray): Segmentation mask for frame 2
+        min_iou (float): Minimum IoU threshold for valid matches
+        
+    Returns:
+        dict: Mapping from frame2 cell IDs to frame1 cell IDs
+    """
+    cells1 = np.unique(mask1)[1:]
+    cells2 = np.unique(mask2)[1:]
+    
+    if len(cells1) == 0 or len(cells2) == 0:
+        return {}
+    
+    matches = {}
+    
+    for cell2 in cells2:
+        cell2_mask = (mask2 == cell2)
+        
+        best_match = None
+        best_iou = 0
+        
+        for cell1 in cells1:
+            cell1_mask = (mask1 == cell1)
+            
+            # Calculate IoU
+            intersection = np.sum(cell1_mask & cell2_mask)
+            union = np.sum(cell1_mask | cell2_mask)
+            
+            if union > 0:
+                iou = intersection / union
+                
+                if iou >= min_iou and iou > best_iou:
+                    best_match = cell1
+                    best_iou = iou
+        
+        if best_match is not None:
+            matches[cell2] = best_match
+    
+    return matches
+
+def match_cells_by_iou_hungarian_local(mask1: np.ndarray, mask2: np.ndarray,
+                                     min_iou: float = 0.1,
+                                     search_radius: int = 10) -> dict:
+    """
+    Fast IoU-based matching using Hungarian algorithm with local search optimization.
+    
+    Parameters:
+        mask1 (np.ndarray): Segmentation mask for frame 1
+        mask2 (np.ndarray): Segmentation mask for frame 2
+        min_iou (float): Minimum IoU threshold for valid matches
+        search_radius (int): Search radius around cell centroid in pixels
+        
+    Returns:
+        dict: Mapping from frame2 cell IDs to frame1 cell IDs
+    """
+    
+    # Get unique cell labels (excluding background)
+    cells1 = np.unique(mask1)[1:]
+    cells2 = np.unique(mask2)[1:]
+    
+    if len(cells1) == 0 or len(cells2) == 0:
+        return {}
+    
+    # Pre-compute centroids for all cells
+    centroids1 = {}
+    centroids2 = {}
+    
+    for cell in cells1:
+        cell_mask = (mask1 == cell)
+        if np.any(cell_mask):
+            centroid = center_of_mass(cell_mask)
+            centroids1[cell] = tuple(int(c) for c in centroid)
+    
+    for cell in cells2:
+        cell_mask = (mask2 == cell)
+        if np.any(cell_mask):
+            centroid = center_of_mass(cell_mask)
+            centroids2[cell] = tuple(int(c) for c in centroid)
+    
+    # Filter cells that have valid centroids
+    valid_cells1 = [c for c in cells1 if c in centroids1]
+    valid_cells2 = [c for c in cells2 if c in centroids2]
+    
+    if len(valid_cells1) == 0 or len(valid_cells2) == 0:
+        return {}
+    
+    # Create cost matrix
+    n1, n2 = len(valid_cells1), len(valid_cells2)
+    cost_matrix = np.full((n1, n2), 1.0)
+    
+    # Calculate local IoU for each pair
+    for i, cell1 in enumerate(valid_cells1):
+        centroid1 = centroids1[cell1]
+        
+        # Define local search region around cell1's centroid
+        z1, y1, x1 = centroid1
+        z_min = max(0, z1 - search_radius)
+        z_max = min(mask1.shape[0], z1 + search_radius + 1)
+        y_min = max(0, y1 - search_radius)
+        y_max = min(mask1.shape[1], y1 + search_radius + 1)
+        x_min = max(0, x1 - search_radius)
+        x_max = min(mask1.shape[2], x1 + search_radius + 1)
+        
+        # Extract local regions
+        local_mask1 = mask1[z_min:z_max, y_min:y_max, x_min:x_max]
+        local_mask2 = mask2[z_min:z_max, y_min:y_max, x_min:x_max]
+        
+        # Create cell1 mask in local region
+        cell1_local_mask = (local_mask1 == cell1)
+        cell1_volume = np.sum(cell1_local_mask)
+        
+        if cell1_volume == 0:
+            continue
+        
+        for j, cell2 in enumerate(valid_cells2):
+            centroid2 = centroids2[cell2]
+            
+            # Quick distance check - skip if centroids are too far apart
+            z2, y2, x2 = centroid2
+            centroid_distance = np.sqrt((z1-z2)**2 + (y1-y2)**2 + (x1-x2)**2)
+            if centroid_distance > search_radius * 2:
+                cost_matrix[i, j] = 1.0
+                continue
+            
+            # Create cell2 mask in local region
+            cell2_local_mask = (local_mask2 == cell2)
+            cell2_volume = np.sum(cell2_local_mask)
+            
+            if cell2_volume == 0:
+                cost_matrix[i, j] = 1.0
+                continue
+            
+            # Calculate IoU in local region
+            intersection = np.sum(cell1_local_mask & cell2_local_mask)
+            union = cell1_volume + cell2_volume - intersection
+            
+            if union > 0:
+                iou = intersection / union
+                cost_matrix[i, j] = 1.0 - iou
+            else:
+                cost_matrix[i, j] = 1.0
+    
+    # Apply Hungarian algorithm
+    row_indices, col_indices = linear_sum_assignment(cost_matrix)
+    
+    # Extract matches that meet IoU threshold
+    matches = {}
+    for i, j in zip(row_indices, col_indices):
+        iou = 1.0 - cost_matrix[i, j]
+        if iou >= min_iou:
+            cell1 = valid_cells1[i]
+            cell2 = valid_cells2[j]
+            matches[cell2] = cell1
+    
+    return matches
+
+def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.ndarray,
+                                               min_iou: float = 0.1,
+                                               search_radius: int = 10,
+                                               max_centroid_distance: float = None) -> dict:
+    """
+    Ultra-optimized local IoU matching with additional speedups.
+    """
+    from scipy.ndimage import center_of_mass
+    
+    if max_centroid_distance is None:
+        max_centroid_distance = search_radius * 1.5
+    
+    # Get unique cell labels
+    cells1 = np.unique(mask1)[1:]
+    cells2 = np.unique(mask2)[1:]
+    
+    if len(cells1) == 0 or len(cells2) == 0:
+        return {}
+    
+    # Compute centroids and volumes simultaneously
+    centroids1, volumes1 = {}, {}
+    centroids2, volumes2 = {}, {}
+    
+    for cell in cells1:
+        cell_coords = np.where(mask1 == cell)
+        if len(cell_coords[0]) > 0:
+            centroid = (np.mean(cell_coords[0]), np.mean(cell_coords[1]), np.mean(cell_coords[2]))
+            centroids1[cell] = centroid
+            volumes1[cell] = len(cell_coords[0])
+    
+    for cell in cells2:
+        cell_coords = np.where(mask2 == cell)
+        if len(cell_coords[0]) > 0:
+            centroid = (np.mean(cell_coords[0]), np.mean(cell_coords[1]), np.mean(cell_coords[2]))
+            centroids2[cell] = centroid
+            volumes2[cell] = len(cell_coords[0])
+    
+    valid_cells1 = list(centroids1.keys())
+    valid_cells2 = list(centroids2.keys())
+    
+    if len(valid_cells1) == 0 or len(valid_cells2) == 0:
+        return {}
+    
+    # Pre-filter pairs based on centroid distance
+    valid_pairs = []
+    for i, cell1 in enumerate(valid_cells1):
+        c1 = centroids1[cell1]
+        for j, cell2 in enumerate(valid_cells2):
+            c2 = centroids2[cell2]
+            distance = np.sqrt((c1[0]-c2[0])**2 + (c1[1]-c2[1])**2 + (c1[2]-c2[2])**2)
+            if distance <= max_centroid_distance:
+                valid_pairs.append((i, j, cell1, cell2))
+    
+    # Create sparse cost matrix
+    n1, n2 = len(valid_cells1), len(valid_cells2)
+    cost_matrix = np.full((n1, n2), 1.0)
+    
+    # Calculate IoU only for valid pairs
+    for i, j, cell1, cell2 in valid_pairs:
+        c1 = centroids1[cell1]
+        
+        # Define local bounding box
+        z1, y1, x1 = int(c1[0]), int(c1[1]), int(c1[2])
+        z_min = max(0, z1 - search_radius)
+        z_max = min(mask1.shape[0], z1 + search_radius + 1)
+        y_min = max(0, y1 - search_radius)
+        y_max = min(mask1.shape[1], y1 + search_radius + 1)
+        x_min = max(0, x1 - search_radius)
+        x_max = min(mask1.shape[2], x1 + search_radius + 1)
+        
+        # Extract local regions (much smaller than full masks)
+        local_mask1 = mask1[z_min:z_max, y_min:y_max, x_min:x_max]
+        local_mask2 = mask2[z_min:z_max, y_min:y_max, x_min:x_max]
+        
+        # Calculate intersection in local region
+        intersection = np.sum((local_mask1 == cell1) & (local_mask2 == cell2))
+        
+        if intersection > 0:
+            # Get volumes from pre-computed values
+            vol1 = volumes1[cell1]
+            vol2 = volumes2[cell2]
+            union = vol1 + vol2 - intersection
+            
+            if union > 0:
+                iou = intersection / union
+                cost_matrix[i, j] = 1.0 - iou
+    
+    # Apply Hungarian algorithm
+    row_indices, col_indices = linear_sum_assignment(cost_matrix)
+    
+    # Extract valid matches
+    matches = {}
+    for i, j in zip(row_indices, col_indices):
+        iou = 1.0 - cost_matrix[i, j]
+        if iou >= min_iou:
+            cell1 = valid_cells1[i]
+            cell2 = valid_cells2[j]
+            matches[cell2] = cell1
+    
+    return matches

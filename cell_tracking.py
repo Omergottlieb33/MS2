@@ -3,7 +3,8 @@ import os
 import json
 import numpy as np
 from tqdm import tqdm
-from src.track import get_cell_centers, compute_cell_location, match_points_between_frames, create_tracklets
+from src.track import get_cell_centers, compute_cell_location, match_points_between_frames, \
+create_tracklets, match_cells_by_iou_hungarian_local_optimized
 
 def extract_time_number(filename):
     """Extract time number from filename like z_stack_t5_seg_masks.npz"""
@@ -22,20 +23,19 @@ def get_masks_paths(masks_dir:str) -> list:
         raise ValueError(f'No masks found in {masks_dir} with expected naming convention.')
     return masks_paths
 
-def get_adjaceny_graphs(masks_paths:list, t:int) -> tuple:
-    masks, centers_list, g_list = [], [], []
+def get_adjaceny_graphs(masks:list, t:int) -> tuple:
+    centers_list, g_list = [], [], []
     # get cell centers and adjacency graphs for each time point
     for i in tqdm(range(t),desc='calculating cell centers and adjacency graphs'):
-        z_stack_seg_mask = np.load(masks_paths[i])['masks']
+        z_stack_seg_mask = masks[i]
         centers = get_cell_centers(z_stack_seg_mask)
         labels = np.unique(z_stack_seg_mask)
         g = compute_cell_location(centers=centers, labels=labels)
-        masks.append(z_stack_seg_mask)
         centers_list.append(centers)
         g_list.append(g)
-    return masks, centers_list, g_list
+    return centers_list, g_list
 
-def match_points_over_time(g_list:list, masks:list, t:int, distance_threshold=np.sqrt(3), degree_weight=0.3):
+def match_points_over_time_adjacency_graph(g_list:list, masks:list, t:int, distance_threshold=np.sqrt(3), degree_weight=0.3):
     matched_points = []
     for i in tqdm(range(t - 1), desc='matching points between frames'):
         g1 = g_list[i]
@@ -43,15 +43,29 @@ def match_points_over_time(g_list:list, masks:list, t:int, distance_threshold=np
         z_stack_seg_mask_t0 = masks[i]
         z_stack_seg_mask_t1 = masks[i + 1]
         matches = match_points_between_frames(
-            g1, g2, z_stack_seg_mask_t0, z_stack_seg_mask_t1,
-            distance_threshold=distance_threshold
-        )
+            g1, g2, z_stack_seg_mask_t0, z_stack_seg_mask_t1)
         matched_points.append(matches)
     return matched_points
 
+def match_over_time_cell_iou(masks:list):
+    """
+    Match cells over time using IoU.
+    Args:
+        masks (list): List of segmentation masks for each time point.
+    Returns:
+        list: List of matched cells for each time point.
+    """
+    matched_cells = []
+    for i in tqdm(range(len(masks) - 1), desc='matching cells by IoU'):
+        z_stack_seg_mask_t0 = masks[i]
+        z_stack_seg_mask_t1 = masks[i + 1]
+        matches = match_cells_by_iou_hungarian_local_optimized(z_stack_seg_mask_t0, z_stack_seg_mask_t1)
+        matched_cells.append(matches)
+    return matched_cells
 
 
-def adjacency_graph_tracking(masks_dir:str, t:int, distance_threshold=np.sqrt(3), degree_weight=0.3) -> dict:
+
+def cell_tracking(masks_dir:str, t:int) -> dict:
     """
     Perform cell tracking using adjacency graphs.
     Args:
@@ -63,14 +77,17 @@ def adjacency_graph_tracking(masks_dir:str, t:int, distance_threshold=np.sqrt(3)
         dict: Tracklets mapping cell IDs across time points.
     """
     masks_paths = get_masks_paths(masks_dir)
+    masks = []
+    for i in range(len(masks_paths)):
+        z_stack_seg_mask = np.load(masks_paths[i])['masks']
+        masks.append(z_stack_seg_mask)
     if t<=0 or t> len(masks_paths):
         t = len(masks_paths) - 1
-    masks, centers_list, g_list = get_adjaceny_graphs(masks_paths, t)
-    # match points between consecutive frames
-    matched_points = match_points_over_time(g_list, masks, t, distance_threshold=distance_threshold, degree_weight=degree_weight)
+    # IoU matching
+    matched_points = match_over_time_cell_iou(masks)
     # create tracklets
     tracklets = create_tracklets(matched_points)
-    save_path = os.path.join(masks_dir, 'tracklets_hungarian_algorithm_distance_metric.json')
+    save_path = os.path.join(masks_dir, 'tracklets_matching_iou.json')
     with open(save_path, 'w') as f:
         json.dump(tracklets, f, indent=4)
     print(f'Tracklets saved to {save_path}')
@@ -82,7 +99,5 @@ if __name__ == "__main__":
     czi_file_path = '/home/dafei/data/MS2/gRNA2_12.03.25-st-13-II---.czi'
     masks_dir = '/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/masks'
     t = 80  # Number of time points to process, set to None to process all available masks
-    threshold = np.sqrt(3)  # Distance threshold for matching points between frames
-    degree_w = 0.3 # Weight for degree similarity
-    tracklets = adjacency_graph_tracking(masks_dir, t=t, distance_threshold=threshold, degree_weight=degree_w)
+    tracklets = cell_tracking(masks_dir, t=t)
     
