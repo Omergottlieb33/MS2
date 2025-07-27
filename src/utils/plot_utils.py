@@ -1,5 +1,6 @@
 import colorsys
 import numpy as np
+from typing import Optional
 import matplotlib.pyplot as plt
 from typing import Optional, List, Union
 
@@ -201,3 +202,249 @@ def generate_gradient_colors(n: int, brightness: float = 1.0) -> List[List[int]]
             r, g, b = 255, int(255 * (1 - (ratio - 0.75) / 0.25)), 0
         colors.append([min(255, int(c * brightness)) for c in (r, g, b)])
     return colors
+
+
+def show_3d_segmentation_overlay_with_unique_colors2(z_stack, masks, highlight_label, 
+                                                   highlight_color=[255, 0, 0], 
+                                                   background_color=[0, 0, 0],
+                                                   color_scheme='hsv',
+                                                   save_path=None, return_fig=False,
+                                                   highlight_alpha=0.8, other_alpha=0.4,
+                                                   zoom_on_highlight=False, zoom_padding=50):
+    """
+    Show 3D segmentation overlay with highlighted label in specific color and all other labels 
+    colored uniquely using the color_cells_with_unique_colors function.
+    
+    Args:
+        z_stack: 3D numpy array of images (z, h, w)
+        masks: 3D numpy array of segmentation masks (z, h, w)
+        highlight_label: integer label to highlight with specific color
+        highlight_color: RGB color for highlighted label [R, G, B] (default: red)
+        background_color: RGB color for background [R, G, B] (default: black)
+        color_scheme: 'hsv', 'random', or 'gradient' for other cell coloring
+        save_path: path to save the figure (optional)
+        return_fig: if True, return the figure object instead of showing
+        highlight_alpha: transparency for highlighted cell (0-1, higher = more opaque)
+        other_alpha: transparency for other cells (0-1, lower = more transparent)
+        zoom_on_highlight: if True, zoom in on the area around the highlighted cell
+        zoom_padding: padding around the highlighted cell when zooming (in pixels)
+    
+    Returns:
+        fig object if return_fig=True, otherwise None
+    """
+    # Calculate zoom region if zoom_on_highlight is True
+    crop_coords = None
+    if zoom_on_highlight:
+        crop_coords = get_highlight_crop_coords(masks, highlight_label, zoom_padding)
+        if crop_coords is None:
+            print(f"Warning: Highlight label {highlight_label} not found in masks. Showing full image.")
+            zoom_on_highlight = False
+    
+    frames = []
+    for i in range(z_stack.shape[0]):
+        img = z_stack[i]
+        img = enhance_cell_image_contrast(img)
+        maski = masks[i]
+        
+        # Apply cropping if zoom is enabled
+        if zoom_on_highlight and crop_coords is not None:
+            y_min, y_max, x_min, x_max = crop_coords
+            img = img[y_min:y_max, x_min:x_max]
+            maski = maski[y_min:y_max, x_min:x_max]
+        
+        # Create colored overlay with different alpha values for highlight vs other cells
+        colored_overlay = create_colored_overlay_with_dominant_highlight(
+            img, maski, highlight_label, highlight_color, background_color, 
+            color_scheme, highlight_alpha, other_alpha)
+        frames.append(colored_overlay)
+
+    # Handle single slice case
+    if len(frames) == 1:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+        ax.imshow(frames[0])
+        ax.axis('off')
+        title = 'Slice 1'
+        if zoom_on_highlight:
+            title += f' (Zoomed on label {highlight_label})'
+        ax.set_title(title)
+    else:
+        fig, ax = plt.subplots(1, len(frames), figsize=(4*len(frames), 8))
+        for i, frame in enumerate(frames):
+            ax[i].imshow(frame)
+            ax[i].axis('off')
+            title = f'Slice {i+1}'
+            if zoom_on_highlight:
+                title += f' (Zoomed on label {highlight_label})'
+            ax[i].set_title(title)
+    
+    plt.tight_layout()
+    
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches='tight')
+        print(f"Saved colored overlay images to {save_path}")
+    
+    if return_fig:
+        return fig
+    else:
+        plt.show()
+        plt.close(fig)
+
+def get_highlight_crop_coords(masks, highlight_label, padding):
+    """
+    Calculate crop coordinates to zoom in on the highlighted label across all z-slices.
+    
+    Args:
+        masks: 3D numpy array of segmentation masks (z, h, w)
+        highlight_label: integer label to find
+        padding: padding around the bounding box in pixels
+    
+    Returns:
+        tuple: (y_min, y_max, x_min, x_max) crop coordinates or None if label not found
+    """
+    # Find all pixels with the highlight label across all z-slices
+    highlight_pixels = masks == highlight_label
+    
+    if not np.any(highlight_pixels):
+        return None
+    
+    # Get coordinates of all highlight pixels
+    z_coords, y_coords, x_coords = np.where(highlight_pixels)
+    
+    # Calculate bounding box
+    y_min = max(0, np.min(y_coords) - padding)
+    y_max = min(masks.shape[1], np.max(y_coords) + padding + 1)
+    x_min = max(0, np.min(x_coords) - padding)
+    x_max = min(masks.shape[2], np.max(x_coords) + padding + 1)
+    
+    return (y_min, y_max, x_min, x_max)
+
+def plot_masked_pixels_3d(
+    image_tensor: np.ndarray,
+    mask_tensor: np.ndarray,
+    title: str = "3D Voxel Plot of Masked Pixels",
+    point_size: int = 5,
+    alpha: float = 0.7,
+    cmap: str = 'viridis',
+    save_path: Optional[str] = None,
+    return_fig: bool = False,
+    vmin: float = 0.0,
+    vmax: float = 100.0,
+    threshold: Optional[float] = None,
+    use_threshold_coloring: bool = False
+):
+    """
+    Visualizes pixels from a 3D image tensor that fall within a 3D mask as a 3D scatter plot.
+
+    The color of each point in the scatter plot represents the pixel intensity from the image tensor.
+    With threshold coloring: black (below threshold), green (above threshold), red (cell boundary).
+
+    Args:
+        image_tensor (np.ndarray): The 3D image data, expected shape (z, y, x).
+        mask_tensor (np.ndarray): The 3D boolean or integer mask, same shape as image_tensor.
+        title (str): The title for the plot.
+        point_size (int): The size of the points in the scatter plot.
+        alpha (float): The transparency of the points.
+        cmap (str): The colormap for mapping pixel intensity to color (used when use_threshold_coloring=False).
+        save_path (Optional[str]): If provided, saves the figure to this path.
+        return_fig (bool): If True, returns the matplotlib figure object instead of showing it.
+        vmin (float): Minimum value for colorbar range.
+        vmax (float): Maximum value for colorbar range.
+        threshold (Optional[float]): Threshold value for three-color scheme.
+        use_threshold_coloring (bool): If True, use threshold-based coloring scheme.
+    """
+    if image_tensor.shape != mask_tensor.shape:
+        raise ValueError("Image and mask tensors must have the same shape.")
+    if image_tensor.ndim != 3:
+        raise ValueError("Input tensors must be 3D (z, y, x).")
+
+    coords = np.argwhere(mask_tensor > 0)
+    if coords.shape[0] == 0:
+        print("Mask is empty, nothing to plot.")
+        return
+
+    z_coords, y_coords, x_coords = coords[:, 0], coords[:, 1], coords[:, 2]
+    intensities = image_tensor[z_coords, y_coords, x_coords]
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    if use_threshold_coloring and threshold is not None:
+        # Three-color scheme based on threshold and boundary detection
+        colors = get_threshold_based_colors(
+            coords, mask_tensor, intensities, threshold
+        )
+        
+        scatter = ax.scatter(x_coords, y_coords, z_coords, c=colors, s=point_size, alpha=alpha)
+        
+        # Create custom legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='black', label=f'Background'),
+            Patch(facecolor='green', label=f'MS2')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right')
+        
+    else:
+        # Original intensity-based coloring
+        scatter = ax.scatter(x_coords, y_coords, z_coords, c=intensities, cmap=cmap, 
+                            s=point_size, alpha=alpha, vmin=vmin, vmax=vmax)
+        
+        # Add colorbar with range info
+        colorbar = fig.colorbar(scatter, ax=ax, pad=0.1, label='Pixel Intensity')
+        colorbar.ax.text(0.5, 1.02, f'Range: {vmin:.2f} - {vmax:.2f}', 
+                         transform=colorbar.ax.transAxes, 
+                         ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+    ax.set_xlabel("X Coordinate")
+    ax.set_ylabel("Y Coordinate") 
+    ax.set_zlabel("Z Coordinate")
+    ax.set_title(title)
+    ax.invert_zaxis()  # Match image array z-axis direction
+    
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+        print(f"Saved 3D plot to {save_path}")
+    if return_fig:
+        return fig
+    else:
+        plt.show()
+        plt.close(fig)
+
+
+
+def get_threshold_based_colors(coords, mask_tensor, intensities, threshold):
+    """
+    Assign colors based on threshold and boundary detection.
+    
+    Args:
+        coords: Array of coordinates where mask > 0
+        mask_tensor: 3D mask array
+        intensities: Intensity values at the coordinates
+        threshold: Threshold value for classification
+    
+    Returns:
+        Array of colors for each point
+    """
+    from scipy.ndimage import binary_erosion
+    
+    # Get the specific mask label (assuming single cell)
+    mask_label = mask_tensor[coords[0, 0], coords[0, 1], coords[0, 2]]
+    binary_mask = (mask_tensor == mask_label).astype(bool)
+    
+    # Create eroded mask to find boundary pixels
+    # Use a smaller structuring element for 3D erosion
+    eroded_mask = binary_erosion(binary_mask, iterations=1)
+    boundary_mask = binary_mask & ~eroded_mask
+    
+    colors = []
+    for i, (z, y, x) in enumerate(coords):
+        if intensities[i] >= threshold:
+            # Green for above threshold
+            colors.append([0.0, 1.0, 0.0])  # Green
+        else:
+            # Black for below threshold
+            colors.append([0.0, 0.0, 0.0])  # Black
+    
+    return np.array(colors)
