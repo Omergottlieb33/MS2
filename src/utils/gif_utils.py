@@ -1,4 +1,6 @@
 import io
+import os
+import imageio.v2 as iio
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -34,19 +36,44 @@ def create_gif_from_figures(figures, output_path='animation.gif', fps=5, titles=
         
         # Convert to PIL Image
         img = Image.open(buf)
-        frames.append(img.copy())
+        frames.append(np.array(img))
         buf.close()
     
-    # Create and save the GIF
+    # Determine file format from extension
     if frames:
-        frames[0].save(
-            output_path,
-            save_all=True,
-            append_images=frames[1:],
-            duration=int(1000/fps),  # Convert fps to milliseconds
-            loop=0
-        )
-        print(f"GIF saved to {output_path}")
+        _, ext = os.path.splitext(output_path.lower())
+        
+        if ext == '.gif':
+            # Convert numpy arrays back to PIL Images for GIF
+            pil_frames = [Image.fromarray(frame) for frame in frames]
+            pil_frames[0].save(
+                output_path,
+                save_all=True,
+                append_images=pil_frames[1:],
+                duration=int(1000/fps),
+                loop=0
+            )
+        elif ext in ['.avi', '.mp4']:
+            # Use imageio-ffmpeg or imageio's video writer
+            writer = iio.get_writer(output_path, fps=fps, codec='libx264')
+            for frame in frames:
+                writer.append_data(frame)
+            writer.close()
+        elif ext in ['.tiff', '.tif']:
+            # Use imageio for TIFF
+            iio.imwrite(output_path, frames)
+        else:
+            # Default to GIF
+            pil_frames = [Image.fromarray(frame) for frame in frames]
+            pil_frames[0].save(
+                output_path,
+                save_all=True,
+                append_images=pil_frames[1:],
+                duration=int(1000/fps),
+                loop=0
+            )
+        
+        print(f"Animation saved to {output_path}")
         
         # Clean up figures to free memory
         for fig in figures:

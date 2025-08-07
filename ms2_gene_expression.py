@@ -82,174 +82,377 @@ def estimate_emitter_2d_gaussian(image, initial_position, initial_sigma=1.0):
             "sigma_y": popt[4],
             "offset": popt[5]
         }
+        return params, pcov
     except RuntimeError:
         print("Gaussian fitting failed.")
-        params = None, None
-
-    return params, pcov
+        return None, None
 
 
 class MS2GeneExpressionProcessor:
-    def __init__(self, tracklets, cell_id, image_data, masks_paths, ms2_z_projection):
+    """
+    Processes MS2 gene expression data for individual cells across timepoints.
+    
+    This class analyzes gene expression by fitting 2D Gaussians to MS2 signal
+    within cell boundaries and tracks expression over time.
+    """
+    
+    def __init__(self, tracklets, image_data, masks_paths, ms2_z_projections, output_dir='output'):
         """
-        Initializes the processor with the required data.
+        Initialize the MS2 gene expression processor.
 
         Args:
-            tracklets (dict): Dictionary containing tracklet data.
-            cell_id (int): Cell ID to process.
-            image_data (np.ndarray): Image data array.
-            masks_paths (list): List of paths to segmentation masks.
-            ms2_z_projection (np.ndarray): MS2 z projection data.
+            tracklets (dict): Cell tracking data with cell IDs as keys
+            image_data (np.ndarray): Raw image data array
+            masks_paths (list): Paths to segmentation mask files
+            ms2_z_projections (np.ndarray): MS2 channel z-projected images
+            output_dir (str): Directory for saving output files
         """
         self.tracklets = tracklets
-        self.cell_id = cell_id
         self.image_data = image_data
-        self.masks_paths = masks_paths
-        self.ms2_z_projections = ms2_z_projection
-        self.cell_labels = tracklets[str(cell_id)]
-        self.valid_timepoints = [t for t in range(
-            len(self.cell_labels)) if self.cell_labels[t] != -1]
-        self.gene_expression_list = []
+        self.mask_file_paths = masks_paths
+        self.ms2_z_projections = ms2_z_projections
+        self.output_dir = output_dir
+        
+        # Create output directory
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Initialize processing state variables
+        self._reset_processing_state()
+    
+    def _reset_processing_state(self):
+        """Reset variables used during processing."""
+        self.expression_amplitudes = []
+        self.visualization_figures = []
         self.segmentation_figures = []
-        self.figures = []
-
-    def process(self):
+        self.cell_labels_by_timepoint = []
+        self.max_cell_intensity = 0
+        self.current_cell_mask_projection = None
+        self.current_cell_bbox_ms2 = None
+    
+    def process_cell(self, cell_id):
         """
-        Processes all valid timepoints for the given cell.
-        """
-        print(f"Processing cell ID: {self.cell_id}")
-        for t in tqdm(self.valid_timepoints):
-            self.process_timepoint(t)
-        create_gif_from_figures(self.figures,
-                                f"cell_{self.cell_id}_gene_expression.gif",
-                                fps=1,
-                                titles=[f'Time {i+1}' for i in self.valid_timepoints])
-        self.plot_gene_expression()
-        create_gif_from_figures(self.segmentation_figures,
-                                f"cell_{self.cell_id}_segmentation.gif",
-                                fps=1,
-                                titles=[f"Time {t}" for t in self.valid_timepoints])
-
-    def process_timepoint(self, t):
-        """
-        Processes a single timepoint for the given cell.
-
+        Process gene expression analysis for a specific cell.
+        
         Args:
-            t (int): Timepoint index.
+            cell_id (int): ID of the cell to analyze
         """
-        z_stack = self.image_data[0, t, 1, :, :, :, 0]
-        ms2_stack = self.image_data[0, t, 0, :, :, :, 0]
-        masks = np.load(self.masks_paths[t])['masks']
-        ms2_z_projection = self.ms2_z_projections[t]
-
-        cell_mask = (masks == self.cell_labels[t]).astype(np.uint8)
-        self.cell_mask_z_projection = np.sum(cell_mask, axis=0)
-        popt, pcov = self.get_gaussian_params(cell_mask, ms2_z_projection)
-        self.plot_cell_outline_and_gaussian(
-            ms2_z_projection, cell_mask, popt, pcov)
-        segmentation_overlay = show_3d_segmentation_overlay_with_unique_colors(
-            z_stack, masks, self.cell_labels[t], return_fig=True, zoom_on_highlight=True)
-        self.segmentation_figures.append(segmentation_overlay)
-
-    def get_gaussian_params(self, cell_mask, ms2_z_projection):
-        z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask)
-        self.cell_bbox_ms2_z_projection = ms2_z_projection[y1-1:y2+1, x1-1:x2+1]
+        print(f"Processing cell ID: {cell_id}")
+        
+        # Reset state for new cell
+        self._reset_processing_state()
+        
+        # Get cell tracking data
+        self.cell_labels_by_timepoint = self.tracklets[str(cell_id)]
+        valid_timepoints = self._get_valid_timepoints()
+        
+        if not valid_timepoints:
+            print(f"No valid timepoints found for cell {cell_id}")
+            return
+        
+        # Calculate maximum intensity for consistent visualization
+        self._calculate_max_cell_intensity(valid_timepoints)
+        
+        # Process each timepoint
+        for timepoint in tqdm(valid_timepoints, desc=f"Processing cell {cell_id}"):
+            self._process_single_timepoint(timepoint)
+        
+        # Generate outputs
+        self._create_expression_visualization(cell_id, valid_timepoints)
+        self._create_expression_plot(cell_id)
+        self._create_segmentation_video(cell_id, valid_timepoints)
+    
+    def _get_valid_timepoints(self):
+        """Get timepoints where the cell is present (label != -1)."""
+        return [t for t in range(len(self.cell_labels_by_timepoint)) 
+                if self.cell_labels_by_timepoint[t] != -1]
+    
+    def _calculate_max_cell_intensity(self, valid_timepoints):
+        """
+        Calculate maximum MS2 intensity across all timepoints for consistent visualization.
+        
+        Args:
+            valid_timepoints (list): List of valid timepoint indices
+        """
+        max_intensity = 0
+        
+        for timepoint in valid_timepoints:
+            # Load masks and get cell-specific data
+            masks = np.load(self.mask_file_paths[timepoint])['masks']
+            ms2_projection = self.ms2_z_projections[timepoint]
+            cell_label = self.cell_labels_by_timepoint[timepoint]
+            
+            # Create cell mask and get bounding box
+            cell_mask_3d = (masks == cell_label).astype(np.uint8)
+            z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+            
+            # Project cell mask to 2D
+            cell_mask_2d = np.sum(cell_mask_3d, axis=0)
+            
+            # Expand mask slightly and extract MS2 signal
+            expanded_mask = ndimage.binary_dilation(cell_mask_2d, iterations=2)
+            cell_region_ms2 = ms2_projection[y1-1:y2+1, x1-1:x2+1]
+            mask_region = expanded_mask[y1-1:y2+1, x1-1:x2+1]
+            
+            masked_ms2 = cell_region_ms2 * mask_region.astype(ms2_projection.dtype)
+            max_intensity = max(max_intensity, masked_ms2.max())
+        
+        self.max_cell_intensity = max_intensity
+    
+    def _process_single_timepoint(self, timepoint):
+        """
+        Process MS2 gene expression for a single timepoint.
+        
+        Args:
+            timepoint (int): Timepoint index to process
+        """
+        # Load image data
+        z_stack_brightfield = self.image_data[0, timepoint, 1, :, :, :, 0]
+        ms2_stack = self.image_data[0, timepoint, 0, :, :, :, 0]
+        masks = np.load(self.mask_file_paths[timepoint])['masks']
+        ms2_projection = self.ms2_z_projections[timepoint]
+        
+        # Get cell-specific data
+        cell_label = self.cell_labels_by_timepoint[timepoint]
+        cell_mask_3d = (masks == cell_label).astype(np.uint8)
+        self.current_cell_mask_projection = np.sum(cell_mask_3d, axis=0)
+        
+        # Fit Gaussian to MS2 signal
+        gaussian_params, covariance_matrix = self._fit_gaussian_to_ms2_signal(
+            cell_mask_3d, ms2_projection
+        )
+        
+        # Create visualization
+        self._create_timepoint_visualization(
+            ms2_projection, cell_mask_3d, gaussian_params, covariance_matrix
+        )
+        
+        # Create 3D segmentation overlay
+        segmentation_figure = show_3d_segmentation_overlay_with_unique_colors(
+            z_stack_brightfield, masks, cell_label, 
+            return_fig=True, zoom_on_highlight=True
+        )
+        self.segmentation_figures.append(segmentation_figure)
+    
+    def _fit_gaussian_to_ms2_signal(self, cell_mask_3d, ms2_projection):
+        """
+        Fit 2D Gaussian to MS2 signal within cell boundaries.
+        
+        Args:
+            cell_mask_3d (np.ndarray): 3D cell mask
+            ms2_projection (np.ndarray): 2D MS2 z-projection
+            
+        Returns:
+            tuple: (gaussian_parameters, covariance_matrix)
+        """
+        # Get bounding box
+        z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+        self.current_cell_bbox_ms2 = ms2_projection[y1-1:y2+1, x1-1:x2+1]
+        
+        # Create expanded mask for peak detection
         expanded_mask = ndimage.binary_dilation(
-            self.cell_mask_z_projection, iterations=2)
-
-        masked_cell_ms2_z_projection = ms2_z_projection[y1-1:y2+1, x1-1:x2+1] * \
-            expanded_mask[y1-1:y2+1, x1-1:x2 +
-                          1].astype(ms2_z_projection.dtype)
-        peaks = peak_local_max(masked_cell_ms2_z_projection, num_peaks=1)
-        x, y = peaks[0][1], peaks[0][0]
-        initial_position = (x, y)
-        popt, pcov = estimate_emitter_2d_gaussian(
-            self.cell_bbox_ms2_z_projection, initial_position)
-        return popt, pcov
-
-    def plot_cell_outline_and_gaussian(self, ms2_z_projection, cell_mask, popt, pcov):
-        z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask)
-        cell_outline = self.get_cell_z_projection_outline()
-        gaussian = self.plot_gaussian_fit(popt, pcov)
-        y, x = np.indices(self.cell_bbox_ms2_z_projection.shape)
-        distance_from_center = np.sqrt(
-            (x - popt['x0'])**2 + (y - popt['y0'])**2)
-        gaussian_mask = distance_from_center <= 3
-        gaussian_limited = gaussian * gaussian_mask
-
+            self.current_cell_mask_projection, iterations=2
+        )
+        
+        # Extract MS2 signal within expanded cell boundary
+        mask_region = expanded_mask[y1-1:y2+1, x1-1:x2+1]
+        masked_ms2_region = (self.current_cell_bbox_ms2 * 
+                           mask_region.astype(ms2_projection.dtype))
+        
+        # Find peak position for initial Gaussian center guess
+        peak_coordinates = peak_local_max(masked_ms2_region, num_peaks=1)
+        if len(peak_coordinates) > 0:
+            peak_x, peak_y = peak_coordinates[0][1], peak_coordinates[0][0]
+            initial_center = (peak_x, peak_y)
+        else:
+            # Fallback to center of bounding box
+            initial_center = (self.current_cell_bbox_ms2.shape[1] // 2, 
+                            self.current_cell_bbox_ms2.shape[0] // 2)
+        
+        # Fit Gaussian
+        gaussian_params, covariance_matrix = estimate_emitter_2d_gaussian(
+            self.current_cell_bbox_ms2, initial_center
+        )
+        
+        return gaussian_params, covariance_matrix
+    
+    def _create_timepoint_visualization(self, ms2_projection, cell_mask_3d, 
+                                      gaussian_params, covariance_matrix):
+        """
+        Create visualization for a single timepoint showing cell outline and Gaussian fit.
+        
+        Args:
+            ms2_projection (np.ndarray): MS2 z-projection
+            cell_mask_3d (np.ndarray): 3D cell mask
+            gaussian_params (dict): Fitted Gaussian parameters
+            covariance_matrix (np.ndarray): Parameter covariance matrix
+        """
+        # Get cell bounding box
+        z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+        
+        # Create cell outline
+        cell_outline = self._create_cell_outline()
+        
+        # Generate Gaussian visualization
+        gaussian_visualization = self._create_gaussian_visualization(
+            gaussian_params, covariance_matrix
+        )
+        
+        # Create figure
         fig, ax = plt.subplots(1, 1, figsize=(5, 3))
-        ax.imshow(ms2_z_projection[y1-1:y2+1, x1-1:x2+1], cmap='gray', vmin=0, vmax=np.max(ms2_z_projection))
+        
+        # Show MS2 image
+        ms2_region = ms2_projection[y1-1:y2+1, x1-1:x2+1]
+        ax.imshow(ms2_region, cmap='gray', vmin=0, vmax=np.max(ms2_projection))
+        
+        # Overlay cell outline in red
         outline_rgba = np.zeros((*cell_outline.shape, 4))
-        outline_rgba[cell_outline == 1] = [1, 0, 0, 1]
-        ax.imshow(outline_rgba[y1-1:y2+1, x1-1:x2+1], alpha=0.25)
-        img = ax.imshow(gaussian_limited, cmap='hot',
-                         interpolation='nearest', alpha=0.25)
-        plt.colorbar(img, ax=ax, fraction=0.046,
-                      pad=0.04, label='MS2 Intensity')
+        outline_rgba[cell_outline == 1] = [1, 0, 0, 1]  # Red outline
+        outline_region = outline_rgba[y1-1:y2+1, x1-1:x2+1]
+        ax.imshow(outline_region, alpha=0.25)
+        
+        # Overlay Gaussian fit in hot colormap
+        gaussian_img = ax.imshow(gaussian_visualization, cmap='hot',
+                               interpolation='nearest', alpha=0.25, 
+                               vmin=0, vmax=self.max_cell_intensity)
+        
+        # Add colorbar
+        plt.colorbar(gaussian_img, ax=ax, fraction=0.046, pad=0.04, 
+                    label='MS2 Intensity')
+        
         ax.axis('off')
         plt.tight_layout()
-        self.figures.append(fig)
-
-
-    def plot_gaussian_fit(self, popt, pcov):
-        if popt is not None:
-            covariance = np.sqrt(np.diag(pcov))
-            gaussian = plot_2d_gaussian_with_size(
-                popt['amplitude'], popt['x0'], popt['y0'],
-                popt['sigma_x'], popt['sigma_y'], popt['offset'],
-                self.cell_bbox_ms2_z_projection.shape[1], self.cell_bbox_ms2_z_projection.shape[0]
+        self.visualization_figures.append(fig)
+    
+    def _create_gaussian_visualization(self, gaussian_params, covariance_matrix):
+        """
+        Create Gaussian visualization with limited radius.
+        
+        Args:
+            gaussian_params (dict): Fitted Gaussian parameters
+            covariance_matrix (np.ndarray): Parameter covariance matrix
+            
+        Returns:
+            np.ndarray: Gaussian visualization array
+        """
+        if gaussian_params is not None:
+            # Generate full Gaussian
+            gaussian_full = plot_2d_gaussian_with_size(
+                gaussian_params['amplitude'], gaussian_params['x0'], gaussian_params['y0'],
+                gaussian_params['sigma_x'], gaussian_params['sigma_y'], gaussian_params['offset'],
+                self.current_cell_bbox_ms2.shape[1], self.current_cell_bbox_ms2.shape[0]
             )
-            self.gene_expression_list.append(popt['amplitude'])
+            
+            # Limit Gaussian to reasonable radius (3 sigma)
+            y_coords, x_coords = np.indices(self.current_cell_bbox_ms2.shape)
+            distance_from_center = np.sqrt(
+                (x_coords - gaussian_params['x0'])**2 + 
+                (y_coords - gaussian_params['y0'])**2
+            )
+            radius_mask = distance_from_center <= 3
+            gaussian_limited = gaussian_full * radius_mask
+            
+            # Store amplitude for expression tracking
+            self.expression_amplitudes.append(gaussian_params['amplitude'])
         else:
-            gaussian = np.zeros_like(self.cell_bbox_ms2_z_projection)
-            self.gene_expression_list.append(0)
-        return gaussian
-
-    def get_cell_z_projection_outline(self):
-        cell_bbox_corners = (self.cell_mask_z_projection > 0).astype(np.uint8)
-        outline_cell = cell_bbox_corners - \
-            ndimage.binary_erosion(cell_bbox_corners)
-        return outline_cell
-
-    def plot_gene_expression(self):
+            # Handle failed fitting
+            gaussian_limited = np.zeros_like(self.current_cell_bbox_ms2)
+            self.expression_amplitudes.append(0)
+        
+        return gaussian_limited
+    
+    def _create_cell_outline(self):
+        """Create 2D outline of the cell from the z-projected mask."""
+        cell_binary = (self.current_cell_mask_projection > 0).astype(np.uint8)
+        cell_outline = cell_binary - ndimage.binary_erosion(cell_binary)
+        return cell_outline
+    
+    def _create_expression_visualization(self, cell_id, valid_timepoints):
+        """Create animated visualization of gene expression over time."""
+        output_path = os.path.join(self.output_dir, f"cell_{cell_id}_expression_animation.mp4")
+        titles = [f'Timepoint {t+1}' for t in valid_timepoints]
+        
+        create_gif_from_figures(
+            self.visualization_figures, output_path, fps=1, titles=titles
+        )
+    
+    def _create_segmentation_video(self, cell_id, valid_timepoints):
+        """Create animated visualization of 3D segmentation over time."""
+        output_path = os.path.join(self.output_dir, f"cell_{cell_id}_segmentation.mp4")
+        titles = [f"Timepoint {t}" for t in valid_timepoints]
+        
+        create_gif_from_figures(
+            self.segmentation_figures, output_path, fps=1, titles=titles
+        )
+    
+    def _create_expression_plot(self, cell_id):
         """
-        Plots the gene expression over time for the processed cell.
+        Create and save gene expression plot over time.
+        
+        Args:
+            cell_id (int): Cell ID being processed
         """
+        if not self.expression_amplitudes:
+            print(f"No expression data to plot for cell {cell_id}")
+            return
+        
+        mean_expression = np.mean(self.expression_amplitudes)
+        
         plt.figure(figsize=(10, 5))
-        plt.plot(self.gene_expression_list, marker='o')
-        plt.title(f"Gene Expression Over Time for Cell ID {self.cell_id}")
+        plt.plot(self.expression_amplitudes, marker='o', linewidth=2, markersize=6)
+        plt.axhline(mean_expression, color='black', linestyle='--',
+                   label=f'Mean Expression: {mean_expression:.2f}')
+        
+        plt.legend()
+        plt.title(f"Gene Expression Over Time for Cell ID {cell_id}")
         plt.xlabel("Timepoint")
-        plt.ylabel("Gene Expression (MS2 Intensity)")
-        plt.ylim(bottom=0)  # Ensure the y-axis starts from 0
-        plt.grid()
-        plt.savefig(f"cell_{self.cell_id}_gene_expression_plot.png")
+        plt.ylabel("Gene Expression (MS2 Amplitude)")
+        plt.ylim(bottom=0)
+        plt.grid(True, alpha=0.3)
+        
+        # Save plot
+        output_path = os.path.join(self.output_dir, f"cell_{cell_id}_expression_plot.png")
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Expression plot saved to: {output_path}")
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Process MS2 gene expression data.")
-    parser.add_argument('--czi_file_path', type=str, required=True,
-                        help='Path to CZI file.')
-    parser.add_argument('--seg_maps_dir', type=str, required=True,
-                        help='Directory containing segmentation maps.')
-    parser.add_argument('--tracklets_path', type=str,
-                        required=True, help='Path to tracklets JSON file.')
-    parser.add_argument('--ms2_filtered_z_projection', type=str, required=True,
-                        help='Path to MS2 z projection file after background removal.')
-    parser.add_argument('--cell_id', type=str,
-                        required=True, help='Cell ID to process.')
-    return parser.parse_args()
+    # Keep the original method name for backward compatibility
+    def process(self, cell_id):
+        """Backward compatibility wrapper for process_cell."""
+        self.process_cell(cell_id)
 
 
 if __name__ == "__main__":
-    args = parse_args()
-
-    image_data = load_czi_images(args.czi_file_path)
-    masks_paths = get_masks_paths(args.seg_maps_dir)
+    parser = argparse.ArgumentParser(description="Process MS2 gene expression data for individual cells.")
+    parser.add_argument("--tracklets_path", type=str, required=True, help="Path to the tracklets JSON file.")
+    parser.add_argument("--image_data_path", type=str, required=True, help="Path to the image data file (CZI).")
+    parser.add_argument("--masks_paths", type=str, nargs='+', required=True, help="Paths to segmentation mask files.")
+    parser.add_argument("--ms2_z_projections", type=str, required=True, help="Path to MS2 z-projected images.")
+    parser.add_argument("--output_dir", type=str, default='output', help="Directory to save output files.")
+    
+    args = parser.parse_args()
+    
+    # Load tracklets
     with open(args.tracklets_path, 'r') as f:
         tracklets = json.load(f)
-    ms2_z_projection = tifffile.imread(args.ms2_filtered_z_projection)
-
+    
+    # Load image data
+    image_data = load_czi_images(args.image_data_path)
+    
+    # Load MS2 z-projections
+    ms2_z_projections = tifffile.imread(args.ms2_z_projections)
+    
+    # Create processor instance
     processor = MS2GeneExpressionProcessor(
-        tracklets, args.cell_id, image_data, masks_paths, ms2_z_projection)
-    processor.process()
+        tracklets=tracklets,
+        image_data=image_data,
+        masks_paths=args.masks_paths,
+        ms2_z_projections=ms2_z_projections,
+        output_dir=args.output_dir
+    )
+    
+    cell_ids = range(0,20)
+    for cell_id in cell_ids:
+        processor.process(cell_id)
+        print(f"Finished processing cell {cell_id}")
+    print("All cells processed successfully.")
