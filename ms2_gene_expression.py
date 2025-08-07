@@ -96,7 +96,7 @@ class MS2GeneExpressionProcessor:
     within cell boundaries and tracks expression over time.
     """
     
-    def __init__(self, tracklets, image_data, masks_paths, ms2_z_projections, output_dir='output'):
+    def __init__(self, tracklets, image_data, masks_paths, ms2_z_projections, output_dir='debug'):
         """
         Initialize the MS2 gene expression processor.
 
@@ -144,6 +144,9 @@ class MS2GeneExpressionProcessor:
         # Get cell tracking data
         self.cell_labels_by_timepoint = self.tracklets[str(cell_id)]
         valid_timepoints = self._get_valid_timepoints()
+
+        self.previous_center = None
+        self.previous_center_global = None
         
         if not valid_timepoints:
             print(f"No valid timepoints found for cell {cell_id}")
@@ -218,7 +221,7 @@ class MS2GeneExpressionProcessor:
         
         # Fit Gaussian to MS2 signal
         gaussian_params, covariance_matrix = self._fit_gaussian_to_ms2_signal(
-            cell_mask_3d, ms2_projection
+            cell_mask_3d, ms2_projection, timepoint
         )
         
         # Create visualization
@@ -233,7 +236,7 @@ class MS2GeneExpressionProcessor:
         )
         self.segmentation_figures.append(segmentation_figure)
     
-    def _fit_gaussian_to_ms2_signal(self, cell_mask_3d, ms2_projection):
+    def _fit_gaussian_to_ms2_signal(self, cell_mask_3d, ms2_projection, timepoint):
         """
         Fit 2D Gaussian to MS2 signal within cell boundaries.
         
@@ -247,10 +250,10 @@ class MS2GeneExpressionProcessor:
         # Get bounding box
         z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
         self.current_cell_bbox_ms2 = ms2_projection[y1-1:y2+1, x1-1:x2+1]
-        
+
         # Create expanded mask for peak detection
         expanded_mask = ndimage.binary_dilation(
-            self.current_cell_mask_projection, iterations=2
+            self.current_cell_mask_projection, iterations=0
         )
         
         # Extract MS2 signal within expanded cell boundary
@@ -263,6 +266,21 @@ class MS2GeneExpressionProcessor:
         if len(peak_coordinates) > 0:
             peak_x, peak_y = peak_coordinates[0][1], peak_coordinates[0][0]
             initial_center = (peak_x, peak_y)
+            # TODO: Handle peak jumping but dependes on first timepoint
+            if timepoint == 0:
+                global_peak_y = peak_y + (y1 - 1)
+                global_peak_x = peak_x + (x1 - 1)
+                self.previous_center = (peak_x, peak_y)
+                self.previous_center_global = (global_peak_x, global_peak_y)
+            else:
+                global_peak_y = peak_y + (y1 - 1)
+                global_peak_x = peak_x + (x1 - 1)
+                distance = np.linalg.norm(np.array((global_peak_x, global_peak_y)) - np.array(self.previous_center_global))
+                if distance > 10:  # If the peak is too far from the previous center
+                    initial_center = self.previous_center
+                else:
+                    self.previous_center = (peak_x, peak_y)
+                    self.previous_center_global = (global_peak_x, global_peak_y)
         else:
             # Fallback to center of bounding box
             initial_center = (self.current_cell_bbox_ms2.shape[1] // 2, 
@@ -272,6 +290,8 @@ class MS2GeneExpressionProcessor:
         gaussian_params, covariance_matrix = estimate_emitter_2d_gaussian(
             self.current_cell_bbox_ms2, initial_center
         )
+        if gaussian_params is not None:
+            self.previous_center = (gaussian_params["x0"], gaussian_params["y0"])
         
         return gaussian_params, covariance_matrix
     
@@ -421,38 +441,46 @@ class MS2GeneExpressionProcessor:
         """Backward compatibility wrapper for process_cell."""
         self.process_cell(cell_id)
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Process MS2 gene expression data.")
+    parser.add_argument("--czi_file_path", type=str, required=True,
+                        help="Path to the CZI file.")
+    parser.add_argument("--seg_maps_dir", type=str, required=True,
+                        help="Path to the segmentation maps directory.")
+    parser.add_argument("--tracklets_path", type=str, required=True,
+                        help="Path to tracklet JSON file.")
+    parser.add_argument("--ms2_filtered_z_projection", type=str, required=True,
+                        help="Path to MS2 z-projected images (TIFF format).")
+    
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process MS2 gene expression data for individual cells.")
-    parser.add_argument("--tracklets_path", type=str, required=True, help="Path to the tracklets JSON file.")
-    parser.add_argument("--image_data_path", type=str, required=True, help="Path to the image data file (CZI).")
-    parser.add_argument("--masks_paths", type=str, nargs='+', required=True, help="Paths to segmentation mask files.")
-    parser.add_argument("--ms2_z_projections", type=str, required=True, help="Path to MS2 z-projected images.")
-    parser.add_argument("--output_dir", type=str, default='output', help="Directory to save output files.")
-    
-    args = parser.parse_args()
-    
+    args = parse_args()
+
     # Load tracklets
     with open(args.tracklets_path, 'r') as f:
         tracklets = json.load(f)
     
     # Load image data
-    image_data = load_czi_images(args.image_data_path)
-    
+    image_data = load_czi_images(args.czi_file_path)
+
     # Load MS2 z-projections
-    ms2_z_projections = tifffile.imread(args.ms2_z_projections)
-    
+    ms2_z_projections = tifffile.imread(args.ms2_filtered_z_projection)
+
+    masks_paths = get_masks_paths(args.seg_maps_dir)
     # Create processor instance
     processor = MS2GeneExpressionProcessor(
         tracklets=tracklets,
         image_data=image_data,
-        masks_paths=args.masks_paths,
-        ms2_z_projections=ms2_z_projections,
-        output_dir=args.output_dir
+        masks_paths=masks_paths,
+        ms2_z_projections=ms2_z_projections
     )
+    processor.process(1)  # Process the first cell as an example
     
-    cell_ids = range(0,20)
-    for cell_id in cell_ids:
-        processor.process(cell_id)
-        print(f"Finished processing cell {cell_id}")
-    print("All cells processed successfully.")
+    # cell_ids = range(0,20)
+    # for cell_id in cell_ids:
+    #     processor.process(cell_id)
+    #     print(f"Finished processing cell {cell_id}")
+    # print("All cells processed successfully.")
