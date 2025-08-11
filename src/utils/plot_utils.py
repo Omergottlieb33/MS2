@@ -440,3 +440,37 @@ def plot_2d_gaussian_with_size(amplitude, x0, y0, sigma_x, sigma_y, offset, widt
     gaussian = amplitude * np.exp(-(((x - x0) ** 2) / (2 * sigma_x ** 2) +
                                     ((y - y0) ** 2) / (2 * sigma_y ** 2))) + offset
     return gaussian
+
+def plot_gaussian_initial_guess(emitter_peaks_array, inliers, output_path, origin_upper_right=True):
+    emitter_peaks_array = np.asarray(emitter_peaks_array)
+    inliers = np.asarray(inliers)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    if origin_upper_right:
+        ax.scatter(emitter_peaks_array[:, 0], emitter_peaks_array[:, 1], c='lightgray', s=10, label='all')
+        ax.scatter(inliers[:, 0], inliers[:, 1], c='r', s=12, label='RANSAC inliers')
+
+        # Set limits from data, then invert both axes
+        if emitter_peaks_array.size:
+            xmin, xmax = emitter_peaks_array[:, 0].min(), emitter_peaks_array[:, 0].max()
+            ymin, ymax = emitter_peaks_array[:, 1].min(), emitter_peaks_array[:, 1].max()
+            ax.set_xlim(xmin, xmax)
+            ax.set_ylim(ymin, ymax)
+
+        ax.invert_yaxis()  # Y increases downward
+        ax.set_xlabel("X ")
+        ax.set_ylabel("Y")
+    else:
+        # Standard Cartesian view (X→right, Y→up), keep your old negation for visual parity if desired
+        ax.scatter(emitter_peaks_array[:, 0], emitter_peaks_array[:, 1], c='lightgray', s=10, label='all')
+        ax.scatter(inliers[:, 0], inliers[:, 1], c='r', s=12, label='RANSAC inliers')
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.legend()
+    ax.grid(True)
+    fig.tight_layout()
+    fig.savefig(output_path)
+
