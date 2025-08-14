@@ -187,3 +187,105 @@ def estimate_emitter_2d_gaussian(image, initial_position, initial_sigma=1.0):
     except RuntimeError:
         print("Gaussian fitting failed.")
         return None, None
+
+def estimate_background_offset_annulus(
+    image: np.ndarray,
+    center: tuple[float, float],
+    r_inner: float = 3.0,
+    r_outer: float | None = None,
+    min_pixels: int = 200,
+    drop_top_fraction: float | None = 0.20,
+    sigma: float = 3.0,
+    max_iters: int = 5,
+) -> float:
+    """
+    Estimate a fixed background offset (b) using an annulus median around an emitter.
+
+    Strategy:
+      - Mask a central disk (radius r_inner) to avoid emitter contamination.
+      - Use pixels in an outer annulus (r_inner..r_outer).
+      - Optionally drop the top brightest fraction (e.g., 20%).
+      - Apply iterative sigma-clipping around the median.
+      - Return the median of the remaining pixels.
+
+    Args:
+        image: 2D array (patch containing the emitter).
+        center: (x0, y0) center in image coordinates.
+        r_inner: Inner radius of masked disk (px).
+        r_outer: Outer radius of annulus (px). If None, chosen adaptively.
+        min_pixels: Target minimum number of annulus pixels; r_outer expands up to fit.
+        drop_top_fraction: If set, drop this fraction of brightest annulus pixels before clipping.
+        sigma: Sigma threshold for clipping relative to robust MAD-based sigma.
+        max_iters: Max iterations for sigma clipping.
+
+    Returns:
+        float: Estimated background offset (b).
+    """
+    if image.ndim != 2:
+        raise ValueError("estimate_background_offset_annulus expects a 2D image.")
+    h, w = image.shape
+    x0, y0 = float(center[0]), float(center[1])
+
+    # Build distance map
+    yy, xx = np.indices(image.shape)
+    dist = np.sqrt((xx - x0) ** 2 + (yy - y0) ** 2)
+
+    # Compute a reasonable maximum radius (stay within frame)
+    to_left = x0
+    to_right = w - 1 - x0
+    to_top = y0
+    to_bottom = h - 1 - y0
+    r_max_edge = max(0.0, min(to_left, to_right, to_top, to_bottom))
+
+    # If r_outer not provided, choose adaptively and expand until we have enough pixels
+    if r_outer is None:
+        r_outer = min(r_inner + 8.0, r_max_edge)
+
+    # Annulus selection with adaptive expansion
+    def annulus_vals(r_out: float) -> np.ndarray:
+        mask = (dist >= r_inner) & (dist <= r_out)
+        return image[mask].astype(np.float64, copy=False)
+
+    vals = annulus_vals(r_outer)
+    # Expand r_outer up to edge if not enough pixels
+    while vals.size < min_pixels and r_outer < r_max_edge:
+        r_outer = min(r_max_edge, r_outer * 1.25 + 1.0)
+        vals = annulus_vals(r_outer)
+
+    # Fallbacks if still empty
+    if vals.size == 0:
+        # As a last resort, use global median excluding center disk
+        mask = dist >= r_inner
+        fallback_vals = image[mask]
+        if fallback_vals.size:
+            return float(np.median(fallback_vals))
+        return float(np.median(image))
+
+    # Optionally drop the top brightest fraction to avoid residual hot pixels
+    if drop_top_fraction is not None and 0.0 < drop_top_fraction < 1.0 and vals.size > 10:
+        q = np.quantile(vals, 1.0 - drop_top_fraction)
+        vals = vals[vals <= q]
+        if vals.size == 0:
+            # If everything got dropped, revert to pre-drop values
+            vals = annulus_vals(r_outer)
+
+    # Iterative sigma-clipping around the median using robust MAD
+    clipped = vals
+    for _ in range(max_iters):
+        med = np.median(clipped)
+        mad = np.median(np.abs(clipped - med))
+        # Convert MAD to robust sigma estimate
+        rob_sigma = 1.4826 * mad
+        if rob_sigma <= 0:
+            break
+        keep = np.abs(clipped - med) <= (sigma * rob_sigma)
+        if keep.all():
+            break
+        clipped = clipped[keep]
+        if clipped.size == 0:
+            # If over-clipped, use last median
+            clipped = np.array([med], dtype=np.float64)
+            break
+
+    return float(np.median(clipped))
+
