@@ -1,6 +1,6 @@
 from mpl_toolkits.mplot3d import Axes3D  # ensures 3D projection is registered
 from src.utils.plot_utils import show_3d_segmentation_overlay_with_unique_colors, plot_2d_gaussian_with_size, plot_gaussian_initial_guess
-from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d, gaussian_2d, filter_ransac_poly, estimate_background_offset_annulus
+from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d, estimate_emitter_2d_gaussian_with_fixed_offset, filter_ransac_poly, estimate_background_offset_annulus
 from src.utils.gif_utils import create_gif_from_figures, create_trajectory_gif
 from src.utils.image_utils import load_czi_images
 from cell_tracking import get_masks_paths
@@ -20,106 +20,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 matplotlib.use('module://matplotlib_inline.backend_inline')
-
-
-def estimate_emitter_2d_gaussian_with_fixed_offset(image, initial_position, initial_sigma=1.0, fixed_offset=None):
-    """
-    Estimates the parameters of a 2D Gaussian emitter in an image.
-
-    Args:
-        image (2D array): Input image containing the emitter.
-        initial_position (tuple): Initial guess for the (x, y) position of the emitter.
-        initial_sigma (float): Initial guess for the Gaussian sigma (default: 1.0).
-        fixed_offset (float): If provided, offset will be fixed to this value.
-
-    Returns:
-        tuple[dict|None, np.ndarray|None]: (params, covariance)
-            params keys: amplitude, x0, y0, sigma_x, sigma_y, offset
-    """
-    # Ensure float for stable fitting
-    img = np.asarray(image, dtype=np.float64)
-    h, w = img.shape
-
-    # Create a meshgrid for the image (y first from np.indices, but we pass (x, y) to the model)
-    y, x = np.indices(img.shape)
-
-    # Clip initial position safely into the image bounds
-    x0_guess = float(np.clip(initial_position[0], 0, w - 1))
-    y0_guess = float(np.clip(initial_position[1], 0, h - 1))
-
-    # Amplitude guess
-    if fixed_offset is not None:
-        amp_guess = float(max(img.max() - float(fixed_offset), np.finfo(np.float64).eps))
-    else:
-        amp_guess = float(max(img.max() - img.min(), np.finfo(np.float64).eps))
-
-    # Reasonable sigma guess
-    sx_guess = float(max(initial_sigma, 0.5))
-    sy_guess = float(max(initial_sigma, 0.5))
-
-    if fixed_offset is not None:
-        # 5-parameter model with fixed offset
-        def gaussian_2d_fixed_offset(xy, amplitude, x0, y0, sigma_x, sigma_y):
-            x, y = xy
-            return (amplitude * np.exp(-(((x - x0) ** 2) / (2.0 * sigma_x ** 2) +
-                                         ((y - y0) ** 2) / (2.0 * sigma_y ** 2))) + float(fixed_offset)).ravel()
-
-        initial_guess = (amp_guess, x0_guess, y0_guess, sx_guess, sy_guess)
-
-        # Bounds
-        amp_upper = max(img.max() - float(fixed_offset), np.finfo(np.float64).eps)
-        bounds = (
-            (0.0,       0.0,    0.0,   0.5, 0.5),            # lower
-            (amp_upper, w - 1,  h - 1, 2.0, 2.0),            # upper
-        )
-
-        try:
-            popt, pcov = curve_fit(
-                gaussian_2d_fixed_offset, (x, y), img.ravel(),
-                p0=initial_guess, bounds=bounds, maxfev=10000
-            )
-            params = {
-                "amplitude": float(popt[0]),
-                "x0": float(popt[1]),
-                "y0": float(popt[2]),
-                "sigma_x": float(popt[3]),
-                "sigma_y": float(popt[4]),
-                "offset": float(fixed_offset),
-            }
-            return params, pcov
-        except (RuntimeError, ValueError):
-            print("Gaussian fitting failed (fixed offset).")
-            return None, None
-
-    else:
-        # 6-parameter model with variable offset
-        offset_guess = float(img.min())
-
-        initial_guess = (amp_guess, x0_guess, y0_guess, sx_guess, sy_guess, offset_guess)
-
-        # Allow negative offsets; keep sigma and location bounded
-        bounds = (
-            (0.0,       0.0,    0.0,   0.5, 0.5, -np.inf),    # lower
-            (img.max(), w - 1,  h - 1, 5.0, 5.0,  np.inf),    # upper
-        )
-
-        try:
-            popt, pcov = curve_fit(
-                gaussian_2d, (x, y), img.ravel(),
-                p0=initial_guess, bounds=bounds, maxfev=10000
-            )
-            params = {
-                "amplitude": float(popt[0]),
-                "x0": float(popt[1]),
-                "y0": float(popt[2]),
-                "sigma_x": float(popt[3]),
-                "sigma_y": float(popt[4]),
-                "offset": float(popt[5]),
-            }
-            return params, pcov
-        except (RuntimeError, ValueError):
-            print("Gaussian fitting failed (variable offset).")
-            return None, None
 
 
 class MS2GeneExpressionProcessor:
@@ -475,7 +375,8 @@ class MS2GeneExpressionProcessor:
         )
 
         self.fit_gaussian_centers_list.append(
-            (gaussian_params['x0']+x1, gaussian_params['y0']+y1))
+            (int(gaussian_params['x0']+x1), int(gaussian_params['y0']+y1))
+        )
 
         return gaussian_params, covariance_matrix
 
@@ -821,8 +722,9 @@ if __name__ == "__main__":
         output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2_gene_estimation/',
         ransac_mad_k_th=1.0
     )
-    for id in range(0,50):
-        processor.process_cell(id)
+    processor.process_cell(10)
+    #for id in range(0,50):
+        #processor.process_cell(id)
     # ids = list(tracklets.keys())
     # num_rows = 80
     # initial_data = {'timepoints': np.arange(0, num_rows)}
