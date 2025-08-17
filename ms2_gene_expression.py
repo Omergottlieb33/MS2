@@ -5,6 +5,8 @@ from src.utils.gif_utils import create_gif_from_figures, create_trajectory_gif
 from src.utils.image_utils import load_czi_images
 from cell_tracking import get_masks_paths
 
+from findmaxima2d import find_maxima, find_local_maxima
+
 import os
 import json
 import argparse
@@ -119,7 +121,8 @@ class MS2GeneExpressionProcessor:
     def _pre_process(self, valid_timepoints):
         self._calculate_max_cell_intensity(valid_timepoints)
         # TODO: when there is nearly nos signal, no definitive center
-        self._find_cell_gaussian_inliers(valid_timepoints)
+        #self._find_cell_gaussian_inliers(valid_timepoints)
+        self._find_global_peaks(valid_timepoints)
 
     def _calculate_max_cell_intensity(self, valid_timepoints):
         """
@@ -219,6 +222,16 @@ class MS2GeneExpressionProcessor:
             plot_gaussian_initial_guess(
                 peaks_array, self.inliers_ransac, output_path=f"{self.output_dir}/gaussian_initial_guess_{self.cell_id}_mad_k_{self.ransac_mad_k_th}.png")
 
+    def _find_global_peaks(self, timepoints):
+        self.df_peaks = pd.DataFrame(columns=['frame','x','y'])
+        for timepoint in tqdm(timepoints, desc="Finding global peaks"):
+            z_stack, ms2_stack, masks, ms2_projection = self._load_data_at_timepoint(
+                timepoint)
+            local_max = find_local_maxima(ms2_projection)
+            y, x, regs = find_maxima(ms2_projection, local_max, 15)
+            frame_df = pd.DataFrame({'frame': timepoint, 'x': x, 'y': y})
+            self.df_peaks = pd.concat([self.df_peaks, frame_df], ignore_index=True)
+
     def _process_single_timepoint(self, timepoint):
         """
         Process MS2 gene expression for a single timepoint.
@@ -237,13 +250,11 @@ class MS2GeneExpressionProcessor:
         self.current_cell_mask_projection = (
             self.current_cell_mask_projection > 0).astype(np.uint8)
         # Fit Gaussian to MS2 signal
-        gaussian_params, covariance_matrix = self._fit_gaussian_to_ms2_signal(
+        gaussian_params, covariance_matrix = self._fit_gaussian_to_ms2_signal_global_peaks(
             cell_mask_3d, ms2_projection, timepoint
         )
-        cov_err = np.diag(covariance_matrix)
+        # cov_err = np.diag(covariance_matrix)
         self.gaussian_fit_params.append(gaussian_params)
-        if timepoint in [1,16,52]:
-            print('debug')
         if gaussian_params is not None:
             vals, ellipse_sum = self.sum_pixels_in_sigma_ellipse(gaussian_params,k=3, subtract_offset=False, clip_negative=True)
             intensity = gaussian_params['amplitude']*2*np.pi*gaussian_params['sigma_x']*gaussian_params['sigma_y']
@@ -300,6 +311,35 @@ class MS2GeneExpressionProcessor:
         forward_idx = int(idx + 1 + fwd_rel[0]) if fwd_rel.size else None
 
         return backward_idx, forward_idx
+    
+    def _fit_gaussian_to_ms2_signal_global_peaks(self, cell_mask_3d, ms2_projection, timepoint):
+        # get peaks in frame
+        frame_df = self.df_peaks[self.df_peaks['frame']== timepoint]
+        x = frame_df['x'].to_numpy()
+        y = frame_df['y'].to_numpy()
+        pts = np.array(list(zip(x, y)))
+        # Get bounding box
+        z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+        self.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
+        idx = np.where((pts[:, 0] >= x1) & (pts[:, 0] < x2) & (pts[:, 1] >= y1) & (pts[:, 1] < y2))[0]
+        #TODO: deal with more than one peak inside cell
+        if idx.size == 0:
+            return None, None
+        print('debug')
+        initial_center = (0, 0)
+        offset = estimate_background_offset_annulus(
+            self.current_cell_bbox_ms2, initial_center
+        )
+        # Fit Gaussian
+        gaussian_params, covariance_matrix = estimate_emitter_2d_gaussian_with_fixed_offset(
+            self.current_cell_bbox_ms2, initial_center, fixed_offset=offset
+        )
+
+        self.fit_gaussian_centers_list.append(
+            (int(gaussian_params['x0']+x1), int(gaussian_params['y0']+y1))
+        )
+
+        return gaussian_params, covariance_matrix
 
     def _fit_gaussian_to_ms2_signal(self, cell_mask_3d, ms2_projection, timepoint):
         """
@@ -317,7 +357,6 @@ class MS2GeneExpressionProcessor:
         z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
         self.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
         row_t = self.guessed_gaussian_df.iloc[timepoint]
-        #debug
         # condition for dealing with inliers and outlier peaks from RANSAC step
         if row_t['is_inlier'] or timepoint == len(self.guessed_gaussian_df) - 1:
             initial_center = (row_t['peak_x'], row_t['peak_y'])
@@ -719,10 +758,10 @@ if __name__ == "__main__":
         image_data=image_data,
         masks_paths=masks_paths,
         ms2_z_projections=ms2_z_projections,
-        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2_gene_estimation/',
+        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v3_gene_estimation/',
         ransac_mad_k_th=1.0
     )
-    processor.process_cell(10)
+    processor.process_cell(6)
     #for id in range(0,50):
         #processor.process_cell(id)
     # ids = list(tracklets.keys())
