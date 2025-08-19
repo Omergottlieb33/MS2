@@ -1,20 +1,21 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from scipy.ndimage import binary_erosion
+from scipy.ndimage import binary_erosion, binary_dilation
 from skimage.feature import peak_local_max
 from scipy import ndimage
 from findmaxima2d import find_maxima, find_local_maxima
+import matplotlib.pyplot as plt
 
 from src.utils.cell_utils import (
     get_3d_bounding_box_corners,
     estimate_emitter_2d_gaussian_with_fixed_offset,
     estimate_background_offset_annulus,
-    filter_ransac_poly,
+    filter_ransac_poly,calculate_center_of_mass_3d
 )
 
 
-def get_indices_in_mask(coordinates: np.ndarray, cell_mask: np.ndarray, remove_outline: bool = False) -> np.ndarray:
+def get_indices_in_mask(coordinates: np.ndarray, cell_mask: np.ndarray, remove_outline: bool = False, expand_pixels: int = 2) -> np.ndarray:
     """
     Finds the indices of coordinates that are inside a boolean cell mask.
     Optionally removes the outline (outermost pixel layer) of the mask first.
@@ -46,6 +47,9 @@ def get_indices_in_mask(coordinates: np.ndarray, cell_mask: np.ndarray, remove_o
         processed_mask = binary_erosion(cell_mask)
     else:
         processed_mask = cell_mask
+    
+    if expand_pixels and expand_pixels > 0:
+        processed_mask = binary_dilation(processed_mask, iterations=expand_pixels)
 
     # --- Coordinate Processing ---
     # Round coordinates to the nearest integer to use them as indices.
@@ -117,27 +121,35 @@ class GlobalPeakStrategy(PeakStrategy):
         self.init()
 
     def init(self):
-        self.df = pd.DataFrame(columns=['frame', 'x', 'y', 'timepoint', 'intensity'])
+        self.df = pd.DataFrame(columns=['timepoint', 'x', 'y', 'intensity'])
         for timepoint in tqdm(range(self.ms2_z_projections.shape[0]), desc="Finding global peaks"):
             local_max = find_local_maxima(self.ms2_z_projections[timepoint])
             y, x, regs = find_maxima(
                 self.ms2_z_projections[timepoint], local_max, self.prominence)
             frame_df = pd.DataFrame(
-                {'frame': timepoint, 'x': x, 'y': y, 'intensity': self.ms2_z_projections[timepoint][y, x]})
+                {'timepoint': timepoint, 'x': x, 'y': y, 'intensity': self.ms2_z_projections[timepoint][y, x]})
             self.df = pd.concat([self.df, frame_df], ignore_index=True)
 
     def pre_process_cell(self, processor, valid_timepoints):
-        processor.cell_df = pd.DataFrame(columns=['timepoint', 'x', 'y'])
+        # Include future gaussian param columns (they will be filled later)
+        processor.cell_df = pd.DataFrame(columns=[
+            'timepoint', 'x', 'y', 'intensity','dist_to_center','angle_to_center',
+            'is_inlier', 'gauss_x0', 'gauss_y0', 'gauss_sigma_x',
+            'gauss_sigma_y', 'gauss_theta', 'gauss_amplitude', 'gauss_offset'
+        ])
         peak_coordinates_list = []
-
+        peak_center_dist_angle = []
         for timepoint in valid_timepoints:
             # Load data
             _, _, masks, ms2_projection = processor._load_data_at_timepoint(timepoint)
             cell_label = processor.cell_labels_by_timepoint[timepoint]
             cell_mask_3d = (masks == cell_label).astype(np.uint8)
-            processor.current_cell_mask_projection = (np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
+            center = calculate_center_of_mass_3d(cell_mask_3d)
+            center = np.array((center[0], center[1]))
+            z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+            current_cell_mask_projection = (np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
 
-            frame_df = self.df[self.df['frame'] == timepoint]
+            frame_df = self.df[self.df['timepoint'] == timepoint]
             if frame_df.empty:
                 continue
             x = frame_df['x'].to_numpy()
@@ -145,7 +157,7 @@ class GlobalPeakStrategy(PeakStrategy):
             pts = np.vstack((x, y)).T
 
             # restrict to cell mask
-            current_cell_mask_projection = processor.current_cell_mask_projection.astype(bool)
+            current_cell_mask_projection = current_cell_mask_projection.astype(bool)
             idx = get_indices_in_mask(pts, current_cell_mask_projection, False)
             if idx.size == 0:
                 continue
@@ -156,25 +168,51 @@ class GlobalPeakStrategy(PeakStrategy):
             processor.cell_df.loc[len(processor.cell_df)] = {
                 'timepoint': timepoint,
                 'x': peak_x,
-                'y': peak_y
+                'y': peak_y,
+                'intensity': ms2_projection[peak_y, peak_x],
+                'dist_to_center': np.linalg.norm(np.array([peak_x, peak_y]) - center),
+                'angle_to_center': np.arctan2(peak_y - center[1], peak_x - center[0]),
+                'is_inlier': None,
+                'gauss_x0': None,
+                'gauss_y0': None,
+                'gauss_sigma_x': None,
+                'gauss_sigma_y': None,
+                'gauss_theta': None,
+                'gauss_amplitude': None,
+                'gauss_offset': None
             }
             # normalized (within cell bbox will be recomputed per frame)
             # Use simple dimension normalization (avoid bbox for global strategy)
-            h, w = ms2_projection.shape
-            peak_coordinates_list.append((peak_x / w, peak_y / h))
-
-        if len(peak_coordinates_list):
-            peaks_array = np.array(peak_coordinates_list)
+            h, w = ms2_projection[y1:y2, x1:x2].shape
+            peak_coordinates_list.append(((peak_x-x1) / w, (peak_y-y1) / h))
+            peak_center_dist_angle.append((np.linalg.norm(np.array([peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
+        # if len(peak_coordinates_list):
+        #     peaks_array = np.array(peak_coordinates_list)
+        #     inliers_ransac, mask_ransac, _ = filter_ransac_poly(
+        #         peaks_array, degree=2, residual_threshold=2.0, mad_k=processor.ransac_mad_k_th
+        #     )
+        #     processor.cell_df['is_inlier'] = pd.Series(mask_ransac, index=processor.cell_df.index).astype(bool)
+        #     if processor.plot:
+        #         from src.utils.plot_utils import plot_gaussian_initial_guess
+        #         plot_gaussian_initial_guess(
+        #             peaks_array,
+        #             inliers_ransac,
+        #             output_path=f"{processor.output_dir}/cell_{processor.cell_id}__mad_k_{processor.ransac_mad_k_th}_position.png"
+        #         )
+        if len(peak_center_dist_angle):
+            peak_center_dist_angle_array = np.array(peak_center_dist_angle)
             inliers_ransac, mask_ransac, _ = filter_ransac_poly(
-                peaks_array, degree=2, residual_threshold=2.0, mad_k=processor.ransac_mad_k_th
+                peak_center_dist_angle_array, degree=3, residual_threshold=2.5, mad_k=processor.ransac_mad_k_th
             )
             processor.cell_df['is_inlier'] = pd.Series(mask_ransac, index=processor.cell_df.index).astype(bool)
+            processor.cell_df['dist_to_center'] = peak_center_dist_angle_array[:, 0]
+            processor.cell_df['angle_to_center'] = peak_center_dist_angle_array[:, 1]
             if processor.plot:
                 from src.utils.plot_utils import plot_gaussian_initial_guess
                 plot_gaussian_initial_guess(
-                    peaks_array,
+                    peak_center_dist_angle_array,
                     inliers_ransac,
-                    output_path=f"{processor.output_dir}/gaussian_initial_guess_{processor.cell_id}_mad_k_{processor.ransac_mad_k_th}.png"
+                    output_path=f"{processor.output_dir}/cell_{processor.cell_id}_gaussian_initial_guess_mad_k_{processor.ransac_mad_k_th}_center_dist_angle.png"
                 )
         else:
             processor.cell_df['is_inlier'] = pd.Series(dtype=bool)
@@ -184,26 +222,37 @@ class GlobalPeakStrategy(PeakStrategy):
     def fit_timepoint(self, processor, timepoint, cell_mask_3d, ms2_projection):
         z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
         processor.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
-
         # locate peak for this frame
         row_match = processor.cell_df[processor.cell_df['timepoint'] == timepoint]
+        frame_df = self.df[self.df['timepoint'] == timepoint]
         if row_match.empty:
             processor.cell_initial_center.append((0, 0))
             return None, None, (0, 0)
-
-        row = row_match.iloc[0]
-        initial_center = (row['x'] - x1, row['y'] - y1)
-        processor.cell_initial_center.append(initial_center)
+        else:
+            row = row_match.iloc[0]
+            initial_center = (row['x'] - x1, row['y'] - y1)
+            processor.cell_initial_center.append(initial_center)
 
         offset = estimate_background_offset_annulus(
             processor.current_cell_bbox_ms2, initial_center
         )
         gaussian_params, covariance_matrix = estimate_emitter_2d_gaussian_with_fixed_offset(
-            processor.current_cell_bbox_ms2, initial_center, fixed_offset=offset
+            processor.current_cell_bbox_ms2, initial_center, initial_sigma=0.5, fixed_offset=offset
         )
         processor.fit_gaussian_centers_list.append(
             (int(gaussian_params['x0'] + x1), int(gaussian_params['y0'] + y1))
         )
+
+        # --- NEW: store fitted gaussian parameters in cell_df ---
+        idx = row_match.index[0]
+        processor.cell_df.loc[idx, 'gauss_x0'] = gaussian_params.get('x0', np.nan) + x1
+        processor.cell_df.loc[idx, 'gauss_y0'] = gaussian_params.get('y0', np.nan) + y1
+        processor.cell_df.loc[idx, 'gauss_sigma_x'] = gaussian_params.get('sigma_x', np.nan)
+        processor.cell_df.loc[idx, 'gauss_sigma_y'] = gaussian_params.get('sigma_y', np.nan)
+        processor.cell_df.loc[idx, 'gauss_theta'] = gaussian_params.get('theta', np.nan)
+        processor.cell_df.loc[idx, 'gauss_amplitude'] = gaussian_params.get('amplitude', np.nan)
+        processor.cell_df.loc[idx, 'gauss_offset'] = gaussian_params.get('offset', offset)
+
         return gaussian_params, covariance_matrix, initial_center
 
 

@@ -151,8 +151,7 @@ class MS2GeneExpressionProcessor:
         self.visualizer = MS2VisualizationManager(output_dir, enabled=plot)
         # Initialize processing state variables
         self._reset_processing_state()
-        # helper to allow strategy access to mask filtering
-        #self.get_indices_in_mask_fn = get_indices_in_mask
+        self.strategy = self._build_strategy()
 
     def set_strategy(self, strategy: str):
         self.strategy_name = strategy
@@ -185,7 +184,7 @@ class MS2GeneExpressionProcessor:
         self.fit_gaussian_centers_list = []
         self.gaussian_fit_params = []
         self.cell_initial_center = []
-        self.cell_df = pd.DataFrame(columns=['timepoint', 'x', 'y'])
+        self.cell_df = pd.DataFrame(columns=['timepoint', 'x', 'y', 'intensity'])
 
     def process_cell(self, cell_id, method: str | None = None):
         method = method or self.strategy_name
@@ -207,7 +206,7 @@ class MS2GeneExpressionProcessor:
 
         # build and run strategy pre-process
         self.strategy_name = method
-        self.strategy = self._build_strategy()
+
         self.strategy.pre_process_cell(self, valid_timepoints)
 
         # init visualizer for cell
@@ -221,7 +220,9 @@ class MS2GeneExpressionProcessor:
             self.visualizer.save_timepoint_animation(
                 self.cell_id, valid_timepoints, self.ransac_mad_k_th)
             self.visualizer.expression_plot(
-                self.cell_id, self.expression_amplitudes2, self.expression_amplitudes)
+                self.cell_id, self.expression_amplitudes2, 'Ellipse_sum')
+            self.visualizer.expression_plot(
+                self.cell_id, self.expression_amplitudes, 'Gaussian_Integral')
 
         if method == 'global' and hasattr(self, 'cell_df'):
             self.cell_df.to_csv(
@@ -283,17 +284,19 @@ class MS2GeneExpressionProcessor:
             timepoint)
         cell_label = self.cell_labels_by_timepoint[timepoint]
         cell_mask_3d = (masks == cell_label).astype(np.uint8)
-        self.current_cell_mask_projection = (
+        center = calculate_center_of_mass_3d(cell_mask_3d)
+        if center is not None:
+            self.cell_center_of_mass.append(center)
+        current_cell_mask_projection = (
             np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
 
         gaussian_params, covariance_matrix, peak_xy = self.strategy.fit_timepoint(
             self, timepoint, cell_mask_3d, ms2_projection
         )
         self.gaussian_fit_params.append(gaussian_params)
-
         if gaussian_params is not None:
             _, ellipse_sum = self.sum_pixels_in_sigma_ellipse(
-                gaussian_params, k=3, subtract_offset=False, clip_negative=True
+                gaussian_params, k=2, subtract_offset=True, clip_negative=True, pct_floor=0.85
             )
             intensity = gaussian_params['amplitude'] * 2 * np.pi * \
                 gaussian_params['sigma_x'] * gaussian_params['sigma_y']
@@ -309,7 +312,7 @@ class MS2GeneExpressionProcessor:
             self.visualizer.add_timepoint(
                 timepoint=timepoint,
                 ms2_projection=ms2_projection,
-                cell_mask_projection_2d=self.current_cell_mask_projection,
+                cell_mask_projection_2d=current_cell_mask_projection,
                 cell_bbox_ms2=self.current_cell_bbox_ms2,
                 bbox_coords=(z1, y1, x1, z2, y2, x2),
                 gaussian_params=gaussian_params,
@@ -322,9 +325,7 @@ class MS2GeneExpressionProcessor:
                 cell_label=cell_label
             )
 
-        center = calculate_center_of_mass_3d(cell_mask_3d)
-        if center is not None:
-            self.cell_center_of_mass.append(center)
+        
 
     def _load_data_at_timepoint(self, timepoint):
         z_stack = self.image_data[0, timepoint, 1, :, :, :, 0]
@@ -333,7 +334,15 @@ class MS2GeneExpressionProcessor:
         ms2_projection = self.ms2_z_projections[timepoint]
         return z_stack, ms2_stack, masks, ms2_projection
 
-    def sum_pixels_in_sigma_ellipse(self, gaussian_params, image_region=None, k=1.0, subtract_offset=False, clip_negative=True):
+    def sum_pixels_in_sigma_ellipse(self, gaussian_params,
+                                    image_region=None,
+                                    k=1.0,
+                                    subtract_offset=False,
+                                    clip_negative=True,
+                                    k_bg=3.0,
+                                    k_sigma=3.5,
+                                    pct_floor=0.88
+                                    ):
         """
         Sum pixel intensities inside the ellipse centered at (x0, y0) with semi-axes
         k*sigma_x and k*sigma_y (aligned with image axes).
@@ -372,8 +381,9 @@ class MS2GeneExpressionProcessor:
         ellipse_mask = ((X - x0) ** 2) / a2 + ((Y - y0) ** 2) / b2 <= 1.0
 
         # Normalized radial distance in σ units
+        # Annulus mask is confined in the bbox around cell contour
         r = np.sqrt(((X - x0) / sx) ** 2 + ((Y - y0) / sy) ** 2)
-        annulus_mask = (r >= 3.0) & (r <= 6.0)
+        annulus_mask = (r >= k_bg) & (r <= 2*k_bg)
 
         vals = img[ellipse_mask].astype(np.float64, copy=False)
         annulus_vals = img[annulus_mask].astype(np.float64, copy=False)
@@ -385,9 +395,23 @@ class MS2GeneExpressionProcessor:
             if clip_negative:
                 vals = np.clip(vals, 0.0, None)
                 annulus_vals = np.clip(annulus_vals, 0.0, None)
-        annulus_mean = np.mean(annulus_vals) if annulus_vals.size else 0.0
+         # Robust background stats
+        if annulus_vals.size:
+            bg_median = np.median(annulus_vals)
+            bg_mad = np.median(np.abs(annulus_vals - bg_median))
+            bg_sigma = 1.4826 * bg_mad if bg_mad > 0 else (np.std(annulus_vals) if annulus_vals.size > 1 else 1.0)
+        else:
+            bg_median, bg_sigma = (np.median(vals) if vals.size else 0.0, np.std(vals) if vals.size > 1 else 1.0)
+
+        # Percentile floor inside ellipse (prevents threshold too low)
+        pct_thr = np.percentile(vals, pct_floor * 100) if vals.size else 0.0
+
+        # Base robust threshold
+        thr_robust = bg_median + k_sigma * bg_sigma
+        threshold = max(thr_robust, pct_thr)
+
         # threshold = np.median(annulus_vals) if annulus_vals.size else 0.0
-        threshold = np.percentile(vals, 99) if vals.size else 0.0
+        threshold_naive = np.percentile(vals, 99) if vals.size else 0.0
 
         intensity = sum(vals[vals >= threshold])
 
@@ -435,11 +459,16 @@ if __name__ == "__main__":
         image_data=image_data,
         masks_paths=masks_paths,
         ms2_z_projections=ms2_z_projections,
-        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2/refactor/global_peaks/',
-        ransac_mad_k_th=1.0
+        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2/enlarge_mask_for_match/',
+        ransac_mad_k_th=2.0
     )
     # debug cell
-    processor.process_cell(0, method='local')
+    processor.process_cell(0, method='global')
+    # processor.process_cell(1, method='global')
+    # processor.process_cell(6, method='global')
+    # processor.process_cell(7, method='global')
+    # processor.process_cell(10, method='global')
+    
     # for id in range(0,10):
     #     processor.process_cell(id, 'global')
     # for id in range(0, 20):

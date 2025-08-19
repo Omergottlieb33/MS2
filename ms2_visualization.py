@@ -19,9 +19,10 @@ class MS2VisualizationManager:
     The processor pushes data here; this class is stateless w.r.t. computation.
     """
 
-    def __init__(self, output_dir: str, enabled: bool = True):
+    def __init__(self, output_dir: str, enabled: bool = True, pad=5):
         self.output_dir = output_dir
         self.enabled = enabled
+        self.pad = pad
         os.makedirs(self.output_dir, exist_ok=True)
         self._reset()
 
@@ -63,24 +64,25 @@ class MS2VisualizationManager:
         ax_img = fig.add_subplot(1, 2, 1)
         ax_3d = fig.add_subplot(1, 2, 2, projection='3d')
 
+        pad = 2
         # Region crop
-        ms2_region = ms2_projection[y1:y2, x1:x2]
+        ms2_region = ms2_projection[y1-pad:y2+pad, x1-pad:x2+pad]
 
         # Outline
         cell_binary = (cell_mask_projection_2d > 0).astype(np.uint8)
         cell_outline = cell_binary - ndimage.binary_erosion(cell_binary)
         outline_rgba = np.zeros((*cell_binary.shape, 4))
         outline_rgba[cell_outline == 1] = [0, 1, 0, 1]
-        outline_region = outline_rgba[y1:y2, x1:x2]
+        outline_region = outline_rgba[y1-pad:y2+pad, x1-pad:x2+pad]
 
         ax_img.imshow(ms2_region, cmap='gray', vmin=0, vmax=np.max(ms2_projection))
         ax_img.imshow(outline_region, alpha=0.25)
 
         # Gaussian center + σ ellipses
-        if gaussian_params:
+        if gaussian_params is not None:
             ax_img.plot(
-                gaussian_params['x0'],
-                gaussian_params['y0'],
+                gaussian_params['x0']+pad,
+                gaussian_params['y0']+pad,
                 marker='o',
                 markersize=4,
                 markerfacecolor='blue',
@@ -89,7 +91,7 @@ class MS2VisualizationManager:
             )
             for k, color, lw in [(1, 'yellow', 1.0), (2, 'orange', 1.0), (3, 'red', 1.2)]:
                 e = Ellipse(
-                    (gaussian_params['x0'], gaussian_params['y0']),
+                    (gaussian_params['x0']+pad, gaussian_params['y0']+pad),
                     width=2 * k * gaussian_params['sigma_x'],
                     height=2 * k * gaussian_params['sigma_y'],
                     angle=0.0,
@@ -103,7 +105,7 @@ class MS2VisualizationManager:
 
         if peak_xy and peak_xy != (0, 0):
             ax_img.plot(
-                peak_xy[0], peak_xy[1],
+                peak_xy[0]+pad, peak_xy[1]+pad,
                 marker='o', markersize=4,
                 markerfacecolor='red', markeredgecolor='black', linewidth=0
             )
@@ -112,7 +114,7 @@ class MS2VisualizationManager:
         ax_img.axis('off')
 
         # 3D Gaussian
-        if gaussian_params:
+        if gaussian_params is not None:
             h, w = cell_bbox_ms2.shape
             X, Y = np.meshgrid(np.arange(w), np.arange(h))
             Z = plot_2d_gaussian_with_size(
@@ -135,6 +137,14 @@ class MS2VisualizationManager:
             ax_3d.set_ylabel('y')
             ax_3d.set_zlabel('intensity')
             ax_3d.view_init(elev=30, azim=230)
+            # LaTeX Gaussian equation with current parameter values
+            ax_3d.set_title(
+                r'$G(x,y)=A e^{-\frac{(x-x_0)^2}{2\sigma_x^2}-\frac{(y-y_0)^2}{2\sigma_y^2}} + C$'
+                '\n'
+                rf'$A={gaussian_params["amplitude"]:.1f},\ x_0={gaussian_params["x0"]:.1f},\ y_0={gaussian_params["y0"]:.1f},\ '
+                rf'\sigma_x={gaussian_params["sigma_x"]:.2f},\ \sigma_y={gaussian_params["sigma_y"]:.2f},\ C={gaussian_params["offset"]:.1f}$',
+                fontsize=9, pad=10
+            )
         else:
             ax_3d.text2D(0.1, 0.5, 'Gaussian fit failed', transform=ax_3d.transAxes)
             ax_3d.set_axis_off()
@@ -166,22 +176,22 @@ class MS2VisualizationManager:
         titles = [f"Timepoint {t}" for t in valid_timepoints]
         create_gif_from_figures(self.segmentation_figures, out, fps=1, titles=titles)
 
-    def expression_plot(self, cell_id: int, ellipse_intensities, gaussian_intensities):
-        if not self.enabled or not ellipse_intensities:
+    def expression_plot(self, cell_id: int, intensities, title):
+        if not self.enabled or not intensities:
             return
-        t_axis = np.arange(len(ellipse_intensities)) + 1
-        amps = np.asarray(ellipse_intensities, dtype=float)
+        t_axis = np.arange(len(intensities))
+        amps = np.asarray(intensities, dtype=float)
 
         fig, ax = plt.subplots(1, 1, figsize=(8, 5))
         ax.plot(t_axis, amps, color='tab:blue', linewidth=0.8)
         ax.scatter(t_axis, amps, s=18, color='tab:blue', edgecolors='none', zorder=3)
-        ax.set_title("Intensity = sum in ellipse")
+        ax.set_title(title)
         ax.set_xlabel("Time [30*sec]")
         ax.set_ylabel("Emitter Intensity [AU]")
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         out = os.path.join(
-            self.output_dir, f"cell_{cell_id}_expression_plot_v3_global_maxima_finder.png"
+            self.output_dir, f"cell_{cell_id}_expression_plot_v3_global_maxima_finder_{title}.png"
         )
         plt.savefig(out, dpi=300, bbox_inches='tight')
         plt.close()

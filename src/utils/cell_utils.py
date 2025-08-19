@@ -337,7 +337,7 @@ def estimate_emitter_2d_gaussian_with_fixed_offset(image, initial_position, init
         amp_upper = max(img.max() - float(fixed_offset), np.finfo(np.float64).eps)
         bounds = (
             (0.0,       0.0,    0.0,   0.5, 0.5),            # lower
-            (amp_upper, w - 1,  h - 1, 2.0, 2.0),            # upper
+            (amp_upper, w - 1,  h - 1, 1.0, 1.0),            # upper
         )
 
         try:
@@ -367,7 +367,7 @@ def estimate_emitter_2d_gaussian_with_fixed_offset(image, initial_position, init
         # Allow negative offsets; keep sigma and location bounded
         bounds = (
             (0.0,       0.0,    0.0,   0.5, 0.5, -np.inf),    # lower
-            (img.max(), w - 1,  h - 1, 5.0, 5.0,  np.inf),    # upper
+            (img.max(), w - 1,  h - 1, 1.0, 1.0,  np.inf),    # upper
         )
 
         try:
