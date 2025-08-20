@@ -11,7 +11,7 @@ from src.utils.cell_utils import (
     get_3d_bounding_box_corners,
     estimate_emitter_2d_gaussian_with_fixed_offset,
     estimate_background_offset_annulus,
-    filter_ransac_poly,calculate_center_of_mass_3d
+    filter_ransac_poly, calculate_center_of_mass_3d
 )
 
 
@@ -47,9 +47,10 @@ def get_indices_in_mask(coordinates: np.ndarray, cell_mask: np.ndarray, remove_o
         processed_mask = binary_erosion(cell_mask)
     else:
         processed_mask = cell_mask
-    
+
     if expand_pixels and expand_pixels > 0:
-        processed_mask = binary_dilation(processed_mask, iterations=expand_pixels)
+        processed_mask = binary_dilation(
+            processed_mask, iterations=expand_pixels)
 
     # --- Coordinate Processing ---
     # Round coordinates to the nearest integer to use them as indices.
@@ -98,6 +99,7 @@ def get_indices_in_mask(coordinates: np.ndarray, cell_mask: np.ndarray, remove_o
 
     return final_indices.astype(int)
 
+
 class PeakStrategy:
     """Interface for peak handling strategies."""
     name = "base"
@@ -133,7 +135,7 @@ class GlobalPeakStrategy(PeakStrategy):
     def pre_process_cell(self, processor, valid_timepoints):
         # Include future gaussian param columns (they will be filled later)
         processor.cell_df = pd.DataFrame(columns=[
-            'timepoint', 'x', 'y', 'intensity','dist_to_center','angle_to_center',
+            'timepoint', 'x', 'y', 'intensity', 'dist_to_center', 'angle_to_center',
             'is_inlier', 'gauss_x0', 'gauss_y0', 'gauss_sigma_x',
             'gauss_sigma_y', 'gauss_theta', 'gauss_amplitude', 'gauss_offset'
         ])
@@ -141,13 +143,15 @@ class GlobalPeakStrategy(PeakStrategy):
         peak_center_dist_angle = []
         for timepoint in valid_timepoints:
             # Load data
-            _, _, masks, ms2_projection = processor._load_data_at_timepoint(timepoint)
+            _, _, masks, ms2_projection = processor._load_data_at_timepoint(
+                timepoint)
             cell_label = processor.cell_labels_by_timepoint[timepoint]
             cell_mask_3d = (masks == cell_label).astype(np.uint8)
             center = calculate_center_of_mass_3d(cell_mask_3d)
             center = np.array((center[0], center[1]))
             z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
-            current_cell_mask_projection = (np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
+            current_cell_mask_projection = (
+                np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
 
             frame_df = self.df[self.df['timepoint'] == timepoint]
             if frame_df.empty:
@@ -157,12 +161,14 @@ class GlobalPeakStrategy(PeakStrategy):
             pts = np.vstack((x, y)).T
 
             # restrict to cell mask
-            current_cell_mask_projection = current_cell_mask_projection.astype(bool)
+            current_cell_mask_projection = current_cell_mask_projection.astype(
+                bool)
             idx = get_indices_in_mask(pts, current_cell_mask_projection, False)
             if idx.size == 0:
                 continue
             relevant_pts = pts[idx].astype(int)
-            intensities = ms2_projection[relevant_pts[:, 1], relevant_pts[:, 0]]
+            intensities = ms2_projection[relevant_pts[:,
+                                                      1], relevant_pts[:, 0]]
             best_local = idx[np.argmax(intensities)]
             peak_x, peak_y = pts[best_local]
             processor.cell_df.loc[len(processor.cell_df)] = {
@@ -185,26 +191,17 @@ class GlobalPeakStrategy(PeakStrategy):
             # Use simple dimension normalization (avoid bbox for global strategy)
             h, w = ms2_projection[y1:y2, x1:x2].shape
             peak_coordinates_list.append(((peak_x-x1) / w, (peak_y-y1) / h))
-            peak_center_dist_angle.append((np.linalg.norm(np.array([peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
-        # if len(peak_coordinates_list):
-        #     peaks_array = np.array(peak_coordinates_list)
-        #     inliers_ransac, mask_ransac, _ = filter_ransac_poly(
-        #         peaks_array, degree=2, residual_threshold=2.0, mad_k=processor.ransac_mad_k_th
-        #     )
-        #     processor.cell_df['is_inlier'] = pd.Series(mask_ransac, index=processor.cell_df.index).astype(bool)
-        #     if processor.plot:
-        #         from src.utils.plot_utils import plot_gaussian_initial_guess
-        #         plot_gaussian_initial_guess(
-        #             peaks_array,
-        #             inliers_ransac,
-        #             output_path=f"{processor.output_dir}/cell_{processor.cell_id}__mad_k_{processor.ransac_mad_k_th}_position.png"
-        #         )
+            peak_center_dist_angle.append((np.linalg.norm(np.array(
+                [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
+        self._outlier_removal_threshold(np.array(peak_center_dist_angle)[:, 1])
+        #TODO: debug angle distance clustering
         if len(peak_center_dist_angle):
             peak_center_dist_angle_array = np.array(peak_center_dist_angle)
             inliers_ransac, mask_ransac, _ = filter_ransac_poly(
                 peak_center_dist_angle_array, degree=3, residual_threshold=2.5, mad_k=processor.ransac_mad_k_th
             )
-            processor.cell_df['is_inlier'] = pd.Series(mask_ransac, index=processor.cell_df.index).astype(bool)
+            processor.cell_df['is_inlier'] = pd.Series(
+                mask_ransac, index=processor.cell_df.index).astype(bool)
             processor.cell_df['dist_to_center'] = peak_center_dist_angle_array[:, 0]
             processor.cell_df['angle_to_center'] = peak_center_dist_angle_array[:, 1]
             if processor.plot:
@@ -217,21 +214,30 @@ class GlobalPeakStrategy(PeakStrategy):
         else:
             processor.cell_df['is_inlier'] = pd.Series(dtype=bool)
 
-        processor.cell_initial_center = []  # keep same attribute for downstream compatibility
+        # keep same attribute for downstream compatibility
+        processor.cell_initial_center = []
+
+    def _outlier_removal_threshold(self, angles):
+        mean = np.mean(angles)
+        std = np.std(angles)
+        self.angle_outlier_threshold = [mean + 3 * std, mean - 3 * std]
 
     def fit_timepoint(self, processor, timepoint, cell_mask_3d, ms2_projection):
         z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
         processor.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
         # locate peak for this frame
         row_match = processor.cell_df[processor.cell_df['timepoint'] == timepoint]
-        frame_df = self.df[self.df['timepoint'] == timepoint]
         if row_match.empty:
             processor.cell_initial_center.append((0, 0))
             return None, None, (0, 0)
         else:
             row = row_match.iloc[0]
-            initial_center = (row['x'] - x1, row['y'] - y1)
-            processor.cell_initial_center.append(initial_center)
+            if row['angle_to_center'] > self.angle_outlier_threshold[0] or row['angle_to_center'] < self.angle_outlier_threshold[1]:
+                processor.cell_initial_center.append((0, 0))
+                return None, None, (0, 0)
+            else:
+                initial_center = (row['x'] - x1, row['y'] - y1)
+                processor.cell_initial_center.append(initial_center)
 
         offset = estimate_background_offset_annulus(
             processor.current_cell_bbox_ms2, initial_center
@@ -245,13 +251,20 @@ class GlobalPeakStrategy(PeakStrategy):
 
         # --- NEW: store fitted gaussian parameters in cell_df ---
         idx = row_match.index[0]
-        processor.cell_df.loc[idx, 'gauss_x0'] = gaussian_params.get('x0', np.nan) + x1
-        processor.cell_df.loc[idx, 'gauss_y0'] = gaussian_params.get('y0', np.nan) + y1
-        processor.cell_df.loc[idx, 'gauss_sigma_x'] = gaussian_params.get('sigma_x', np.nan)
-        processor.cell_df.loc[idx, 'gauss_sigma_y'] = gaussian_params.get('sigma_y', np.nan)
-        processor.cell_df.loc[idx, 'gauss_theta'] = gaussian_params.get('theta', np.nan)
-        processor.cell_df.loc[idx, 'gauss_amplitude'] = gaussian_params.get('amplitude', np.nan)
-        processor.cell_df.loc[idx, 'gauss_offset'] = gaussian_params.get('offset', offset)
+        processor.cell_df.loc[idx, 'gauss_x0'] = gaussian_params.get(
+            'x0', np.nan) + x1
+        processor.cell_df.loc[idx, 'gauss_y0'] = gaussian_params.get(
+            'y0', np.nan) + y1
+        processor.cell_df.loc[idx, 'gauss_sigma_x'] = gaussian_params.get(
+            'sigma_x', np.nan)
+        processor.cell_df.loc[idx, 'gauss_sigma_y'] = gaussian_params.get(
+            'sigma_y', np.nan)
+        processor.cell_df.loc[idx, 'gauss_theta'] = gaussian_params.get(
+            'theta', np.nan)
+        processor.cell_df.loc[idx, 'gauss_amplitude'] = gaussian_params.get(
+            'amplitude', np.nan)
+        processor.cell_df.loc[idx, 'gauss_offset'] = gaussian_params.get(
+            'offset', offset)
 
         return gaussian_params, covariance_matrix, initial_center
 
@@ -263,7 +276,8 @@ class LocalPeakStrategy(PeakStrategy):
         guessed = []
         records = []
         for timepoint in valid_timepoints:
-            z_stack, ms2_stack, masks, ms2_projection = processor._load_data_at_timepoint(timepoint)
+            z_stack, ms2_stack, masks, ms2_projection = processor._load_data_at_timepoint(
+                timepoint)
             cell_label = processor.cell_labels_by_timepoint[timepoint]
             cell_mask_3d = (masks == cell_label).astype(np.uint8)
             mask_proj = (np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
@@ -271,7 +285,8 @@ class LocalPeakStrategy(PeakStrategy):
             bbox = ms2_projection[y1:y2, x1:x2]
 
             # inside-mask restriction
-            masked = bbox * mask_proj[y1:y2, x1:x2].astype(ms2_projection.dtype)
+            masked = bbox * mask_proj[y1:y2,
+                                      x1:x2].astype(ms2_projection.dtype)
             peaks = peak_local_max(masked, num_peaks=1)
             if peaks.size == 0:
                 continue
@@ -284,7 +299,8 @@ class LocalPeakStrategy(PeakStrategy):
                 'cell_center_x': x1 + masked.shape[1] / 2,
                 'cell_center_y': y1 + masked.shape[0] / 2
             })
-            guessed.append((peak_x / masked.shape[1], peak_y / masked.shape[0]))
+            guessed.append(
+                (peak_x / masked.shape[1], peak_y / masked.shape[0]))
 
         processor.guessed_gaussian_df = pd.DataFrame(records)
         if not processor.guessed_gaussian_df.empty:
@@ -297,7 +313,8 @@ class LocalPeakStrategy(PeakStrategy):
             inliers_ransac, mask_ransac, _ = filter_ransac_poly(
                 peaks_array, degree=2, residual_threshold=2.0, mad_k=processor.ransac_mad_k_th
             )
-            df['is_inlier'] = pd.Series(mask_ransac, index=df.index).astype(bool)
+            df['is_inlier'] = pd.Series(
+                mask_ransac, index=df.index).astype(bool)
             processor.inlier_center = np.mean(inliers_ransac, axis=0)
             if processor.plot:
                 from src.utils.plot_utils import plot_gaussian_initial_guess
@@ -330,11 +347,13 @@ class LocalPeakStrategy(PeakStrategy):
         if row_t['is_inlier'] or row_idx == len(df) - 1:
             initial_center = (row_t['peak_x'], row_t['peak_y'])
         else:
-            backward_idx, forward_idx = self._closest_inlier_indices(df, row_idx)
+            backward_idx, forward_idx = self._closest_inlier_indices(
+                df, row_idx)
             if backward_idx is None and forward_idx is None:
                 initial_center = (row_t['peak_x'], row_t['peak_y'])
             else:
-                initial_center = self._predict_from_inliers(df, row_idx, backward_idx, forward_idx)
+                initial_center = self._predict_from_inliers(
+                    df, row_idx, backward_idx, forward_idx)
 
         offset = estimate_background_offset_annulus(
             processor.current_cell_bbox_ms2, initial_center
@@ -360,10 +379,13 @@ class LocalPeakStrategy(PeakStrategy):
 
     def _predict_from_inliers(self, df, idx, back, fwd):
         row_t = df.iloc[idx]
+
         def extrapolate(reference_idx, sign=1):
             r = df.iloc[reference_idx]
-            rel_x = r['peak_x'] + sign * r['diff_peak_x'] + sign * r['diff_x_center_cell']
-            rel_y = r['peak_y'] + sign * r['diff_peak_y'] + sign * r['diff_y_center_cell']
+            rel_x = r['peak_x'] + sign * r['diff_peak_x'] + \
+                sign * r['diff_x_center_cell']
+            rel_y = r['peak_y'] + sign * r['diff_peak_y'] + \
+                sign * r['diff_y_center_cell']
             return rel_x, rel_y
 
         if back is None:

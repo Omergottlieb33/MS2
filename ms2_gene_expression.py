@@ -184,7 +184,8 @@ class MS2GeneExpressionProcessor:
         self.fit_gaussian_centers_list = []
         self.gaussian_fit_params = []
         self.cell_initial_center = []
-        self.cell_df = pd.DataFrame(columns=['timepoint', 'x', 'y', 'intensity'])
+        self.cell_df = pd.DataFrame(
+            columns=['timepoint', 'x', 'y', 'intensity'])
 
     def process_cell(self, cell_id, method: str | None = None):
         method = method or self.strategy_name
@@ -237,6 +238,7 @@ class MS2GeneExpressionProcessor:
                              f"cell_{cell_id}_data_local_peaks.csv"),
                 index=False
             )
+        return self.expression_amplitudes2
 
     def _get_valid_timepoints(self):
         """Get timepoints where the cell is present (label != -1)."""
@@ -325,8 +327,6 @@ class MS2GeneExpressionProcessor:
                 cell_label=cell_label
             )
 
-        
-
     def _load_data_at_timepoint(self, timepoint):
         z_stack = self.image_data[0, timepoint, 1, :, :, :, 0]
         ms2_stack = self.image_data[0, timepoint, 0, :, :, :, 0]
@@ -399,9 +399,12 @@ class MS2GeneExpressionProcessor:
         if annulus_vals.size:
             bg_median = np.median(annulus_vals)
             bg_mad = np.median(np.abs(annulus_vals - bg_median))
-            bg_sigma = 1.4826 * bg_mad if bg_mad > 0 else (np.std(annulus_vals) if annulus_vals.size > 1 else 1.0)
+            bg_sigma = 1.4826 * \
+                bg_mad if bg_mad > 0 else (
+                    np.std(annulus_vals) if annulus_vals.size > 1 else 1.0)
         else:
-            bg_median, bg_sigma = (np.median(vals) if vals.size else 0.0, np.std(vals) if vals.size > 1 else 1.0)
+            bg_median, bg_sigma = (np.median(vals) if vals.size else 0.0, np.std(
+                vals) if vals.size > 1 else 1.0)
 
         # Percentile floor inside ellipse (prevents threshold too low)
         pct_thr = np.percentile(vals, pct_floor * 100) if vals.size else 0.0
@@ -409,9 +412,6 @@ class MS2GeneExpressionProcessor:
         # Base robust threshold
         thr_robust = bg_median + k_sigma * bg_sigma
         threshold = max(thr_robust, pct_thr)
-
-        # threshold = np.median(annulus_vals) if annulus_vals.size else 0.0
-        threshold_naive = np.percentile(vals, 99) if vals.size else 0.0
 
         intensity = sum(vals[vals >= threshold])
 
@@ -459,18 +459,29 @@ if __name__ == "__main__":
         image_data=image_data,
         masks_paths=masks_paths,
         ms2_z_projections=ms2_z_projections,
-        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2/enlarge_mask_for_match/',
+        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2/angle_filter/',
         ransac_mad_k_th=2.0
     )
-    # debug cell
-    processor.process_cell(0, method='global')
-    # processor.process_cell(1, method='global')
-    # processor.process_cell(6, method='global')
-    # processor.process_cell(7, method='global')
-    # processor.process_cell(10, method='global')
-    
-    # for id in range(0,10):
-    #     processor.process_cell(id, 'global')
+    num_timepoints = ms2_z_projections.shape[0]
+    expression_matrix = {
+        'timepoint': list(range(num_timepoints))
+    }
+    for cell_id in range(0,10):
+        amp = processor.process_cell(cell_id, 'global')
+         # Reconstruct full-length vector aligned to all timepoints
+        labels = tracklets[str(cell_id)]
+        full_series = [np.nan] * num_timepoints
+        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+
+        # Map returned amplitudes to their corresponding timepoints
+        for tp, amp in zip(valid_timepoints, amp):
+            full_series[tp] = amp
+
+        expression_matrix[f'cell_{cell_id}'] = full_series
+    df = pd.DataFrame(expression_matrix)
+    out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
+    df.to_csv(out_path, index=False)
+    print(f"Saved expression matrix to {out_path}")
     # for id in range(0, 20):
     #     processor.process_cell(id)
     # ids = list(tracklets.keys())
