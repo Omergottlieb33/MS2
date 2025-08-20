@@ -194,7 +194,7 @@ class GlobalPeakStrategy(PeakStrategy):
             peak_center_dist_angle.append((np.linalg.norm(np.array(
                 [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
         self._outlier_removal_threshold(np.array(peak_center_dist_angle)[:, 1])
-        #TODO: debug angle distance clustering
+        #TODO: #3 debug angle distance clustering
         if len(peak_center_dist_angle):
             peak_center_dist_angle_array = np.array(peak_center_dist_angle)
             inliers_ransac, mask_ransac, _ = filter_ransac_poly(
@@ -227,6 +227,7 @@ class GlobalPeakStrategy(PeakStrategy):
         processor.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
         # locate peak for this frame
         row_match = processor.cell_df[processor.cell_df['timepoint'] == timepoint]
+        #TODO: #2 handle no detection between frames
         if row_match.empty:
             processor.cell_initial_center.append((0, 0))
             return None, None, (0, 0)
