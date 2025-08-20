@@ -1,5 +1,5 @@
-from gene_expression.ms2_visualization import MS2VisualizationManager
-from gene_expression.ms2_peak_strategies import GlobalPeakStrategy, LocalPeakStrategy
+from src.gene_expression.ms2_visualization import MS2VisualizationManager
+from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy, LocalPeakStrategy
 from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d, estimate_emitter_2d_gaussian_with_fixed_offset, filter_ransac_poly, estimate_background_offset_annulus
 from src.utils.image_utils import load_czi_images
 from cell_tracking import get_masks_paths
@@ -238,7 +238,7 @@ class MS2GeneExpressionProcessor:
                              f"cell_{cell_id}_data_local_peaks.csv"),
                 index=False
             )
-        return self.expression_amplitudes2
+        return np.array(self.expression_amplitudes2)
 
     def _get_valid_timepoints(self):
         """Get timepoints where the cell is present (label != -1)."""
@@ -469,8 +469,10 @@ if __name__ == "__main__":
         'timepoint': list(range(num_timepoints))
     }
     N = list(tracklets.keys())
-    for cell_id in N:
+    non_zero_min = []
+    for cell_id in range(0,25):
         amp = processor.process_cell(cell_id, 'global')
+        non_zero_min.append(np.min(amp[amp > 0]) if np.any(amp > 0) else np.nan)
          # Reconstruct full-length vector aligned to all timepoints
         labels = tracklets[str(cell_id)]
         full_series = [np.nan] * num_timepoints
@@ -481,7 +483,13 @@ if __name__ == "__main__":
             full_series[tp] = amp
 
         expression_matrix[f'cell_{cell_id}'] = full_series
+    noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
+    print(f"Noise level: {noise_level}")
     df = pd.DataFrame(expression_matrix)
+    # Replace zeros in cell columns with noise_level
+    cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    if noise_level is not None and cell_cols:
+        df[cell_cols] = df[cell_cols].replace(0, noise_level)
     out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
     df.to_csv(out_path, index=False)
     print(f"Saved expression matrix to {out_path}")
