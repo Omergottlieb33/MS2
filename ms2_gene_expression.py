@@ -1,5 +1,5 @@
-from ms2_visualization import MS2VisualizationManager
-from ms2_peak_strategies import GlobalPeakStrategy, LocalPeakStrategy
+from gene_expression.ms2_visualization import MS2VisualizationManager
+from gene_expression.ms2_peak_strategies import GlobalPeakStrategy, LocalPeakStrategy
 from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d, estimate_emitter_2d_gaussian_with_fixed_offset, filter_ransac_poly, estimate_background_offset_annulus
 from src.utils.image_utils import load_czi_images
 from cell_tracking import get_masks_paths
@@ -434,6 +434,8 @@ def parse_args():
                         help="Path to tracklet JSON file.")
     parser.add_argument("--ms2_filtered_z_projection", type=str, required=True,
                         help="Path to MS2 z-projected images (TIFF format).")
+    parser.add_argument("--output_dir", type=str, required=False, default='output',
+                        help="Path to the output directory.")
 
     return parser.parse_args()
 
@@ -459,14 +461,15 @@ if __name__ == "__main__":
         image_data=image_data,
         masks_paths=masks_paths,
         ms2_z_projections=ms2_z_projections,
-        output_dir='/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/v2/angle_filter/',
+        output_dir=args.output_dir,
         ransac_mad_k_th=2.0
     )
     num_timepoints = ms2_z_projections.shape[0]
     expression_matrix = {
         'timepoint': list(range(num_timepoints))
     }
-    for cell_id in range(0,10):
+    N = list(tracklets.keys())
+    for cell_id in N:
         amp = processor.process_cell(cell_id, 'global')
          # Reconstruct full-length vector aligned to all timepoints
         labels = tracklets[str(cell_id)]
@@ -482,18 +485,3 @@ if __name__ == "__main__":
     out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
     df.to_csv(out_path, index=False)
     print(f"Saved expression matrix to {out_path}")
-    # for id in range(0, 20):
-    #     processor.process_cell(id)
-    # ids = list(tracklets.keys())
-    # num_rows = 80
-    # initial_data = {'timepoints': np.arange(0, num_rows)}
-    # df = pd.DataFrame(initial_data)
-    # for cell_id in range(0, 50):
-    #     processor.process_cell(cell_id)
-    #     print(f"Finished processing cell {cell_id}")
-    #     if len(processor.expression_amplitudes) < num_rows:
-    #         processor.expression_amplitudes.extend([-1] * (num_rows - len(processor.expression_amplitudes)))  # Fill missing timepoints with -1
-
-    #     df[f'cell_{cell_id}'] = processor.expression_amplitudes
-    # df.to_csv(os.path.join(processor.output_dir, 'gene_expression_results.csv'), index=False)
-    # print(f"Gene expression results saved to {processor.output_dir}/gene_expression_results.csv")
