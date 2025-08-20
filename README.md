@@ -7,4 +7,4 @@ The following repository holds the infrastructure for cell and fluoroscent analy
 
 ## Method
 
-## Instalation
+## Installation
