@@ -127,7 +127,7 @@ class MS2GeneExpressionProcessor:
         for timepoint in tqdm(valid_timepoints, desc=f"Cell {cell_id}"):
             self._process_single_timepoint(timepoint)
 
-        self._save_plots_and_animations()
+        self._save_plots_and_animations(valid_timepoints)
         self._save_csv()
         return np.array(self.expression_amplitudes2)
 
@@ -312,7 +312,7 @@ class MS2GeneExpressionProcessor:
         """Backward compatibility wrapper for process_cell."""
         self.process_cell(cell_id)
 
-    def _save_plots_and_animations(self):
+    def _save_plots_and_animations(self, valid_timepoints):
         if self.plot['emitter_fit']:
             self.visualizer.save_timepoint_animation(
                 self.cell_id, valid_timepoints, self.ransac_mad_k_th)
@@ -323,7 +323,7 @@ class MS2GeneExpressionProcessor:
                 self.cell_id, self.expression_amplitudes, 'Gaussian_Integral')
         if self.plot['segmentation']:
             self.visualizer.save_segmentation_animation(
-                self.cell_id, valid_timepoints, self.ransac_mad_k_th)
+                self.cell_id, valid_timepoints)
     
     def _save_csv(self):
         if self.strategy_name == 'global' and hasattr(self, 'cell_df'):
@@ -383,32 +383,35 @@ if __name__ == "__main__":
         plot = {'emitter_fit':True,'intensity':True, 'segmentation':True},
         ransac_mad_k_th=2.0
     )
-    num_timepoints = ms2_z_projections.shape[0]
-    expression_matrix = {
-        'timepoint': list(range(num_timepoints))
-    }
-    N = list(tracklets.keys())
-    non_zero_min = []
-    for cell_id in range(0,25):
-        amp = processor.process_cell(cell_id, 'global')
-        non_zero_min.append(np.min(amp[amp > 0]) if np.any(amp > 0) else np.nan)
-         # Reconstruct full-length vector aligned to all timepoints
-        labels = tracklets[str(cell_id)]
-        full_series = [np.nan] * num_timepoints
-        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+    amp0 = processor.process_cell(2, 'global')
+    amp6 = processor.process_cell(3, 'global')
+    amp6 = processor.process_cell(9, 'global')
+    # num_timepoints = ms2_z_projections.shape[0]
+    # expression_matrix = {
+    #     'timepoint': list(range(num_timepoints))
+    # }
+    # N = list(tracklets.keys())
+    # non_zero_min = []
+    # for cell_id in range(0,25):
+    #     amp = processor.process_cell(cell_id, 'global')
+    #     non_zero_min.append(np.min(amp[amp > 0]) if np.any(amp > 0) else np.nan)
+    #      # Reconstruct full-length vector aligned to all timepoints
+    #     labels = tracklets[str(cell_id)]
+    #     full_series = [np.nan] * num_timepoints
+    #     valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
 
-        # Map returned amplitudes to their corresponding timepoints
-        for tp, amp in zip(valid_timepoints, amp):
-            full_series[tp] = amp
+    #     # Map returned amplitudes to their corresponding timepoints
+    #     for tp, amp in zip(valid_timepoints, amp):
+    #         full_series[tp] = amp
 
-        expression_matrix[f'cell_{cell_id}'] = full_series
-    noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
-    print(f"Noise level: {noise_level}")
-    df = pd.DataFrame(expression_matrix)
-    # Replace zeros in cell columns with noise_level
-    cell_cols = [c for c in df.columns if c.startswith('cell_')]
-    if noise_level is not None and cell_cols:
-        df[cell_cols] = df[cell_cols].replace(0, noise_level)
-    out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
-    df.to_csv(out_path, index=False)
-    print(f"Saved expression matrix to {out_path}")
+    #     expression_matrix[f'cell_{cell_id}'] = full_series
+    # noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
+    # print(f"Noise level: {noise_level}")
+    # df = pd.DataFrame(expression_matrix)
+    # # Replace zeros in cell columns with noise_level
+    # cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    # if noise_level is not None and cell_cols:
+    #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
+    # out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
+    # df.to_csv(out_path, index=False)
+    # print(f"Saved expression matrix to {out_path}")

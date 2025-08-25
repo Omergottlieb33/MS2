@@ -163,7 +163,8 @@ class GlobalPeakStrategy(PeakStrategy):
             # restrict to cell mask
             current_cell_mask_projection = current_cell_mask_projection.astype(
                 bool)
-            idx = get_indices_in_mask(pts, current_cell_mask_projection, False)
+            #TODO: add neighborhood mask consideration
+            idx = get_indices_in_mask(pts, current_cell_mask_projection, False, expand_pixels=0)
             if idx.size == 0:
                 continue
             relevant_pts = pts[idx].astype(int)
@@ -270,7 +271,7 @@ class GlobalPeakStrategy(PeakStrategy):
 
         return gaussian_params, covariance_matrix, initial_center
 
-
+### Deprecated
 class LocalPeakStrategy(PeakStrategy):
     name = "local"
 
