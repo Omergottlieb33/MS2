@@ -193,7 +193,7 @@ class GlobalPeakStrategy(PeakStrategy):
             peak_coordinates_list.append(((peak_x-x1) / w, (peak_y-y1) / h))
             peak_center_dist_angle.append((np.linalg.norm(np.array(
                 [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
-        self._outlier_removal_threshold(np.array(peak_center_dist_angle)[:, 1])
+        self._z_score_outlier_removal_thresholds(np.array(peak_center_dist_angle)[:, 1])
         #TODO: #3 debug angle distance clustering
         if len(peak_center_dist_angle):
             peak_center_dist_angle_array = np.array(peak_center_dist_angle)
@@ -217,7 +217,7 @@ class GlobalPeakStrategy(PeakStrategy):
         # keep same attribute for downstream compatibility
         processor.cell_initial_center = []
 
-    def _outlier_removal_threshold(self, angles):
+    def _z_score_outlier_removal_thresholds(self, angles):
         mean = np.mean(angles)
         std = np.std(angles)
         self.angle_outlier_threshold = [mean + 3 * std, mean - 3 * std]
@@ -233,6 +233,7 @@ class GlobalPeakStrategy(PeakStrategy):
             return None, None, (0, 0)
         else:
             row = row_match.iloc[0]
+            # Z score outlier removal condition
             if row['angle_to_center'] > self.angle_outlier_threshold[0] or row['angle_to_center'] < self.angle_outlier_threshold[1]:
                 processor.cell_initial_center.append((0, 0))
                 return None, None, (0, 0)
