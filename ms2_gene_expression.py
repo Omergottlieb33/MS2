@@ -1,5 +1,5 @@
 from src.gene_expression.ms2_visualization import MS2VisualizationManager
-from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy, LocalPeakStrategy
+from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
 from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d, estimate_emitter_2d_gaussian_with_fixed_offset, filter_ransac_poly, estimate_background_offset_annulus
 from src.utils.image_utils import load_czi_images
 from cell_tracking import get_masks_paths
@@ -33,7 +33,7 @@ class MS2GeneExpressionProcessor:
     within cell boundaries and tracks expression over time.
     """
 
-    def __init__(self, tracklets, czi_file_path, masks_paths, ms2_z_projections, output_dir='output', plot=None,
+    def __init__(self, tracklets, czi_file_path, masks_paths, ms2_background_removed, output_dir='output', plot=None,
                  ransac_mad_k_th=2, strategy: str | None = 'global'):
         """
         Initialize the MS2 gene expression processor.
@@ -42,13 +42,14 @@ class MS2GeneExpressionProcessor:
             tracklets (dict): Cell tracking data with cell IDs as keys
             czi_file_path (str): Path to the raw CZI image file.
             masks_paths (list): Paths to segmentation mask files
-            ms2_z_projections (np.ndarray): MS2 channel z-projected images
+            ms2_background_removed (np.ndarray): MS2 channel background removed images
             output_dir (str): Directory for saving output files
         """
         self.tracklets = tracklets
         self.czi_file_path = czi_file_path
         self.mask_file_paths = masks_paths
-        self.ms2_z_projections = ms2_z_projections
+        self.ms2_background_removed = ms2_background_removed
+        self.ms2_z_projections = self.ms2_background_removed.sum(axis=1) # Z projection
         self.output_dir = output_dir
         self.plot = plot
         self.ransac_mad_k_th = ransac_mad_k_th
@@ -84,8 +85,6 @@ class MS2GeneExpressionProcessor:
         if isinstance(self.strategy_name, str):
             if self.strategy_name == 'global':
                 return GlobalPeakStrategy(self.ms2_z_projections)
-            elif self.strategy_name == 'local':
-                return LocalPeakStrategy()
             else:
                 raise ValueError(f"Unknown strategy '{self.strategy_name}'")
         elif hasattr(self.strategy_name, "fit_timepoint"):
@@ -139,6 +138,8 @@ class MS2GeneExpressionProcessor:
             return
 
         self._calculate_max_cell_intensity(valid_timepoints)
+        # Match peaks to cell emitters
+        self.strategy.emitter_cell_matching(self, valid_timepoints)
 
         # build and run strategy pre-process
         self.strategy.pre_process_cell(self, valid_timepoints)
@@ -388,8 +389,8 @@ def parse_args():
                         help="Path to the segmentation maps directory.")
     parser.add_argument("--tracklets_path", type=str, required=True,
                         help="Path to tracklet JSON file.")
-    parser.add_argument("--ms2_filtered_z_projection", type=str, required=True,
-                        help="Path to MS2 z-projected images (TIFF format).")
+    parser.add_argument("--ms2_background_removed", type=str, required=True,
+                        help="Path to MS2 channel after background removal.")
     parser.add_argument("--output_dir", type=str, required=False, default='output',
                         help="Path to the output directory.")
 
@@ -404,7 +405,7 @@ if __name__ == "__main__":
         tracklets = json.load(f)
 
     # Load MS2 z-projections
-    ms2_z_projections = tifffile.imread(args.ms2_filtered_z_projection)
+    ms2_background_removed = tifffile.imread(args.ms2_background_removed)
 
     masks_paths = get_masks_paths(args.seg_maps_dir)
 
@@ -413,41 +414,41 @@ if __name__ == "__main__":
         tracklets=tracklets,
         czi_file_path=args.czi_file_path,
         masks_paths=masks_paths,
-        ms2_z_projections=ms2_z_projections,
+        ms2_background_removed=ms2_background_removed,
         output_dir=args.output_dir,
         plot = {'emitter_fit':True,'intensity':True, 'segmentation':False},
         ransac_mad_k_th=2.0
     )
     # Example: Process a specific cell  using 'global' strategy
-    #amp = processor.process_cell(26, 'global')
-    
-    num_timepoints = ms2_z_projections.shape[0]
-    expression_matrix = {
-        'timepoint': list(range(num_timepoints))
-    }
-    # process cells that have been tracked for all frames
-    valid_ids = [key for key, cell_labels in tracklets.items() if cell_labels.count(-1) < 2]
-    non_zero_min = []
-    for cell_id in valid_ids:
-        amp = processor.process_cell(cell_id, 'global')
-        non_zero_min.append(np.min(amp[amp > 0]) if np.any(amp > 0) else np.nan)
-         # Reconstruct full-length vector aligned to all timepoints
-        labels = tracklets[str(cell_id)]
-        full_series = [np.nan] * num_timepoints
-        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+    amp = processor.process_cell(3, 'global')
 
-        # Map returned amplitudes to their corresponding timepoints
-        for tp, amp in zip(valid_timepoints, amp):
-            full_series[tp] = amp
+    # num_timepoints = ms2_z_projections.shape[0]
+    # expression_matrix = {
+    #     'timepoint': list(range(num_timepoints))
+    # }
+    # # process cells that have been tracked for all frames
+    # valid_ids = [key for key, cell_labels in tracklets.items() if cell_labels.count(-1) < 2]
+    # non_zero_min = []
+    # for cell_id in valid_ids:
+    #     amp = processor.process_cell(cell_id, 'global')
+    #     non_zero_min.append(np.min(amp[amp > 0]) if np.any(amp > 0) else np.nan)
+    #      # Reconstruct full-length vector aligned to all timepoints
+    #     labels = tracklets[str(cell_id)]
+    #     full_series = [np.nan] * num_timepoints
+    #     valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
 
-        expression_matrix[f'cell_{cell_id}'] = full_series
-    noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
-    print(f"Noise level: {noise_level}")
-    df = pd.DataFrame(expression_matrix)
-    # Replace zeros in cell columns with noise_level
-    cell_cols = [c for c in df.columns if c.startswith('cell_')]
-    if noise_level is not None and cell_cols:
-        df[cell_cols] = df[cell_cols].replace(0, noise_level)
-    out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
-    df.to_csv(out_path, index=False)
-    print(f"Saved expression matrix to {out_path}")
+    #     # Map returned amplitudes to their corresponding timepoints
+    #     for tp, amp in zip(valid_timepoints, amp):
+    #         full_series[tp] = amp
+
+    #     expression_matrix[f'cell_{cell_id}'] = full_series
+    # noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
+    # print(f"Noise level: {noise_level}")
+    # df = pd.DataFrame(expression_matrix)
+    # # Replace zeros in cell columns with noise_level
+    # cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    # if noise_level is not None and cell_cols:
+    #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
+    # out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
+    # df.to_csv(out_path, index=False)
+    # print(f"Saved expression matrix to {out_path}")

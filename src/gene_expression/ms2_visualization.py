@@ -65,17 +65,25 @@ class MS2VisualizationManager:
         ax_3d = fig.add_subplot(1, 2, 2, projection='3d')
 
         pad = 2
-        # Region crop
-        ms2_region = ms2_projection[y1-pad:y2+pad, x1-pad:x2+pad]
+        # Safely crop the region with padding, ensuring we don't go out of bounds.
+        h_full, w_full = ms2_projection.shape
+        y_start = max(0, y1 - pad)
+        y_end = min(h_full, y2 + pad)
+        x_start = max(0, x1 - pad)
+        x_end = min(w_full, x2 + pad)
+        ms2_region = ms2_projection[y_start:y_end, x_start:x_end]
 
         # Outline
         cell_binary = (cell_mask_projection_2d > 0).astype(np.uint8)
         cell_outline = cell_binary - ndimage.binary_erosion(cell_binary)
         outline_rgba = np.zeros((*cell_binary.shape, 4))
         outline_rgba[cell_outline == 1] = [0, 1, 0, 1]
-        outline_region = outline_rgba[y1-pad:y2+pad, x1-pad:x2+pad]
+        outline_region = outline_rgba[y_start:y_end, x_start:x_end]
 
-        ax_img.imshow(ms2_region, cmap='gray', vmin=0, vmax=np.max(ms2_projection))
+        # Use self.max_cell_intensity for vmax to ensure consistent brightness
+        # scaling across all timepoints in the animation for this cell. This
+        # makes the 2D plot consistent with the 3D plot's Z-axis.
+        ax_img.imshow(ms2_region, cmap='gray', vmin=0, vmax=self.max_cell_intensity)
         ax_img.imshow(outline_region, alpha=0.25)
 
         # Gaussian center + σ ellipses
@@ -201,9 +209,3 @@ class MS2VisualizationManager:
             return
         out = os.path.join(self.output_dir, f"cell_{cell_id}_center_of_mass.gif")
         create_trajectory_gif(np.array(positions), out, fps=1)
-    
-    def _create_cell_outline(self):
-        """Create 2D outline of the cell from the z-projected mask."""
-        cell_binary = (self.current_cell_mask_projection > 0).astype(np.uint8)
-        cell_outline = cell_binary - ndimage.binary_erosion(cell_binary)
-        return cell_outline
