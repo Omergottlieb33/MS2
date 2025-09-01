@@ -1,85 +1,133 @@
 import io
 import os
-import imageio.v2 as iio
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-
+import imageio.v2 as iio
 
 
 def create_gif_from_figures(figures, output_path='animation.gif', fps=5, titles=None):
     """
-    Create a GIF from a list of matplotlib figures
-    
-    Parameters:
-    - figures: list of matplotlib figure objects
-    - output_path: path to save the GIF
-    - fps: frames per second
-    - titles: optional list of titles for each frame
-    """    
+    Create an animation (GIF / MP4 / multi-page TIFF) from a list of matplotlib Figure objects.
+
+    Ensures all frames:
+      - Have identical (H, W)
+      - Are uint8
+      - Are 3-channel RGB (drops alpha if present)
+
+    Parameters
+    ----------
+    figures : list[matplotlib.figure.Figure]
+    output_path : str
+    fps : int
+    titles : list[str] | None
+    """
     frames = []
-    
     for i, fig in enumerate(figures):
-        # Add title if provided
         if titles and i < len(titles):
-             # Adjust the layout to make room for the title
-            fig.subplots_adjust(top=0.9)  # Leave space at the top for title
-            fig.suptitle(titles[i], fontsize=16, y=0.95)  # Position title higher
-        
-        # Convert figure to image
+            # Put title (avoid changing final canvas size)
+            fig.suptitle(titles[i], fontsize=14)
         canvas = FigureCanvasAgg(fig)
         canvas.draw()
-        buf = io.BytesIO()
-        canvas.print_png(buf)
-        buf.seek(0)
-        
-        # Convert to PIL Image
-        img = Image.open(buf)
-        frames.append(np.array(img))
-        buf.close()
-    
-    # Determine file format from extension
-    if frames:
-        _, ext = os.path.splitext(output_path.lower())
-        
-        if ext == '.gif':
-            # Convert numpy arrays back to PIL Images for GIF
-            pil_frames = [Image.fromarray(frame) for frame in frames]
-            pil_frames[0].save(
-                output_path,
-                save_all=True,
-                append_images=pil_frames[1:],
-                duration=int(1000/fps),
-                loop=0
-            )
-        elif ext in ['.avi', '.mp4']:
-            # Use imageio-ffmpeg or imageio's video writer
-            writer = iio.get_writer(output_path, fps=fps, codec='libx264')
-            for frame in frames:
-                writer.append_data(frame)
-            writer.close()
-        elif ext in ['.tiff', '.tif']:
-            # Use imageio for TIFF
-            iio.imwrite(output_path, frames)
-        else:
-            # Default to GIF
-            pil_frames = [Image.fromarray(frame) for frame in frames]
-            pil_frames[0].save(
-                output_path,
-                save_all=True,
-                append_images=pil_frames[1:],
-                duration=int(1000/fps),
-                loop=0
-            )
-        
-        print(f"Animation saved to {output_path}")
-        
-        # Clean up figures to free memory
-        for fig in figures:
-            plt.close(fig)
+        w, h = canvas.get_width_height()
+        buf = np.frombuffer(canvas.tostring_argb(), dtype=np.uint8)
+        buf = buf.reshape(h, w, 4)  # ARGB
+        # Convert ARGB -> RGBA then drop alpha
+        rgba = np.empty_like(buf)
+        rgba[..., 0] = buf[..., 1]  # R
+        rgba[..., 1] = buf[..., 2]  # G
+        rgba[..., 2] = buf[..., 3]  # B
+        rgba[..., 3] = buf[..., 0]  # A
+        rgb = rgba[..., :3]
+
+        if rgb.dtype != np.uint8:
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+        frames.append(rgb)
+
+    if not frames:
+        print("No frames to write.")
+        return
+
+    # Enforce uniform size (resize any mismatches)
+    target_h, target_w = frames[0].shape[:2]
+    uniform = []
+    resized = 0
+    for f in frames:
+        if f.shape[0] != target_h or f.shape[1] != target_w:
+            resized += 1
+            f_img = Image.fromarray(f)
+            f_img = f_img.resize((target_w, target_h), Image.Resampling.BILINEAR)
+            f = np.array(f_img)
+        uniform.append(f)
+    frames = uniform
+    if resized:
+        print(f"Resized {resized} frame(s) to uniform {(target_h, target_w)}.")
+
+    ext = os.path.splitext(output_path.lower())[1]
+
+    if ext in ('.mp4', '.avi'):
+        # MP4: some codecs dislike alpha & odd dims; we already have RGB & ensured size.
+        # Ensure even dimensions (required by some encoders like libx264 with yuv420p).
+        if target_h % 2 or target_w % 2:
+            pad_h = target_h % 2
+            pad_w = target_w % 2
+            frames = [np.pad(f, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge') for f in frames]
+            target_h += pad_h
+            target_w += pad_w
+            print(f"Padded frames to even size {(target_h, target_w)} for encoder.")
+
+        try:
+            with iio.get_writer(output_path, fps=fps, codec='libx264') as writer:
+                for idx, frame in enumerate(frames):
+                    if frame.shape[:2] != (target_h, target_w):
+                        raise ValueError(f"Frame {idx} has shape {frame.shape[:2]} != {(target_h, target_w)} (after normalization).")
+                    writer.append_data(frame)
+        except Exception as e:
+            print(f"Primary video write failed ({e}); retrying without explicit codec.")
+            with iio.get_writer(output_path, fps=fps) as writer:
+                for frame in frames:
+                    writer.append_data(frame)
+
+    elif ext in ('.gif',):
+        duration_ms = int(1000 / max(fps, 1))
+        pil_frames = [Image.fromarray(f) for f in frames]
+        pil_frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=pil_frames[1:],
+            duration=duration_ms,
+            loop=0,
+            optimize=False,
+        )
+    elif ext in ('.tif', '.tiff'):
+        try:
+            import tifffile
+            with tifffile.TiffWriter(output_path) as tif:
+                for i, f in enumerate(frames):
+                    tif.write(f, description="fps={}".format(fps) if i == 0 else None)
+        except ImportError:
+            with iio.get_writer(output_path, mode='I') as writer:
+                for f in frames:
+                    writer.append_data(f)
     else:
-        print("No frames were created")
+        print(f"Unknown extension '{ext}', defaulting to GIF.")
+        duration_ms = int(1000 / max(fps, 1))
+        pil_frames = [Image.fromarray(f) for f in frames]
+        pil_frames[0].save(
+            output_path if ext else output_path + '.gif',
+            save_all=True,
+            append_images=pil_frames[1:],
+            duration=duration_ms,
+            loop=0,
+        )
+
+    print(f"Saved animation to {output_path}")
+
+    # Close figures to free memory
+    for fig in figures:
+        plt.close(fig)
 
 
 def create_trajectory_gif(positions, output_path='trajectory.gif', fps=2, 

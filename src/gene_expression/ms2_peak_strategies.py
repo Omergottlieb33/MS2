@@ -193,19 +193,44 @@ class GlobalPeakStrategy(PeakStrategy):
             h, w = ms2_projection[y1:y2, x1:x2].shape
             peak_coordinates_list.append(((peak_x-x1) / w, (peak_y-y1) / h))
             peak_center_dist_angle.append((np.linalg.norm(np.array(
-                [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
-        self._z_score_outlier_removal_thresholds(np.array(peak_center_dist_angle)[:, 1])
+                [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))        
         #TODO: #3 debug angle distance clustering
         if len(peak_center_dist_angle):
+            self._z_score_outlier_removal_thresholds(np.array(peak_center_dist_angle)[:, 1])
             peak_center_dist_angle_array = np.array(peak_center_dist_angle)
-            inliers_ransac, mask_ransac, _ = filter_ransac_poly(
-                peak_center_dist_angle_array, degree=3, residual_threshold=2.5, mad_k=processor.ransac_mad_k_th
-            )
+
+            degree = 3
+            min_points_needed = degree + 1
+            mask_ransac = None
+            inliers_ransac = np.empty((0, 2))
+            ransac_success = False
+
+            if peak_center_dist_angle_array.shape[0] >= min_points_needed + 1:
+                try:
+                    inliers_ransac, mask_ransac, _ = filter_ransac_poly(
+                        peak_center_dist_angle_array,
+                        degree=degree,
+                        residual_threshold=2.5,
+                        mad_k=processor.ransac_mad_k_th
+                    )
+                    # treat empty or all-false as failure
+                    if inliers_ransac.size > 0 and mask_ransac.sum() > 0:
+                        ransac_success = True
+                except ValueError:
+                    pass  # fall through to NA assignment
+
+            if not ransac_success:
+                # set all to NA (nullable boolean)
+                mask_ransac = np.array([pd.NA] * peak_center_dist_angle_array.shape[0], dtype=object)
+                inliers_ransac = np.empty((0, 2))
+
             processor.cell_df['is_inlier'] = pd.Series(
-                mask_ransac, index=processor.cell_df.index).astype(bool)
+                mask_ransac, index=processor.cell_df.index, dtype="boolean"
+            )
             processor.cell_df['dist_to_center'] = peak_center_dist_angle_array[:, 0]
             processor.cell_df['angle_to_center'] = peak_center_dist_angle_array[:, 1]
-            if processor.plot:
+
+            if processor.plot and ransac_success:
                 from src.utils.plot_utils import plot_gaussian_initial_guess
                 plot_gaussian_initial_guess(
                     peak_center_dist_angle_array,
@@ -213,7 +238,7 @@ class GlobalPeakStrategy(PeakStrategy):
                     output_path=f"{processor.output_dir}/cell_{processor.cell_id}_gaussian_initial_guess_mad_k_{processor.ransac_mad_k_th}_center_dist_angle.png"
                 )
         else:
-            processor.cell_df['is_inlier'] = pd.Series(dtype=bool)
+            processor.cell_df['is_inlier'] = pd.Series(dtype="boolean")
 
         # keep same attribute for downstream compatibility
         processor.cell_initial_center = []
