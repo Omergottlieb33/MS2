@@ -2,10 +2,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from scipy.ndimage import binary_erosion, binary_dilation
-from skimage.feature import peak_local_max
-from scipy import ndimage
 from findmaxima2d import find_maxima, find_local_maxima
-import matplotlib.pyplot as plt
 
 from src.utils.cell_utils import (
     get_3d_bounding_box_corners,
@@ -129,20 +126,9 @@ class PeakStrategy:
 class GlobalPeakStrategy(PeakStrategy):
     name = "global"
 
-    def __init__(self, ms2_z_projections: np.ndarray, prominence=18):
+    def __init__(self, ms2_z_projections: np.ndarray, prominence=20):
         self.ms2_z_projections = ms2_z_projections
         self.prominence = prominence
-        self.init()
-
-    def init(self):
-        self.df = pd.DataFrame(columns=['timepoint', 'x', 'y', 'intensity'])
-        for timepoint in tqdm(range(self.ms2_z_projections.shape[0]), desc="Finding global peaks"):
-            local_max = find_local_maxima(self.ms2_z_projections[timepoint])
-            y, x, regs = find_maxima(
-                self.ms2_z_projections[timepoint], local_max, self.prominence)
-            frame_df = pd.DataFrame(
-                {'timepoint': timepoint, 'x': x, 'y': y, 'intensity': self.ms2_z_projections[timepoint][y, x]})
-            self.df = pd.concat([self.df, frame_df], ignore_index=True)
 
     def pre_process_cell(self, processor, valid_timepoints):
         # Include future gaussian param columns (they will be filled later)
@@ -162,29 +148,14 @@ class GlobalPeakStrategy(PeakStrategy):
             center = calculate_center_of_mass_3d(cell_mask_3d)
             center = np.array((center[0], center[1]))
             z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
-            current_cell_mask_projection = (
-                np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
-
-            frame_df = self.df[self.df['timepoint'] == timepoint]
-            if frame_df.empty:
+            mask = (self.df_peaks["timepoint"].isin([timepoint])) & (
+                self.df_peaks["cell_label"] == cell_label)
+            df_cell = self.df_peaks[mask]
+            if df_cell.empty:
                 continue
-            x = frame_df['x'].to_numpy()
-            y = frame_df['y'].to_numpy()
-            pts = np.vstack((x, y)).T
-
-            # restrict to cell mask
-            current_cell_mask_projection = current_cell_mask_projection.astype(
-                bool)
-            # TODO: add neighborhood mask consideration
-            idx = get_indices_in_mask(
-                pts, current_cell_mask_projection, False, expand_pixels=0)
-            if idx.size == 0:
-                continue
-            relevant_pts = pts[idx].astype(int)
-            intensities = ms2_projection[relevant_pts[:,
-                                                      1], relevant_pts[:, 0]]
-            best_local = idx[np.argmax(intensities)]
-            peak_x, peak_y = pts[best_local]
+            relevant_pts1 = df_cell[['x_peak', 'y_peak']].to_numpy()
+            intensities = ms2_projection[relevant_pts1[:, 1], relevant_pts1[:, 0]]
+            peak_x, peak_y = relevant_pts1[np.argmax(intensities)]
             processor.cell_df.loc[len(processor.cell_df)] = {
                 'timepoint': timepoint,
                 'x': peak_x,
@@ -276,10 +247,7 @@ class GlobalPeakStrategy(PeakStrategy):
             return None, None, (0, 0)
         else:
             row = row_match.iloc[0]
-            # Z score outlier removal condition
-            # if row['angle_to_center'] > self.angle_outlier_threshold[0] or row['angle_to_center'] < self.angle_outlier_threshold[1]:
-            #     processor.cell_initial_center.append((0, 0))
-            #     return None, None, (0, 0)
+            #TODO: optimise outlier removal, circular Z score with distance
             if row['circular_z_score'] > 3:
                 processor.cell_initial_center.append((0, 0))
                 return None, None, (0, 0)
@@ -316,7 +284,7 @@ class GlobalPeakStrategy(PeakStrategy):
 
         return gaussian_params, covariance_matrix, initial_center
 
-    def emitter_cell_matching(self, processor, valid_timepoints):
+    def emitter_cell_matching(self, processor):
         """
         Faster peak-to-cell matching:
         - Accumulate dict records instead of repeated DataFrame concat.
@@ -325,7 +293,7 @@ class GlobalPeakStrategy(PeakStrategy):
         """
         records = []
         ms2_bg = processor.ms2_background_removed  # (T,Z,Y,X)
-        for timepoint in tqdm(valid_timepoints, desc="Finding peaks"):
+        for timepoint in tqdm(range(len(processor.ms2_background_removed)), desc="Matching peaks to cells"):
             z_projection = processor.ms2_z_projections[timepoint]
             local_max = find_local_maxima(z_projection)
             if local_max.size == 0:
@@ -342,13 +310,16 @@ class GlobalPeakStrategy(PeakStrategy):
 
         if not records:
             self.df_peaks = pd.DataFrame(
-                columns=['timepoint', 'cell_label', 'x_peak', 'y_peak', 'slice_score']
+                columns=['timepoint', 'cell_label',
+                         'x_peak', 'y_peak', 'slice_score']
             )
             return
 
         df_all = pd.DataFrame.from_records(records)
-        idx = df_all.groupby(['timepoint', 'cell_label'])['slice_score'].idxmax()
-        self.df_peaks = df_all.loc[idx].reset_index(drop=True)
+        # filter emitter peaks in overlaping cells
+        df_filtered = df_all.loc[df_all.groupby(["timepoint", "x_peak", "y_peak"])[
+            "slice_score"].idxmax()]
+        self.df_peaks = df_filtered
 
     @staticmethod
     def _match_cells_to_emitter(masks, pts, tzyx, timepoint):
@@ -379,11 +350,10 @@ class GlobalPeakStrategy(PeakStrategy):
         # Iterate labels (cannot trivially vectorize across variable-sized regions)
         for label in labels:
             mask_label = (masks == label)              # (Z,Y,X) bool
-            proj = mask_label.any(axis=0)              # (Y,X) bool 2D projection
-
-            idx = get_indices_in_mask(pts, proj, False, expand_pixels=0)
-            if idx.size == 0:
-                idx = get_indices_in_mask(pts, proj, True, expand_pixels=2)
+            # (Y,X) bool 2D projection
+            proj = mask_label.any(axis=0)
+            # Get indices of peaks within the mask and expanded mask
+            idx = get_indices_in_mask(pts, proj, False, expand_pixels=2)
             if idx.size == 0:
                 continue
 
@@ -393,8 +363,9 @@ class GlobalPeakStrategy(PeakStrategy):
 
             # Extract per-peak z profiles and mask support: (Z,k)
             z_profiles = intensity_stack[:, y_sel, x_sel]
-            z_mask = mask_label[:, y_sel, x_sel]
-
+            # Expand the 3d mask for peaks found in the expanded projection
+            expanded_mask_label = binary_dilation(mask_label, iterations=2)
+            z_mask = expanded_mask_label[:, y_sel, x_sel]
             # Weighted sum over z -> (k,)
             slice_score = (z_profiles * z_mask).sum(axis=0)
 

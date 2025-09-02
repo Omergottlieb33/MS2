@@ -1,11 +1,8 @@
+import gc
 from src.gene_expression.ms2_visualization import MS2VisualizationManager
 from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
-from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d, estimate_emitter_2d_gaussian_with_fixed_offset, filter_ransac_poly, estimate_background_offset_annulus
-from src.utils.image_utils import load_czi_images
+from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d
 from cell_tracking import get_masks_paths
-
-from findmaxima2d import find_maxima, find_local_maxima
-from scipy.ndimage import binary_erosion
 
 import os
 import json
@@ -15,14 +12,9 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from scipy import ndimage
-from scipy.optimize import curve_fit
-from skimage.feature import peak_local_max
 
 import matplotlib
-import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
 matplotlib.use('module://matplotlib_inline.backend_inline')
-import gc
 
 
 class MS2GeneExpressionProcessor:
@@ -34,7 +26,7 @@ class MS2GeneExpressionProcessor:
     """
 
     def __init__(self, tracklets, czi_file_path, masks_paths, ms2_background_removed, output_dir='output', plot=None,
-                 ransac_mad_k_th=2, strategy: str | None = 'global'):
+                 ransac_mad_k_th=2, strategy: str | None = 'global', prominence: float | None = 20):
         """
         Initialize the MS2 gene expression processor.
 
@@ -49,12 +41,14 @@ class MS2GeneExpressionProcessor:
         self.czi_file_path = czi_file_path
         self.mask_file_paths = masks_paths
         self.ms2_background_removed = ms2_background_removed
-        self.ms2_z_projections = self.ms2_background_removed.sum(axis=1) # Z projection
+        self.ms2_z_projections = self.ms2_background_removed.sum(
+            axis=1)  # Z projection
         self.output_dir = output_dir
         self.plot = plot
         self.ransac_mad_k_th = ransac_mad_k_th
-        self.strategy_name = strategy
+        self.strategy_name = strategy  # TODO: redundant
         self.czi_reader = None
+        self.prominence = prominence
 
         # Only initialize the CZI reader if segmentation plotting is enabled to save memory.
         if self.plot and self.plot.get('segmentation', False):
@@ -62,20 +56,28 @@ class MS2GeneExpressionProcessor:
                 from aicspylibczi import CziFile
                 self.czi_reader = CziFile(self.czi_file_path)
             except ImportError:
-                print("Warning: aicspylibczi is not installed. CZI data for segmentation plotting will not be loaded.")
+                print(
+                    "Warning: aicspylibczi is not installed. CZI data for segmentation plotting will not be loaded.")
             except Exception as e:
-                print(f"Warning: Could not open CZI file {self.czi_file_path}: {e}")
+                print(
+                    f"Warning: Could not open CZI file {self.czi_file_path}: {e}")
                 self.czi_reader = None
 
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
         if self.plot is None:
-            self.visualizer = MS2VisualizationManager(output_dir, enabled=False)
+            self.visualizer = MS2VisualizationManager(
+                output_dir, enabled=False)
         else:
             self.visualizer = MS2VisualizationManager(output_dir, enabled=True)
         # Initialize processing state variables
         self._reset_processing_state()
+        self._init_strategy()
+
+    def _init_strategy(self):
         self.strategy = self._build_strategy()
+        # Match peaks to cell emitters
+        self.strategy.emitter_cell_matching(self)
 
     def set_strategy(self, strategy: str):
         self.strategy_name = strategy
@@ -84,7 +86,7 @@ class MS2GeneExpressionProcessor:
     def _build_strategy(self):
         if isinstance(self.strategy_name, str):
             if self.strategy_name == 'global':
-                return GlobalPeakStrategy(self.ms2_z_projections)
+                return GlobalPeakStrategy(self.ms2_z_projections, prominence=self.prominence)
             else:
                 raise ValueError(f"Unknown strategy '{self.strategy_name}'")
         elif hasattr(self.strategy_name, "fit_timepoint"):
@@ -95,7 +97,6 @@ class MS2GeneExpressionProcessor:
     def _reset_processing_state(self):
         """Reset variables used during processing."""
         self.expression_amplitudes = []
-        self.expression_amplitudes2 = []
         self.visualization_figures = []
         self.segmentation_figures = []
         self.cell_labels_by_timepoint = []
@@ -124,6 +125,7 @@ class MS2GeneExpressionProcessor:
         print(f"Processing cell ID: {cell_id} with strategy '{method}'")
 
         # If the requested strategy is different from the current one, rebuild it.
+        # TODO: redundant
         if self.strategy_name != method:
             self.set_strategy(method)
 
@@ -138,12 +140,7 @@ class MS2GeneExpressionProcessor:
             return
 
         self._calculate_max_cell_intensity(valid_timepoints)
-        # Match peaks to cell emitters
-        self.strategy.emitter_cell_matching(self, valid_timepoints)
-
-        # build and run strategy pre-process
         self.strategy.pre_process_cell(self, valid_timepoints)
-
         # init visualizer for cell
         self.visualizer.start_cell(cell_id, self.max_cell_intensity)
 
@@ -153,7 +150,7 @@ class MS2GeneExpressionProcessor:
 
         self._save_plots_and_animations(valid_timepoints)
         self._save_csv()
-        return np.array(self.expression_amplitudes2)
+        return np.array(self.expression_amplitudes)
 
     def _get_valid_timepoints(self):
         """Get timepoints where the cell is present (label != -1)."""
@@ -186,8 +183,6 @@ class MS2GeneExpressionProcessor:
             # Normalize
             cell_mask_2d = (cell_mask_2d > 0).astype(np.uint8)
 
-            # Expand mask slightly and extract MS2 signal
-            expanded_mask = ndimage.binary_dilation(cell_mask_2d, iterations=0)
             cell_region_ms2 = ms2_projection[y1:y2, x1:x2]
             mask_region = cell_mask_2d[y1:y2, x1:x2]
 
@@ -217,14 +212,10 @@ class MS2GeneExpressionProcessor:
             _, ellipse_sum = self.sum_pixels_in_sigma_ellipse(
                 gaussian_params, k=2, subtract_offset=True, clip_negative=True, pct_floor=0.85
             )
-            intensity = gaussian_params['amplitude'] * 2 * np.pi * \
-                gaussian_params['sigma_x'] * gaussian_params['sigma_y']
         else:
             ellipse_sum = 0.0
-            intensity = 0.0
 
-        self.expression_amplitudes.append(intensity)
-        self.expression_amplitudes2.append(ellipse_sum)
+        self.expression_amplitudes.append(ellipse_sum)
 
         if self.plot:
             z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
@@ -254,11 +245,13 @@ class MS2GeneExpressionProcessor:
             try:
                 # Assuming C=1 is the channel for z_stack (e.g., phase contrast)
                 # and we are interested in the first scene (S=0).
-                z_stack_data, _ = self.czi_reader.read_image(T=timepoint, C=1, S=0)
+                z_stack_data, _ = self.czi_reader.read_image(
+                    T=timepoint, C=1, S=0)
                 # Squeeze to remove dimensions of size 1, to get (Z, Y, X)
                 z_stack = np.squeeze(z_stack_data)
             except Exception as e:
-                print(f"Warning: Could not read timepoint {timepoint} from CZI file: {e}")
+                print(
+                    f"Warning: Could not read timepoint {timepoint} from CZI file: {e}")
 
         masks = np.load(self.mask_file_paths[timepoint])['masks']
         ms2_projection = self.ms2_z_projections[timepoint]
@@ -363,7 +356,7 @@ class MS2GeneExpressionProcessor:
         if self.plot['segmentation']:
             self.visualizer.save_segmentation_animation(
                 self.cell_id, valid_timepoints)
-    
+
     def _save_csv(self):
         if self.strategy_name == 'global' and hasattr(self, 'cell_df'):
             self.cell_df.to_csv(
@@ -379,6 +372,7 @@ class MS2GeneExpressionProcessor:
                 index=False
             )
 
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -393,6 +387,8 @@ def parse_args():
                         help="Path to MS2 channel after background removal.")
     parser.add_argument("--output_dir", type=str, required=False, default='output',
                         help="Path to the output directory.")
+    parser.add_argument('--prominence', type=float, required=False, default=20.0,
+                        help="Maxima finder prominence")
 
     return parser.parse_args()
 
@@ -416,39 +412,43 @@ if __name__ == "__main__":
         masks_paths=masks_paths,
         ms2_background_removed=ms2_background_removed,
         output_dir=args.output_dir,
-        plot = {'emitter_fit':True,'intensity':True, 'segmentation':False},
-        ransac_mad_k_th=2.0
+        plot={'emitter_fit': True, 'intensity': True, 'segmentation': False},
+        ransac_mad_k_th=2.0,
+        prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    amp = processor.process_cell(3, 'global')
+    # amp = processor.process_cell(3, 'global')
 
-    # num_timepoints = ms2_z_projections.shape[0]
-    # expression_matrix = {
-    #     'timepoint': list(range(num_timepoints))
-    # }
-    # # process cells that have been tracked for all frames
-    # valid_ids = [key for key, cell_labels in tracklets.items() if cell_labels.count(-1) < 2]
-    # non_zero_min = []
-    # for cell_id in valid_ids:
-    #     amp = processor.process_cell(cell_id, 'global')
-    #     non_zero_min.append(np.min(amp[amp > 0]) if np.any(amp > 0) else np.nan)
-    #      # Reconstruct full-length vector aligned to all timepoints
-    #     labels = tracklets[str(cell_id)]
-    #     full_series = [np.nan] * num_timepoints
-    #     valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+    num_timepoints = ms2_background_removed.shape[0]
+    expression_matrix = {
+        'timepoint': list(range(num_timepoints))
+    }
+    # process cells that have been tracked for all frames
+    valid_ids = [key for key, cell_labels in tracklets.items()
+                 if cell_labels.count(-1) < 2]
+    non_zero_min = []
+    for cell_id in valid_ids:
+        amp = processor.process_cell(cell_id, 'global')
+        non_zero_min.append(np.min(amp[amp > 0])
+                            if np.any(amp > 0) else np.nan)
+        # Reconstruct full-length vector aligned to all timepoints
+        labels = tracklets[str(cell_id)]
+        full_series = [np.nan] * num_timepoints
+        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
 
-    #     # Map returned amplitudes to their corresponding timepoints
-    #     for tp, amp in zip(valid_timepoints, amp):
-    #         full_series[tp] = amp
+        # Map returned amplitudes to their corresponding timepoints
+        for tp, amp in zip(valid_timepoints, amp):
+            full_series[tp] = amp
 
-    #     expression_matrix[f'cell_{cell_id}'] = full_series
-    # noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
-    # print(f"Noise level: {noise_level}")
-    # df = pd.DataFrame(expression_matrix)
-    # # Replace zeros in cell columns with noise_level
-    # cell_cols = [c for c in df.columns if c.startswith('cell_')]
-    # if noise_level is not None and cell_cols:
-    #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
-    # out_path = os.path.join(processor.output_dir, 'gene_expression_results.csv')
-    # df.to_csv(out_path, index=False)
-    # print(f"Saved expression matrix to {out_path}")
+        expression_matrix[f'cell_{cell_id}'] = full_series
+    noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
+    print(f"Noise level: {noise_level}")
+    df = pd.DataFrame(expression_matrix)
+    # Replace zeros in cell columns with noise_level
+    cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    if noise_level is not None and cell_cols:
+        df[cell_cols] = df[cell_cols].replace(0, noise_level)
+    out_path = os.path.join(processor.output_dir,
+                            'gene_expression_results.csv')
+    df.to_csv(out_path, index=False)
+    print(f"Saved expression matrix to {out_path}")
