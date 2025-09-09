@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from scipy.ndimage import binary_erosion, binary_dilation
+from scipy.ndimage import binary_dilation
 from findmaxima2d import find_maxima, find_local_maxima
 
 from src.utils.cell_utils import (
@@ -10,103 +10,7 @@ from src.utils.cell_utils import (
     estimate_background_offset_annulus,
     filter_ransac_poly, calculate_center_of_mass_3d
 )
-
-
-def get_indices_in_mask(coordinates: np.ndarray, cell_mask: np.ndarray, remove_outline: bool = False, expand_pixels: int = 2) -> np.ndarray:
-    """
-    Finds the indices of coordinates that are inside a boolean cell mask.
-    Optionally removes the outline (outermost pixel layer) of the mask first.
-
-    Args:
-        coordinates (np.ndarray): A NumPy array of shape (n, 2) with (x, y) coordinates.
-        cell_mask (np.ndarray): A 2D NumPy array of dtype bool, where True indicates
-                                the area of interest.
-        remove_outline (bool): If True, the outer layer of pixels of the True
-                               areas in the mask is removed before checking
-                               for coordinates. Defaults to False.
-
-    Returns:
-        np.ndarray: A 1D NumPy array containing the indices of the coordinates
-                    that fall within the True areas of the cell_mask.
-    """
-    # --- Input Validation ---
-    if not isinstance(coordinates, np.ndarray) or coordinates.ndim != 2 or coordinates.shape[1] != 2:
-        raise ValueError("Coordinates must be a NumPy array of shape (n, 2).")
-    if not isinstance(cell_mask, np.ndarray) or cell_mask.ndim != 2 or cell_mask.dtype != bool:
-        raise ValueError("cell_mask must be a 2D boolean NumPy array.")
-
-    # --- Mask Processing ---
-    # If requested, remove the outer layer of pixels (outline) from the mask.
-    # This process is called binary erosion.
-    if remove_outline:
-        # We use binary_erosion to shrink the True regions of the mask by one pixel
-        # from all sides, effectively removing the outline.
-        processed_mask = binary_erosion(cell_mask)
-    else:
-        processed_mask = cell_mask
-
-    if expand_pixels and expand_pixels > 0:
-        processed_mask = binary_dilation(
-            processed_mask, iterations=expand_pixels)
-
-    # --- Coordinate Processing ---
-    # Round coordinates to the nearest integer to use them as indices.
-    # Using np.round is safer than just casting to int, as it handles floating point values correctly.
-    int_coords = coordinates.astype(int)
-
-    # Extract x and y columns. Note that in image processing and array indexing,
-    # x corresponds to columns (dimension 1) and y to rows (dimension 0).
-    x_coords = int_coords[:, 0]
-    y_coords = int_coords[:, 1]
-
-    # Get the dimensions of the mask (height, width)
-    mask_height, mask_width = processed_mask.shape
-
-    # --- Boundary Check ---
-    # Create a boolean mask to identify coordinates that are within the bounds of the cell_mask.
-    # This is crucial to prevent IndexError when accessing the mask.
-    in_bounds_mask = (
-        (x_coords >= 0) & (x_coords < mask_width) &
-        (y_coords >= 0) & (y_coords < mask_height)
-    )
-
-    # Get the original indices of the coordinates that are within bounds.
-    # We will use these indices to filter our coordinates before checking the cell mask.
-    original_indices_in_bounds = np.where(in_bounds_mask)[0]
-
-    # If no coordinates are within the bounds, return an empty array.
-    if len(original_indices_in_bounds) == 0:
-        return np.array([], dtype=int)
-
-    # Filter the coordinates to only include those within the mask's dimensions.
-    x_in_bounds = x_coords[original_indices_in_bounds]
-    y_in_bounds = y_coords[original_indices_in_bounds]
-
-    # --- Mask Lookup ---
-    # Use the valid, in-bounds coordinates to look up their values in the processed_mask.
-    # NumPy's advanced indexing allows us to do this in a single, efficient operation.
-    # The result is a boolean array indicating if each in-bounds point is in a True region.
-    # Remember: array access is [row, column], which corresponds to [y, x].
-    is_inside_mask = processed_mask[y_in_bounds, x_in_bounds]
-
-    # --- Final Filtering ---
-    # The final step is to select the original indices that correspond to a True value
-    # in our 'is_inside_mask' array.
-    final_indices = original_indices_in_bounds[is_inside_mask]
-
-    return final_indices.astype(int)
-
-
-def circular_z_score(theta_rad):
-    theta = np.mod(theta_rad, 2*np.pi)
-    s, c = np.sin(theta), np.cos(theta)
-    mu = np.arctan2(s.mean(), c.mean())
-    # shortest signed angular distance
-    delta = np.arctan2(np.sin(theta - mu), np.cos(theta - mu))
-    R = np.hypot(c.sum(), s.sum()) / theta.size
-    sigma = np.sqrt(-2*np.log(max(R, 1e-12)))
-    z = np.abs(delta) / max(sigma, 1e-12)
-    return z, mu, sigma
+from src.utils.emitter_utils import circular_z_score, get_indices_in_mask
 
 
 class PeakStrategy:
@@ -133,7 +37,7 @@ class GlobalPeakStrategy(PeakStrategy):
     def pre_process_cell(self, processor, valid_timepoints):
         # Include future gaussian param columns (they will be filled later)
         processor.cell_df = pd.DataFrame(columns=[
-            'timepoint', 'x', 'y', 'intensity', 'dist_to_center', 'angle_to_center',
+            'timepoint', 'x', 'y', 'intensity','z_slice_score', 'dist_to_center', 'angle_to_center',
             'is_inlier', 'circular_z_score', 'gauss_x0', 'gauss_y0', 'gauss_sigma_x',
             'gauss_sigma_y', 'gauss_theta', 'gauss_amplitude', 'gauss_offset'
         ])
@@ -154,13 +58,20 @@ class GlobalPeakStrategy(PeakStrategy):
             if df_cell.empty:
                 continue
             relevant_pts1 = df_cell[['x_peak', 'y_peak']].to_numpy()
-            intensities = ms2_projection[relevant_pts1[:, 1], relevant_pts1[:, 0]]
+            intensities = ms2_projection[relevant_pts1[:,
+                                                       1], relevant_pts1[:, 0]]
             peak_x, peak_y = relevant_pts1[np.argmax(intensities)]
+            #TODO: Two peaks inside cell -> check Z score. if both Z score above TH check location of previous frame
+            if df_cell['slice_score'].to_numpy()[np.argmax(intensities)] < 10:
+                continue
+            else:
+                slice_score = df_cell['slice_score'].to_numpy()[np.argmax(intensities)]
             processor.cell_df.loc[len(processor.cell_df)] = {
                 'timepoint': timepoint,
                 'x': peak_x,
                 'y': peak_y,
                 'intensity': ms2_projection[peak_y, peak_x],
+                'z_slice_score': slice_score,
                 'dist_to_center': np.linalg.norm(np.array([peak_x, peak_y]) - center),
                 'angle_to_center': np.arctan2(peak_y - center[1], peak_x - center[0]),
                 'is_inlier': None,
@@ -178,12 +89,13 @@ class GlobalPeakStrategy(PeakStrategy):
             peak_coordinates_list.append(((peak_x-x1) / w, (peak_y-y1) / h))
             peak_center_dist_angle.append((np.linalg.norm(np.array(
                 [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
-        # TODO: #3 debug angle distance clustering
+        # TODO: add distance consideration to Z score
         if len(peak_center_dist_angle):
             self._z_score_outlier_removal_thresholds(
                 np.array(peak_center_dist_angle)[:, 1])
             processor.cell_df['circular_z_score'] = circular_z_score(
                 np.array(peak_center_dist_angle)[:, 1])[0]
+            #TODO: optimise clustering, DBSCAN with circular coordinates
             peak_center_dist_angle_array = np.array(peak_center_dist_angle)
 
             degree = 3
@@ -241,13 +153,12 @@ class GlobalPeakStrategy(PeakStrategy):
         processor.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
         # locate peak for this frame
         row_match = processor.cell_df[processor.cell_df['timepoint'] == timepoint]
-        # TODO: #2 handle no detection between frames
         if row_match.empty:
             processor.cell_initial_center.append((0, 0))
             return None, None, (0, 0)
         else:
             row = row_match.iloc[0]
-            #TODO: optimise outlier removal, circular Z score with distance
+            # TODO: optimise outlier removal, circular Z score with distance
             if row['circular_z_score'] > 3:
                 processor.cell_initial_center.append((0, 0))
                 return None, None, (0, 0)
@@ -284,13 +195,16 @@ class GlobalPeakStrategy(PeakStrategy):
 
         return gaussian_params, covariance_matrix, initial_center
 
-    def emitter_cell_matching(self, processor):
+    def emitter_cell_matching(self, processor, csv_path=None):
         """
         Faster peak-to-cell matching:
         - Accumulate dict records instead of repeated DataFrame concat.
         - Skip frames with no peaks early.
         - Single groupby at end to retain highest slice_score per (timepoint, cell_label).
         """
+        if csv_path is not None:
+            self.df_peaks = pd.read_csv(csv_path)
+            return
         records = []
         ms2_bg = processor.ms2_background_removed  # (T,Z,Y,X)
         for timepoint in tqdm(range(len(processor.ms2_background_removed)), desc="Matching peaks to cells"):

@@ -195,6 +195,7 @@ def show_3d_segmentation_overlay_with_unique_colors(z_stack, masks, highlight_la
         fig object if return_fig=True, otherwise None
     """
     # Calculate zoom region if zoom_on_highlight is True
+    
     crop_coords = None
     if zoom_on_highlight:
         crop_coords = get_highlight_crop_coords(

@@ -77,7 +77,11 @@ class MS2GeneExpressionProcessor:
     def _init_strategy(self):
         self.strategy = self._build_strategy()
         # Match peaks to cell emitters
-        self.strategy.emitter_cell_matching(self)
+        emitter_cells_matches = os.path.join(os.getcwd(), 'emitter_cells_matches.csv')
+        if os.path.exists(emitter_cells_matches):
+            self.strategy.emitter_cell_matching(self, emitter_cells_matches)
+        else:
+            self.strategy.emitter_cell_matching(self)
 
     def set_strategy(self, strategy: str):
         self.strategy_name = strategy
@@ -216,7 +220,6 @@ class MS2GeneExpressionProcessor:
             ellipse_sum = 0.0
 
         self.expression_amplitudes.append(ellipse_sum)
-
         if self.plot:
             z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
             self.visualizer.add_timepoint(
@@ -350,9 +353,7 @@ class MS2GeneExpressionProcessor:
                 self.cell_id, valid_timepoints, self.ransac_mad_k_th)
         if self.plot['intensity']:
             self.visualizer.expression_plot(
-                self.cell_id, self.expression_amplitudes2, 'Ellipse_sum')
-            self.visualizer.expression_plot(
-                self.cell_id, self.expression_amplitudes, 'Gaussian_Integral')
+                self.cell_id, self.expression_amplitudes, 'Ellipse_sum')
         if self.plot['segmentation']:
             self.visualizer.save_segmentation_animation(
                 self.cell_id, valid_timepoints)
@@ -387,7 +388,7 @@ def parse_args():
                         help="Path to MS2 channel after background removal.")
     parser.add_argument("--output_dir", type=str, required=False, default='output',
                         help="Path to the output directory.")
-    parser.add_argument('--prominence', type=float, required=False, default=20.0,
+    parser.add_argument('--prominence', type=float, required=False, default=18.0,
                         help="Maxima finder prominence")
 
     return parser.parse_args()
@@ -417,7 +418,7 @@ if __name__ == "__main__":
         prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    # amp = processor.process_cell(3, 'global')
+    #amp = processor.process_cell(5, 'global')
 
     num_timepoints = ms2_background_removed.shape[0]
     expression_matrix = {
@@ -425,9 +426,9 @@ if __name__ == "__main__":
     }
     # process cells that have been tracked for all frames
     valid_ids = [key for key, cell_labels in tracklets.items()
-                 if cell_labels.count(-1) < 2]
+                 if cell_labels.count(-1) < 40]
     non_zero_min = []
-    for cell_id in valid_ids:
+    for cell_id in tqdm(valid_ids):
         amp = processor.process_cell(cell_id, 'global')
         non_zero_min.append(np.min(amp[amp > 0])
                             if np.any(amp > 0) else np.nan)
@@ -444,10 +445,10 @@ if __name__ == "__main__":
     noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
     print(f"Noise level: {noise_level}")
     df = pd.DataFrame(expression_matrix)
-    # Replace zeros in cell columns with noise_level
-    cell_cols = [c for c in df.columns if c.startswith('cell_')]
-    if noise_level is not None and cell_cols:
-        df[cell_cols] = df[cell_cols].replace(0, noise_level)
+    # # Replace zeros in cell columns with noise_level
+    # cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    # if noise_level is not None and cell_cols:
+    #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
     out_path = os.path.join(processor.output_dir,
                             'gene_expression_results.csv')
     df.to_csv(out_path, index=False)

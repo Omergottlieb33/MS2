@@ -160,7 +160,7 @@ class MS2VisualizationManager:
         plt.tight_layout()
         self.timepoint_figures.append(fig)
 
-        if add_segmentation_3d and z_stack is not None:
+        if add_segmentation_3d and z_stack is not None and z_stack.shape == masks.shape:
             seg_fig = show_3d_segmentation_overlay_with_unique_colors(
                 z_stack, masks, cell_label,
                 return_fig=True, zoom_on_highlight=True
