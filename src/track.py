@@ -79,7 +79,7 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     
     Parameters:
         g1 (nx.Graph): Adjacency graph for frame 1
-        g2 (nx.Graph): Adjacency graph for frame 2  
+        g2 (nx.Graph): Adjacency graph for frame 2
         mask1 (np.ndarray): Segmentation mask for frame 1
         mask2 (np.ndarray): Segmentation mask for frame 2
         distance_threshold (float): Maximum distance for matching points
@@ -87,30 +87,57 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     Returns:
         dict: Mapping from frame2 cell IDs to frame1 cell IDs {cell_id_t2: cell_id_t1}
     """
-    # Get cell centers for both frames
+    # --- 1. Get cell centers and volumes for both frames ---
     centers1 = get_cell_centers(mask1)
     centers2 = get_cell_centers(mask2)
     labels_to_pos1 = centers_array_to_label_position_map(centers1)
     labels_to_pos2 = centers_array_to_label_position_map(centers2)
-    
+
+    # Efficiently compute volumes (voxel counts) for all cells
+    labels1_all = np.unique(mask1)
+    labels1_all = labels1_all[labels1_all > 0]
+    labels2_all = np.unique(mask2)
+    labels2_all = labels2_all[labels2_all > 0]
+
+    volumes1, volumes2 = {}, {}
+    if len(labels1_all) > 0 and len(labels2_all) > 0:
+        max_label = max(np.max(labels1_all), np.max(labels2_all))
+        vols1_all = np.bincount(mask1.ravel(), minlength=max_label + 1)
+        vols2_all = np.bincount(mask2.ravel(), minlength=max_label + 1)
+        volumes1 = {int(label): vols1_all[label] for label in labels1_all}
+        volumes2 = {int(label): vols2_all[label] for label in labels2_all}
+
     # Get valid cell labels (nodes) from graphs, excluding background (0)
-    nodes1 = [n for n in g1.nodes() if n != 0 and n in labels_to_pos1]
-    nodes2 = [n for n in g2.nodes() if n != 0 and n in labels_to_pos2]
+    nodes1 = [n for n in g1.nodes() if n != 0 and n in labels_to_pos1 and n in volumes1]
+    nodes2 = [n for n in g2.nodes() if n != 0 and n in labels_to_pos2 and n in volumes2]
 
     if not nodes1 or not nodes2:
         return {}
 
-    # For performance, extract positions into numpy arrays
+    # --- 2. Prepare data for vectorized calculations ---
+    # For performance, extract positions and volumes into numpy arrays
     pos1 = np.array([labels_to_pos1[n] for n in nodes1])
     pos2 = np.array([labels_to_pos2[n] for n in nodes2])
+    vol1 = np.array([volumes1[n] for n in nodes1])
+    vol2 = np.array([volumes2[n] for n in nodes2])
 
+    # --- 3. Calculate cost matrix with multiple metrics ---
     # Calculate the full pairwise distance matrix using vectorized operations (broadcasting).
-    # This is much faster than nested loops for large numbers of cells.
     diff = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]
-    #TODO: add cell graph degree to the distance metric, area metric, shape metric, etc.
-    cost_matrix = np.sqrt(np.sum(diff**2, axis=2))
+    distance_cost = np.sqrt(np.sum(diff**2, axis=2))
 
-    # Use the Hungarian algorithm (linear_sum_assignment) to find the optimal assignment
+    # Calculate a volume difference cost. This penalizes matches between cells of different sizes.
+    # We normalize by the volume of the first cell to get a relative size change.
+    vol_diff = np.abs(vol1[:, np.newaxis] - vol2[np.newaxis, :])
+    volume_cost = vol_diff / (vol1[:, np.newaxis] + 1e-6) # Add epsilon to avoid division by zero
+
+    # Combine costs with weights. These can be tuned.
+    # Here, we prioritize distance but also strongly consider volume similarity.
+    w_dist = 0.7
+    w_vol = 0.3
+    cost_matrix = (w_dist * (distance_cost / distance_threshold)) + (w_vol * volume_cost)
+
+    # --- 4. Find optimal assignment using the Hungarian algorithm ---
     # that minimizes the total distance.
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
@@ -118,7 +145,8 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     # Create the matches dictionary from the optimal assignments, but only include
     # pairs where the distance is within the specified threshold.
     for r, c in zip(row_ind, col_ind):
-        if cost_matrix[r, c] <= distance_threshold:
+        # The final check is still on the absolute physical distance, not the combined cost.
+        if distance_cost[r, c] <= distance_threshold:
             cell1_label = nodes1[r]
             cell2_label = nodes2[c]
             matches[cell2_label] = cell1_label

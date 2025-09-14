@@ -77,7 +77,8 @@ class MS2GeneExpressionProcessor:
     def _init_strategy(self):
         self.strategy = self._build_strategy()
         # Match peaks to cell emitters
-        emitter_cells_matches = os.path.join(os.getcwd(), 'emitter_cells_matches.csv')
+        emitter_cells_matches = os.path.join(
+            os.getcwd(), f'peak_to_cell_matching_prominence_{self.prominence}.csv')
         if os.path.exists(emitter_cells_matches):
             self.strategy.emitter_cell_matching(self, emitter_cells_matches)
         else:
@@ -100,7 +101,8 @@ class MS2GeneExpressionProcessor:
 
     def _reset_processing_state(self):
         """Reset variables used during processing."""
-        self.expression_amplitudes = []
+        self.ellipse_sums = []
+        self.cell_noise = []
         self.visualization_figures = []
         self.segmentation_figures = []
         self.cell_labels_by_timepoint = []
@@ -113,6 +115,8 @@ class MS2GeneExpressionProcessor:
         self.gaussian_fit_params = []
         self.cell_initial_center = []
         self.cell_df = pd.DataFrame(
+            columns=['timepoint', 'x', 'y', 'intensity'])
+        self.final_df = pd.DataFrame(
             columns=['timepoint', 'x', 'y', 'intensity'])
         # Also reset dataframes from strategies that might have been attached
         # to the instance from previous runs with different strategies.
@@ -154,7 +158,7 @@ class MS2GeneExpressionProcessor:
 
         self._save_plots_and_animations(valid_timepoints)
         self._save_csv()
-        return np.array(self.expression_amplitudes)
+        return np.array(self.ellipse_sums), np.array(self.cell_noise), np.mean(np.array(self.cell_center_of_mass), axis=0)
 
     def _get_valid_timepoints(self):
         """Get timepoints where the cell is present (label != -1)."""
@@ -208,20 +212,60 @@ class MS2GeneExpressionProcessor:
         current_cell_mask_projection = (
             np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
 
-        gaussian_params, covariance_matrix, peak_xy = self.strategy.fit_timepoint(
-            self, timepoint, cell_mask_3d, ms2_projection
-        )
-        self.gaussian_fit_params.append(gaussian_params)
-        if gaussian_params is not None:
-            _, ellipse_sum = self.sum_pixels_in_sigma_ellipse(
-                gaussian_params, k=2, subtract_offset=True, clip_negative=True, pct_floor=0.85
-            )
-        else:
-            ellipse_sum = 0.0
+        # Ensure bbox and bbox image are set (used by ellipse sum)
+        z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+        self.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
 
-        self.expression_amplitudes.append(ellipse_sum)
+        cell_df_t = self.cell_df[self.cell_df['timepoint'] == timepoint]
+        if cell_df_t.empty:
+            peak_xy = (0, 0)
+            gaussian_params = None
+        elif len(cell_df_t) == 1:
+            row = cell_df_t.iloc[0]
+            if row['diff_intensity_slice'] / row['intensity'] >= 0.5:
+                peak_xy = (0, 0)
+                gaussian_params = None
+            else:
+                peak_xy, gaussian_params = self._filter_emitter(row, x1, y1)
+            if peak_xy is not None and gaussian_params is not None:
+                self.final_df = pd.concat(
+                    [self.final_df, row.to_frame().T], ignore_index=True)
+        else:
+            if len(cell_df_t) > 1:
+                if (cell_df_t['diff_intensity_slice'].to_numpy() < 10).all():
+                    row = cell_df_t.sort_values(['gauss_sigma_x', 'gauss_sigma_y', 'circular_z_score'],
+                                                ascending=[False, False, True],
+                                                na_position='last').iloc[0]
+                else:
+                    row = cell_df_t.sort_values(['diff_intensity_slice'],
+                                                ascending=[True],
+                                                na_position='last').iloc[0]
+                peak_xy, gaussian_params = self._filter_emitter(row, x1, y1)
+                if peak_xy is not None and gaussian_params is not None:
+                    self.final_df = pd.concat(
+                        [self.final_df, row.to_frame().T], ignore_index=True)
+
+        if gaussian_params is not None:
+            # TODO: debug sum pixels function
+            _, ellipse_sum, noise = self.sum_pixels_in_sigma_ellipse(
+                gaussian_params,
+                image_region=self.current_cell_bbox_ms2,
+                k=2,
+                subtract_offset=True,
+                clip_negative=True,
+                pct_floor=0.85)
+        else:
+            masked_vals = self.current_cell_bbox_ms2 * \
+                (current_cell_mask_projection[y1:y2, x1:x2] > 0)
+            noise = np.median(masked_vals[masked_vals > 0])
+            noise = np.median(np.abs(masked_vals[masked_vals > 0] - noise))
+            noise = 1.4826 * noise
+            ellipse_sum = 0.0  # TODO: calculate noise
+
+        self.ellipse_sums.append(ellipse_sum)
+        self.cell_noise.append(noise)
+        self.gaussian_fit_params.append(gaussian_params)
         if self.plot:
-            z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
             self.visualizer.add_timepoint(
                 timepoint=timepoint,
                 ms2_projection=ms2_projection,
@@ -229,7 +273,6 @@ class MS2GeneExpressionProcessor:
                 cell_bbox_ms2=self.current_cell_bbox_ms2,
                 bbox_coords=(z1, y1, x1, z2, y2, x2),
                 gaussian_params=gaussian_params,
-                covariance_matrix=covariance_matrix,
                 method=self.strategy.name,
                 peak_xy=peak_xy,
                 add_segmentation_3d=True,
@@ -237,6 +280,36 @@ class MS2GeneExpressionProcessor:
                 masks=masks,
                 cell_label=cell_label
             )
+
+    @staticmethod
+    def _get_gaussian_params(row, x1, y1):
+        # Build gaussian params in bbox coordinates
+        # Fallback to peak x/y if fitted centers are missing
+        gx_abs = row['gauss_x0'] if pd.notna(
+            row.get('gauss_x0', np.nan)) else row['x']
+        gy_abs = row['gauss_y0'] if pd.notna(
+            row.get('gauss_y0', np.nan)) else row['y']
+        gaussian_params = {'x0': float(gx_abs) - x1,
+                           'y0': float(gy_abs) - y1,
+                           'sigma_x': float(row.get('gauss_sigma_x', np.nan)),
+                           'sigma_y': float(row.get('gauss_sigma_y', np.nan)),
+                           'amplitude': float(row.get('gauss_amplitude', np.nan)) if pd.notna(row.get('gauss_amplitude', np.nan)) else None,
+                           'offset': float(row.get('gauss_offset', 0.0)) if pd.notna(row.get('gauss_offset', np.nan)) else 0.0
+                           }
+        return gaussian_params
+
+    def _filter_emitter(self, row, x1, y1):
+        """
+        The following method filter emitter by the area of sigma ellipse or Z score
+        """
+        #TODO: add sigma less than 0.3 in an direction as filter
+        if (row['gauss_sigma_x'] <= 0.48 and row['gauss_sigma_y'] <= 0.48) or row['circular_z_score'] > 3:
+            peak_xy = (0, 0)
+            gaussian_params = None
+        else:
+            peak_xy = row['initial_center']
+            gaussian_params = self._get_gaussian_params(row, x1, y1)
+        return peak_xy, gaussian_params
 
     def _load_data_at_timepoint(self, timepoint):
         z_stack = None
@@ -341,7 +414,7 @@ class MS2GeneExpressionProcessor:
 
         intensity = sum(vals[vals >= threshold])
 
-        return vals, intensity
+        return vals, intensity, bg_sigma
 
     def process(self, cell_id):
         """Backward compatibility wrapper for process_cell."""
@@ -353,7 +426,7 @@ class MS2GeneExpressionProcessor:
                 self.cell_id, valid_timepoints, self.ransac_mad_k_th)
         if self.plot['intensity']:
             self.visualizer.expression_plot(
-                self.cell_id, self.expression_amplitudes, 'Ellipse_sum')
+                self.cell_id, self.ellipse_sums, 'Ellipse_sum')
         if self.plot['segmentation']:
             self.visualizer.save_segmentation_animation(
                 self.cell_id, valid_timepoints)
@@ -363,6 +436,11 @@ class MS2GeneExpressionProcessor:
             self.cell_df.to_csv(
                 os.path.join(self.output_dir,
                              f"cell_{self.cell_id}_data_global_peaks.csv"),
+                index=False
+            )
+            self.final_df.to_csv(
+                os.path.join(self.output_dir,
+                             f"cell_{self.cell_id}_data_global_peaks_final.csv"),
                 index=False
             )
         if self.strategy_name == 'local' and hasattr(self, 'guessed_gaussian_df'):
@@ -413,23 +491,32 @@ if __name__ == "__main__":
         masks_paths=masks_paths,
         ms2_background_removed=ms2_background_removed,
         output_dir=args.output_dir,
-        plot={'emitter_fit': True, 'intensity': True, 'segmentation': False},
+        plot={'emitter_fit': False, 'intensity': False, 'segmentation': False},
         ransac_mad_k_th=2.0,
         prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    #amp = processor.process_cell(5, 'global')
+    # amp = processor.process_cell(6, 'global')
 
     num_timepoints = ms2_background_removed.shape[0]
     expression_matrix = {
         'timepoint': list(range(num_timepoints))
     }
-    # process cells that have been tracked for all frames
-    valid_ids = [key for key, cell_labels in tracklets.items()
-                 if cell_labels.count(-1) < 40]
+    # # process cells that have been tracked for all frames
+    # valid_ids = [key for key, cell_labels in tracklets.items()
+    #              if cell_labels.count(-1) < 20]
+    valid_ids = np.arange(0, 50)
     non_zero_min = []
+    cells_center_of_mass_df = pd.DataFrame(columns=['cell_id', 'x', 'y', 'z','noise'])
     for cell_id in tqdm(valid_ids):
-        amp = processor.process_cell(cell_id, 'global')
+        amp, noise, cell_center_of_mass = processor.process_cell(cell_id, 'global')
+        cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
+            'cell_id': cell_id,
+            'x': cell_center_of_mass[0],
+            'y': cell_center_of_mass[1],
+            'z': cell_center_of_mass[2],
+            'noise': np.median(noise)
+        }])], ignore_index=True)
         non_zero_min.append(np.min(amp[amp > 0])
                             if np.any(amp > 0) else np.nan)
         # Reconstruct full-length vector aligned to all timepoints
@@ -453,3 +540,7 @@ if __name__ == "__main__":
                             'gene_expression_results.csv')
     df.to_csv(out_path, index=False)
     print(f"Saved expression matrix to {out_path}")
+    cells_center_of_mass_df.to_csv(os.path.join(
+        processor.output_dir, 'cells_center_of_mass.csv'), index=False)
+    print(
+        f"Saved cells center of mass to {os.path.join(processor.output_dir, 'cells_center_of_mass.csv')}")

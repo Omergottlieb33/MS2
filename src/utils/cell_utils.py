@@ -333,11 +333,12 @@ def estimate_emitter_2d_gaussian_with_fixed_offset(image, initial_position, init
 
         initial_guess = (amp_guess, x0_guess, y0_guess, sx_guess, sy_guess)
 
+        #TODO: optimise gaussian sigma bounds
         # Bounds
         amp_upper = max(img.max() - float(fixed_offset), np.finfo(np.float64).eps)
         bounds = (
-            (0.0,       0.0,    0.0,   0.5, 0.5),            # lower
-            (amp_upper, w - 1,  h - 1, 1.0, 1.0),            # upper
+            (0.0,       0.0,    0.0,   0.25, 0.25),            # lower
+            (amp_upper, w - 1,  h - 1, 2.0, 2.0),            # upper
         )
 
         try:
