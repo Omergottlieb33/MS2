@@ -47,7 +47,6 @@ class MS2VisualizationManager:
         cell_bbox_ms2,
         bbox_coords,  # (z1,y1,x1,z2,y2,x2)
         gaussian_params: dict | None,
-        covariance_matrix,
         method: str,
         peak_xy,
         add_segmentation_3d: bool,

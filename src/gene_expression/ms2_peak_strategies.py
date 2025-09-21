@@ -37,9 +37,9 @@ class GlobalPeakStrategy(PeakStrategy):
     def pre_process_cell(self, processor, valid_timepoints):
         # Include future gaussian param columns (they will be filled later)
         processor.cell_df = pd.DataFrame(columns=[
-            'timepoint', 'x', 'y', 'intensity','z_slice_score', 'dist_to_center', 'angle_to_center',
-            'is_inlier', 'circular_z_score', 'gauss_x0', 'gauss_y0', 'gauss_sigma_x',
-            'gauss_sigma_y', 'gauss_theta', 'gauss_amplitude', 'gauss_offset'
+            'timepoint', 'x', 'y', 'intensity','z_slice_score','diff_intensity_slice', 'dist_to_center', 'angle_to_center',
+            'initial_center','gauss_x0', 'gauss_y0', 'gauss_sigma_x',
+            'gauss_sigma_y', 'gauss_theta', 'gauss_amplitude', 'gauss_offset','circular_z_score'
         ])
         peak_coordinates_list = []
         peak_center_dist_angle = []
@@ -48,106 +48,90 @@ class GlobalPeakStrategy(PeakStrategy):
             _, _, masks, ms2_projection = processor._load_data_at_timepoint(
                 timepoint)
             cell_label = processor.cell_labels_by_timepoint[timepoint]
+            mask = (self.df_peaks["timepoint"].isin([timepoint])) & (
+                self.df_peaks["cell_label"] == cell_label)
+            df_cell = self.df_peaks[mask]
+            # emitter cell matched condition
+            if df_cell.empty:
+                continue
+            # Filter by slice_score and optionally keep top-N by intensity
+            scores = df_cell['slice_score'].to_numpy()
+            valid_mask = scores >= 10
+            if not np.any(valid_mask):
+                continue
+
             cell_mask_3d = (masks == cell_label).astype(np.uint8)
             center = calculate_center_of_mass_3d(cell_mask_3d)
             center = np.array((center[0], center[1]))
             z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
-            mask = (self.df_peaks["timepoint"].isin([timepoint])) & (
-                self.df_peaks["cell_label"] == cell_label)
-            df_cell = self.df_peaks[mask]
-            if df_cell.empty:
-                continue
             relevant_pts1 = df_cell[['x_peak', 'y_peak']].to_numpy()
-            intensities = ms2_projection[relevant_pts1[:,
-                                                       1], relevant_pts1[:, 0]]
-            peak_x, peak_y = relevant_pts1[np.argmax(intensities)]
-            #TODO: Two peaks inside cell -> check Z score. if both Z score above TH check location of previous frame
-            if df_cell['slice_score'].to_numpy()[np.argmax(intensities)] < 10:
-                continue
-            else:
-                slice_score = df_cell['slice_score'].to_numpy()[np.argmax(intensities)]
-            processor.cell_df.loc[len(processor.cell_df)] = {
-                'timepoint': timepoint,
-                'x': peak_x,
-                'y': peak_y,
-                'intensity': ms2_projection[peak_y, peak_x],
-                'z_slice_score': slice_score,
-                'dist_to_center': np.linalg.norm(np.array([peak_x, peak_y]) - center),
-                'angle_to_center': np.arctan2(peak_y - center[1], peak_x - center[0]),
-                'is_inlier': None,
-                'gauss_x0': None,
-                'gauss_y0': None,
-                'gauss_sigma_x': None,
-                'gauss_sigma_y': None,
-                'gauss_theta': None,
-                'gauss_amplitude': None,
-                'gauss_offset': None
-            }
-            # normalized (within cell bbox will be recomputed per frame)
-            # Use simple dimension normalization (avoid bbox for global strategy)
+            intensities = ms2_projection[relevant_pts1[:,1], relevant_pts1[:, 0]]
+            pts_valid = relevant_pts1[valid_mask]
+            sc_valid = scores[valid_mask]
+            inten_valid = intensities[valid_mask]
+
+             # Sort by intensity descending and limit to top-N if desired
+            order = np.argsort(inten_valid)[::-1]
+            pts_sel = pts_valid[order]
+            sc_sel = sc_valid[order]
+
+             # Prepare batch records
+            records = []
             h, w = ms2_projection[y1:y2, x1:x2].shape
-            peak_coordinates_list.append(((peak_x-x1) / w, (peak_y-y1) / h))
-            peak_center_dist_angle.append((np.linalg.norm(np.array(
-                [peak_x, peak_y]) - center), np.arctan2(peak_y - center[1], peak_x - center[0])))
+            for (peak_x, peak_y), slice_score in zip(pts_sel, sc_sel):
+                gaussian_params, covariance_matrix = self._gaussian_fit(ms2_projection[y1:y2, x1:x2],
+                                                                         (peak_x - x1, peak_y - y1))
+                records.append({
+                    'timepoint': timepoint,
+                    'x': int(peak_x),
+                    'y': int(peak_y),
+                    'intensity': float(ms2_projection[peak_y, peak_x]),
+                    'z_slice_score': float(slice_score),
+                    'diff_intensity_slice': float(ms2_projection[peak_y, peak_x]) - float(slice_score),
+                    'dist_to_center': float(np.linalg.norm(np.array([peak_x, peak_y]) - center)),
+                    'angle_to_center': float(np.arctan2(peak_y - center[1], peak_x - center[0])),
+                    'initial_center': (peak_x - x1, peak_y - y1),
+                    'gauss_x0': gaussian_params.get('x0', np.nan) + x1,
+                    'gauss_y0': gaussian_params.get('y0', np.nan) + y1,
+                    'gauss_sigma_x': gaussian_params.get('sigma_x', np.nan),
+                    'gauss_sigma_y': gaussian_params.get('sigma_y', np.nan),
+                    'gauss_theta': gaussian_params.get('theta', np.nan),
+                    'gauss_amplitude': gaussian_params.get('amplitude', np.nan),
+                    'gauss_offset': gaussian_params.get('offset', np.nan)
+                })
+                # keep normalized lists in sync
+                peak_coordinates_list.append(((peak_x - x1) / w, (peak_y - y1) / h))
+                peak_center_dist_angle.append((
+                    np.linalg.norm(np.array([peak_x, peak_y]) - center),
+                    np.arctan2(peak_y - center[1], peak_x - center[0])
+                ))
+            if records:
+                processor.cell_df = pd.concat(
+                    [processor.cell_df, pd.DataFrame.from_records(records)],
+                    ignore_index=True
+                )
         # TODO: add distance consideration to Z score
         if len(peak_center_dist_angle):
-            self._z_score_outlier_removal_thresholds(
-                np.array(peak_center_dist_angle)[:, 1])
             processor.cell_df['circular_z_score'] = circular_z_score(
                 np.array(peak_center_dist_angle)[:, 1])[0]
-            #TODO: optimise clustering, DBSCAN with circular coordinates
             peak_center_dist_angle_array = np.array(peak_center_dist_angle)
-
-            degree = 3
-            min_points_needed = degree + 1
-            mask_ransac = None
-            inliers_ransac = np.empty((0, 2))
-            ransac_success = False
-
-            if peak_center_dist_angle_array.shape[0] >= min_points_needed + 1:
-                try:
-                    inliers_ransac, mask_ransac, _ = filter_ransac_poly(
-                        peak_center_dist_angle_array,
-                        degree=degree,
-                        residual_threshold=2.5,
-                        mad_k=processor.ransac_mad_k_th
-                    )
-                    # treat empty or all-false as failure
-                    if inliers_ransac.size > 0 and mask_ransac.sum() > 0:
-                        ransac_success = True
-                except ValueError:
-                    pass  # fall through to NA assignment
-
-            if not ransac_success:
-                # set all to NA (nullable boolean)
-                mask_ransac = np.array(
-                    [pd.NA] * peak_center_dist_angle_array.shape[0], dtype=object)
-                inliers_ransac = np.empty((0, 2))
-
-            processor.cell_df['is_inlier'] = pd.Series(
-                mask_ransac, index=processor.cell_df.index, dtype="boolean"
-            )
             processor.cell_df['dist_to_center'] = peak_center_dist_angle_array[:, 0]
             processor.cell_df['angle_to_center'] = peak_center_dist_angle_array[:, 1]
 
-            if processor.plot and ransac_success:
-                from src.utils.plot_utils import plot_gaussian_initial_guess
-                plot_gaussian_initial_guess(
-                    peak_center_dist_angle_array,
-                    inliers_ransac,
-                    output_path=f"{processor.output_dir}/cell_{processor.cell_id}_gaussian_initial_guess_mad_k_{processor.ransac_mad_k_th}_center_dist_angle.png"
-                )
-        else:
-            processor.cell_df['is_inlier'] = pd.Series(dtype="boolean")
 
         # keep same attribute for downstream compatibility
         processor.cell_initial_center = []
-
-    def _z_score_outlier_removal_thresholds(self, angles):
-        mean = np.mean(angles)
-        std = np.std(angles)
-        self.angle_outlier_threshold = [mean + 3 * std, mean - 3 * std]
-
+    
+    def _gaussian_fit(self, current_cell_bbox_ms2, initial_center):
+        offset = estimate_background_offset_annulus(
+            current_cell_bbox_ms2, initial_center
+        )
+        gaussian_params, covariance_matrix = estimate_emitter_2d_gaussian_with_fixed_offset(
+            current_cell_bbox_ms2, initial_center, initial_sigma=0.5, fixed_offset=offset
+        )
+        return gaussian_params, covariance_matrix
+    
+    # --- fit_timepoint is not used in this strategy ---
     def fit_timepoint(self, processor, timepoint, cell_mask_3d, ms2_projection):
         z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
         processor.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
@@ -233,6 +217,7 @@ class GlobalPeakStrategy(PeakStrategy):
         # filter emitter peaks in overlaping cells
         df_filtered = df_all.loc[df_all.groupby(["timepoint", "x_peak", "y_peak"])[
             "slice_score"].idxmax()]
+        df_filtered.to_csv(f"peak_to_cell_matching_prominence_{self.prominence}.csv", index=False)
         self.df_peaks = df_filtered
 
     @staticmethod

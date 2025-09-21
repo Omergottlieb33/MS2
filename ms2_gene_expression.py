@@ -42,13 +42,14 @@ class MS2GeneExpressionProcessor:
         self.mask_file_paths = masks_paths
         self.ms2_background_removed = ms2_background_removed
         self.ms2_z_projections = self.ms2_background_removed.sum(
-            axis=1)  # Z projection
+            axis=1, dtype=np.float32)  # Z projection
         self.output_dir = output_dir
         self.plot = plot
         self.ransac_mad_k_th = ransac_mad_k_th
         self.strategy_name = strategy  # TODO: redundant
         self.czi_reader = None
         self.prominence = prominence
+        self._mask_buffer = None
 
         # Only initialize the CZI reader if segmentation plotting is enabled to save memory.
         if self.plot and self.plot.get('segmentation', False):
@@ -117,7 +118,7 @@ class MS2GeneExpressionProcessor:
         self.cell_df = pd.DataFrame(
             columns=['timepoint', 'x', 'y', 'intensity'])
         self.final_df = pd.DataFrame(
-            columns=['timepoint', 'x', 'y', 'intensity'])
+            columns=['timepoint', 'x', 'y', 'intensity', 'ellipse_sum', 'noise'])
         # Also reset dataframes from strategies that might have been attached
         # to the instance from previous runs with different strategies.
         if hasattr(self, 'guessed_gaussian_df'):
@@ -181,13 +182,17 @@ class MS2GeneExpressionProcessor:
             cell_label = self.cell_labels_by_timepoint[timepoint]
 
             # Create cell mask and get bounding box
-            cell_mask_3d = np.empty(masks.shape, dtype=np.uint8)
-            np.equal(masks, cell_label, out=cell_mask_3d, casting='unsafe')
-            z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(cell_mask_3d)
+            # Reuse a single allocated buffer instead of allocating a new (Z,1024,1024) bool each loop
+            if (self._mask_buffer is None) or (self._mask_buffer.shape != masks.shape):
+                # bool uses 1 byte same as uint8 but operations (sum / >0) are fine
+                self._mask_buffer = np.empty(masks.shape, dtype=bool)
+            np.equal(masks, cell_label, out=self._mask_buffer)
+            z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(
+                self._mask_buffer)
             self.cell_center_debug.append(((x1 + x2) // 2, (y1 + y2) // 2))
 
             # Project cell mask to 2D
-            cell_mask_2d = np.sum(cell_mask_3d, axis=0)
+            cell_mask_2d = np.sum(self._mask_buffer, axis=0)
             # Normalize
             cell_mask_2d = (cell_mask_2d > 0).astype(np.uint8)
 
@@ -204,11 +209,18 @@ class MS2GeneExpressionProcessor:
         z_stack, ms2_stack, masks, ms2_projection = self._load_data_at_timepoint(
             timepoint)
         cell_label = self.cell_labels_by_timepoint[timepoint]
-        cell_mask_3d = np.empty(masks.shape, dtype=np.uint8)
-        np.equal(masks, cell_label, out=cell_mask_3d, casting='unsafe')
+
+        # Reuse buffer (CHANGE)
+        if (self._mask_buffer is None) or (self._mask_buffer.shape != masks.shape):
+            self._mask_buffer = np.empty(masks.shape, dtype=bool)
+        np.equal(masks, cell_label, out=self._mask_buffer)
+
+        # 3D mask reference
+        cell_mask_3d = self._mask_buffer  # alias (no copy)
         center = calculate_center_of_mass_3d(cell_mask_3d)
         if center is not None:
             self.cell_center_of_mass.append(center)
+
         current_cell_mask_projection = (
             np.sum(cell_mask_3d, axis=0) > 0).astype(np.uint8)
 
@@ -255,13 +267,16 @@ class MS2GeneExpressionProcessor:
                 clip_negative=True,
                 pct_floor=0.85)
         else:
-            masked_vals = self.current_cell_bbox_ms2 * \
-                (current_cell_mask_projection[y1:y2, x1:x2] > 0)
-            noise = np.median(masked_vals[masked_vals > 0])
-            noise = np.median(np.abs(masked_vals[masked_vals > 0] - noise))
-            noise = 1.4826 * noise
+            masked_vals = self.current_cell_bbox_ms2 * (current_cell_mask_projection[y1:y2, x1:x2] > 0)
+            # Reduce temporary arrays by working in-place
+            positive = masked_vals[masked_vals > 0]
+            if positive.size:
+                med = np.median(positive)
+                mad = np.median(np.abs(positive - med))
+                noise = 1.4826 * mad if mad > 0 else (positive.std() if positive.size > 1 else 0.0)
             ellipse_sum = 0.0  # TODO: calculate noise
-
+        self.final_df.loc[self.final_df['timepoint'] == timepoint, 'ellipse_sum'] = ellipse_sum
+        self.final_df.loc[self.final_df['timepoint'] == timepoint, 'noise'] = noise
         self.ellipse_sums.append(ellipse_sum)
         self.cell_noise.append(noise)
         self.gaussian_fit_params.append(gaussian_params)
@@ -302,7 +317,7 @@ class MS2GeneExpressionProcessor:
         """
         The following method filter emitter by the area of sigma ellipse or Z score
         """
-        #TODO: add sigma less than 0.3 in an direction as filter
+        # TODO: add sigma less than 0.3 in an direction as filter
         if (row['gauss_sigma_x'] <= 0.48 and row['gauss_sigma_y'] <= 0.48) or row['circular_z_score'] > 3:
             peak_xy = (0, 0)
             gaussian_params = None
@@ -329,7 +344,7 @@ class MS2GeneExpressionProcessor:
                 print(
                     f"Warning: Could not read timepoint {timepoint} from CZI file: {e}")
 
-        masks = np.load(self.mask_file_paths[timepoint])['masks']
+        masks = np.load(self.mask_file_paths[timepoint], mmap_mode='r')['masks']
         ms2_projection = self.ms2_z_projections[timepoint]
         return z_stack, ms2_stack, masks, ms2_projection
 
@@ -471,6 +486,32 @@ def parse_args():
 
     return parser.parse_args()
 
+def fill_amplitude_vector(path,start, n, fill_value = 0.0):
+    df = pd.read_csv(path)
+    valid_timepoints = df['timepoint'].to_numpy().astype(int)
+    amplitudes = df['ellipse_sum'].to_numpy().astype(float)
+    filled_amplitudes = amplitudes.copy()
+    diff = np.diff(valid_timepoints)
+    out = []
+    if start > 0:
+        out.extend([np.nan] * start)
+    # Handle edge case where no valid timepoints exist
+    if len(valid_timepoints) == 0:
+        out.extend([fill_value] * (n-start))
+        return np.asarray(out, dtype=float)
+    # Prepend fill values if the first valid timepoint is greater than 0
+    if valid_timepoints[0] > 0:
+        out.extend([fill_value] * valid_timepoints[0])
+    # Fill gaps between valid timepoints
+    for i in range(amplitudes.size - 1):
+        out.append(amplitudes[i])
+        gap = int(diff[i]) - 1
+        if gap > 0:
+            out.extend([fill_value] * gap)
+    # Append the last amplitude
+    out.append(amplitudes[-1])
+    filled_amplitudes = np.asarray(out, dtype=float)
+    return filled_amplitudes
 
 if __name__ == "__main__":
     args = parse_args()
@@ -496,27 +537,36 @@ if __name__ == "__main__":
         prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    # amp = processor.process_cell(6, 'global')
+    #amp = processor.process_cell(137, 'global')
 
     num_timepoints = ms2_background_removed.shape[0]
     expression_matrix = {
         'timepoint': list(range(num_timepoints))
     }
-    # # process cells that have been tracked for all frames
-    # valid_ids = [key for key, cell_labels in tracklets.items()
-    #              if cell_labels.count(-1) < 20]
-    valid_ids = np.arange(0, 50)
+
+    valid_ids = [
+    (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
+    for key, cell_labels in tracklets.items()
+    if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
+    # valid_ids = np.arange(0, 50)
     non_zero_min = []
-    cells_center_of_mass_df = pd.DataFrame(columns=['cell_id', 'x', 'y', 'z','noise'])
-    for cell_id in tqdm(valid_ids):
-        amp, noise, cell_center_of_mass = processor.process_cell(cell_id, 'global')
-        cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
-            'cell_id': cell_id,
-            'x': cell_center_of_mass[0],
-            'y': cell_center_of_mass[1],
-            'z': cell_center_of_mass[2],
-            'noise': np.median(noise)
-        }])], ignore_index=True)
+    cells_center_of_mass_df = pd.DataFrame(
+        columns=['cell_id', 'x', 'y', 'z', 'noise'])
+    for cell_id, first_valid_timepoint in tqdm(valid_ids):
+        #TODO: deal with allready present results
+        if os.path.exists(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv")):
+            print(f"Skipping cell {cell_id} as results already exist.")
+            amp = fill_amplitude_vector(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv"), first_valid_timepoint, n=num_timepoints)
+        else:
+            amp, noise, cell_center_of_mass = processor.process_cell(
+                cell_id, 'global')
+            cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
+                'cell_id': cell_id,
+                'x': cell_center_of_mass[0],
+                'y': cell_center_of_mass[1],
+                'z': cell_center_of_mass[2],
+                'noise': np.median(noise)
+            }])], ignore_index=True)
         non_zero_min.append(np.min(amp[amp > 0])
                             if np.any(amp > 0) else np.nan)
         # Reconstruct full-length vector aligned to all timepoints
