@@ -142,7 +142,6 @@ class GlobalPeakStrategy(PeakStrategy):
             return None, None, (0, 0)
         else:
             row = row_match.iloc[0]
-            # TODO: optimise outlier removal, circular Z score with distance
             if row['circular_z_score'] > 3:
                 processor.cell_initial_center.append((0, 0))
                 return None, None, (0, 0)
