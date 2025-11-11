@@ -79,15 +79,18 @@ def cell_tracking(masks_dir:str, t:int) -> dict:
     masks_paths = get_masks_paths(masks_dir)
     masks = []
     for i in range(len(masks_paths)):
-        z_stack_seg_mask = np.load(masks_paths[i])['masks']
-        masks.append(z_stack_seg_mask)
+        try:
+            z_stack_seg_mask = np.load(masks_paths[i], allow_pickle=True)['masks']
+            masks.append(z_stack_seg_mask)
+        except Exception as e:
+            print(f"Error loading {masks_paths[i]}: {e}")
     if t<=0 or t> len(masks_paths):
         t = len(masks_paths) - 1
     # IoU matching
     matched_points = match_over_time_cell_iou(masks)
     # create tracklets
     tracklets = create_tracklets(matched_points)
-    save_path = os.path.join(masks_dir, 'tracklets_matching_iou.json')
+    save_path = os.path.join(masks_dir, 'tracklets_matching_iou_v2.json')
     with open(save_path, 'w') as f:
         json.dump(tracklets, f, indent=4)
     print(f'Tracklets saved to {save_path}')
@@ -96,8 +99,7 @@ def cell_tracking(masks_dir:str, t:int) -> dict:
         
 
 if __name__ == "__main__":
-    czi_file_path = '/home/dafei/data/MS2/gRNA2_12.03.25-st-13-II---.czi'
-    masks_dir = '/home/dafei/output/MS2/3d_cell_segmentation/gRNA2_12.03.25-st-13-II---/masks'
-    t = 80  # Number of time points to process, set to None to process all available masks
+    masks_dir = r'c:\\Users\\97254\\Desktop\\Resources\\Technion\\grad_school\\shechtman_lap\\projects\\MS2\\outputs\\gRNA2\\19.03.25-I\\masks'
+    t = 58  # Number of time points to process, set to None to process all available masks
     tracklets = cell_tracking(masks_dir, t=t)
     

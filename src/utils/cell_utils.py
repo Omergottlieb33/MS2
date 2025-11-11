@@ -3,7 +3,7 @@ from scipy.optimize import curve_fit
 from sklearn.linear_model import RANSACRegressor
 from sklearn.preprocessing import PolynomialFeatures
 
-def get_3d_bounding_box_corners(mask: np.ndarray) -> np.ndarray:
+def get_3d_bounding_box_corners(mask: np.ndarray):
     """
     Calculates the 8 corners of the 3D bounding box for a given 3D mask.
 
@@ -24,7 +24,7 @@ def get_3d_bounding_box_corners(mask: np.ndarray) -> np.ndarray:
     coords = np.where(mask > 0)
     if not coords[0].size:
         # No object found in the mask
-        return np.empty((0, 3), dtype=int)
+        return None
 
     z_coords, y_coords, x_coords = coords
 
