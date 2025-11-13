@@ -3,7 +3,7 @@ from src.gene_expression.ms2_visualization import MS2VisualizationManager
 from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
 from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d
 from src.utils.plot_utils import plot_gmm_clustering
-from src.utils.cluster_utils import gmm_cluster, get_quadrant
+from src.utils.cluster_utils import SpaitalClustering
 from cell_tracking import get_masks_paths
 
 import os
@@ -76,6 +76,7 @@ class MS2GeneExpressionProcessor:
         # Initialize processing state variables
         self._reset_processing_state()
         self._init_strategy()
+        self.spatial_clustering = SpaitalClustering()
 
     def _init_strategy(self):
         self.strategy = self._build_strategy()
@@ -121,11 +122,7 @@ class MS2GeneExpressionProcessor:
             columns=['timepoint', 'x', 'y', 'intensity'])
         self.final_df = pd.DataFrame(
             columns=['timepoint', 'x', 'y', 'intensity', 'ellipse_sum', 'noise'])
-        # Also reset dataframes from strategies that might have been attached
-        # to the instance from previous runs with different strategies.
-        if hasattr(self, 'guessed_gaussian_df'):
-            del self.guessed_gaussian_df
-    
+        
     def _cleanup_after_cell(self):
         # Drop big arrays/lists/DFs
         self.current_cell_mask_projection = None
@@ -190,8 +187,8 @@ class MS2GeneExpressionProcessor:
         # Process each timepoint
         for timepoint in tqdm(valid_timepoints, desc=f"Cell {cell_id}"):
             self._process_single_timepoint(timepoint)
-        #TODO: add GMM clustering for noise detections
-        self.spatial_clustering()
+        # Post processing
+        self.final_df = self.spatial_clustering(self.final_df, self.output_dir, cell_id)
         self.visualize_timepoints(timepoints)
         self._save_plots_and_animations(valid_timepoints)
         self._save_csv()
@@ -336,7 +333,7 @@ class MS2GeneExpressionProcessor:
                 med = np.median(positive)
                 mad = np.median(np.abs(positive - med))
                 noise = 1.4826 * mad if mad > 0 else (positive.std() if positive.size > 1 else 0.0)
-            ellipse_sum = 0.0  # TODO: calculate noise
+            ellipse_sum = 0.0  
         self.final_df.loc[self.final_df['timepoint'] == timepoint, 'ellipse_sum'] = ellipse_sum
         self.final_df.loc[self.final_df['timepoint'] == timepoint, 'noise'] = noise
         self.ellipse_sums.append(ellipse_sum)
@@ -364,7 +361,7 @@ class MS2GeneExpressionProcessor:
         """
         The following method filter emitter by the area of sigma ellipse or Z score
         """
-        # TODO: add sigma less than 0.3 in an direction as filter
+        # TODO: Threshold optimization
         if (row['gauss_sigma_x'] <= 0.48 and row['gauss_sigma_y'] <= 0.48) or row['circular_z_score'] > 2.8 or (row['gauss_sigma_x'] < 0.3 or row['gauss_sigma_y'] < 0.3) or (row['gauss_sigma_x'] > 1.95 or row['gauss_sigma_y'] > 1.95):
             peak_xy = (0, 0)
             gaussian_params = None
@@ -515,60 +512,6 @@ class MS2GeneExpressionProcessor:
                              f"cell_{self.cell_id}_data_global_peaks_final.csv"),
                 index=False
             )
-        if self.strategy_name == 'local' and hasattr(self, 'guessed_gaussian_df'):
-            out_df = self.guessed_gaussian_df.copy()
-            out_df.to_csv(
-                os.path.join(self.output_dir,
-                             f"cell_{self.cell_id}_data_local_peaks.csv"),
-                index=False
-            )
-    def spatial_clustering(self):
-        if len(self.final_df) < 3:
-            return
-        dist_to_center = self.final_df['dist_to_center'].to_numpy().astype(float)
-        angle_to_center = self.final_df['angle_to_center'].to_numpy().astype(float)
-        x = dist_to_center * np.cos(angle_to_center)
-        y = dist_to_center * np.sin(angle_to_center)
-
-        gmm_labels_lr, gmm_probs, gmm_means_lr, gmm_covs_lr = gmm_cluster(x, y)
-        n1, n2 = len(gmm_labels_lr[gmm_labels_lr == 0]), len(gmm_labels_lr[gmm_labels_lr == 1])
-        q1, q2 = get_quadrant(gmm_means_lr[0][0], gmm_means_lr[0][1]), get_quadrant(gmm_means_lr[1][0], gmm_means_lr[1][1])
-        output_path = os.path.join(self.output_dir, f'cell_{self.cell_id}_gmm_clustering.png')
-        plot_gmm_clustering(x, y, gmm_means_lr, gmm_covs_lr, gmm_labels_lr, output_path)
-        #TODO: add radius constraint
-        # two distinguished clusters condition
-        if (q1 != q2) and (n1 > 2*n2 or n2 > 2*n1):
-            #TODO: debug cells 27, 43
-            if n1 > n2:
-                indces= np.where(gmm_labels_lr == 0)[0]
-            else:
-                indces= np.where(gmm_labels_lr == 1)[0]
-            self.final_df = self.final_df.iloc[indces]
-            return
-        # same quadrant condition
-        elif q1 == q2:
-            return
-        elif len(self.final_df) < max(self._get_valid_timepoints())/3:
-            sigma_rms1 = np.sqrt(gmm_covs_lr[0][0][0] + gmm_covs_lr[0][1][1])
-            sigma_rms2 = np.sqrt(gmm_covs_lr[1][0][0] + gmm_covs_lr[1][1][1])
-
-            if n1 > n2 and sigma_rms1 < sigma_rms2:
-                indices= np.where(gmm_labels_lr == 0)[0]
-                self.final_df = self.final_df.iloc[indices]
-            elif n2 > n1 and sigma_rms2 < sigma_rms1:
-                indices= np.where(gmm_labels_lr == 1)[0]
-                self.final_df = self.final_df.iloc[indices]
-            elif n1 <= n2 and sigma_rms1*3 < sigma_rms2:
-                indices= np.where(gmm_labels_lr == 0)[0]
-                self.final_df = self.final_df.iloc[indices]
-            elif n2 <= n1 and sigma_rms2*3 < sigma_rms1:
-                indices= np.where(gmm_labels_lr == 1)[0]
-                self.final_df = self.final_df.iloc[indices]
-            else:
-                self.final_df = self.final_df.drop(self.final_df.index, inplace=False)
-            return
-
-        # temporal condition
     
     def visualize_timepoints(self, timepoints):
         for timepoint in timepoints:
@@ -688,61 +631,61 @@ if __name__ == "__main__":
         prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    amp = processor.process_cell(5, 'global')
+    amp = processor.process_cell(8, 'global')
 
-    num_timepoints = ms2_background_removed.shape[0]
-    expression_matrix = {
-        'timepoint': list(range(num_timepoints))
-    }
+    # num_timepoints = ms2_background_removed.shape[0]
+    # expression_matrix = {
+    #     'timepoint': list(range(num_timepoints))
+    # }
 
-    valid_ids = [
-    (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
-    for key, cell_labels in tracklets.items()
-    if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
-    # valid_ids = np.arange(0, 50)
-    non_zero_min = []
-    cells_center_of_mass_df = pd.DataFrame(
-        columns=['cell_id', 'x', 'y', 'z', 'noise'])
-    for cell_id, first_valid_timepoint in tqdm(valid_ids):
-        # #TODO: deal with allready present results
-        if os.path.exists(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv")):
-            print(f"Skipping cell {cell_id} as results already exist.")
-            amp = fill_amplitude_vector(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv"), first_valid_timepoint, n=num_timepoints)
-        else:
-            amp, noise, cell_center_of_mass = processor.process_cell(
-                cell_id, 'global')
-            cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
-                'cell_id': cell_id,
-                'x': cell_center_of_mass[0],
-                'y': cell_center_of_mass[1],
-                'z': cell_center_of_mass[2],
-                'noise': np.median(noise)
-            }])], ignore_index=True)
-        non_zero_min.append(np.min(amp[amp > 0])
-                            if np.any(amp > 0) else np.nan)
-        # Reconstruct full-length vector aligned to all timepoints
-        labels = tracklets[str(cell_id)]
-        full_series = [np.nan] * num_timepoints
-        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+    # valid_ids = [
+    # (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
+    # for key, cell_labels in tracklets.items()
+    # if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
+    # # valid_ids = np.arange(0, 50)
+    # non_zero_min = []
+    # cells_center_of_mass_df = pd.DataFrame(
+    #     columns=['cell_id', 'x', 'y', 'z', 'noise'])
+    # for cell_id, first_valid_timepoint in tqdm(valid_ids):
+    #     # #TODO: deal with allready present results
+    #     if os.path.exists(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv")):
+    #         print(f"Skipping cell {cell_id} as results already exist.")
+    #         amp = fill_amplitude_vector(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv"), first_valid_timepoint, n=num_timepoints)
+    #     else:
+    #         amp, noise, cell_center_of_mass = processor.process_cell(
+    #             cell_id, 'global')
+    #         cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
+    #             'cell_id': cell_id,
+    #             'x': cell_center_of_mass[0],
+    #             'y': cell_center_of_mass[1],
+    #             'z': cell_center_of_mass[2],
+    #             'noise': np.median(noise)
+    #         }])], ignore_index=True)
+    #     non_zero_min.append(np.min(amp[amp > 0])
+    #                         if np.any(amp > 0) else np.nan)
+    #     # Reconstruct full-length vector aligned to all timepoints
+    #     labels = tracklets[str(cell_id)]
+    #     full_series = [np.nan] * num_timepoints
+    #     valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
 
-        # Map returned amplitudes to their corresponding timepoints
-        if not isinstance(amp, np.ndarray):
-            continue
-        for tp, amp in zip(valid_timepoints, amp):
-                full_series[tp] = amp
-        expression_matrix[f'cell_{cell_id}'] = full_series
-    noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
-    print(f"Noise level: {noise_level}")
-    df = pd.DataFrame(expression_matrix)
-    # # Replace zeros in cell columns with noise_level
-    # cell_cols = [c for c in df.columns if c.startswith('cell_')]
-    # if noise_level is not None and cell_cols:
-    #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
-    out_path = os.path.join(processor.output_dir,
-                            'gene_expression_results.csv')
-    df.to_csv(out_path, index=False)
-    print(f"Saved expression matrix to {out_path}")
-    cells_center_of_mass_df.to_csv(os.path.join(
-        processor.output_dir, 'cells_center_of_mass.csv'), index=False)
-    print(
-        f"Saved cells center of mass to {os.path.join(processor.output_dir, 'cells_center_of_mass.csv')}")
+    #     # Map returned amplitudes to their corresponding timepoints
+    #     if not isinstance(amp, np.ndarray):
+    #         continue
+    #     for tp, amp in zip(valid_timepoints, amp):
+    #             full_series[tp] = amp
+    #     expression_matrix[f'cell_{cell_id}'] = full_series
+    # noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
+    # print(f"Noise level: {noise_level}")
+    # df = pd.DataFrame(expression_matrix)
+    # # # Replace zeros in cell columns with noise_level
+    # # cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    # # if noise_level is not None and cell_cols:
+    # #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
+    # out_path = os.path.join(processor.output_dir,
+    #                         'gene_expression_results.csv')
+    # df.to_csv(out_path, index=False)
+    # print(f"Saved expression matrix to {out_path}")
+    # cells_center_of_mass_df.to_csv(os.path.join(
+    #     processor.output_dir, 'cells_center_of_mass.csv'), index=False)
+    # print(
+    #     f"Saved cells center of mass to {os.path.join(processor.output_dir, 'cells_center_of_mass.csv')}")

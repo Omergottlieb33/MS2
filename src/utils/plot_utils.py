@@ -3,6 +3,8 @@ import numpy as np
 from typing import Optional
 import matplotlib.pyplot as plt
 from typing import Optional, List, Union
+from matplotlib.patches import Ellipse, Circle
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 
 from cellpose.plot import mask_overlay
 from cellpose.utils import masks_to_outlines
@@ -475,3 +477,76 @@ def plot_gaussian_initial_guess(emitter_peaks_array, inliers, output_path, origi
     fig.tight_layout()
     fig.savefig(output_path)
 
+def plot_gmm_clustering(x,y,gmm_means_lr,gmm_covs_lr,gmm_labels_lr, output_path):
+    fig,ax = plt.subplots(1,1,figsize=(12,6))
+    # Means and covariance ellipses (1σ and 2σ)
+    colors = ['blue', 'red']
+    for i, (m, c) in enumerate(zip(gmm_means_lr, gmm_covs_lr)):
+        ax.scatter(x, y, c=gmm_labels_lr, cmap='coolwarm', s=8, edgecolors='none', zorder=1)
+        ax.scatter(m[0], m[1], c=colors[i], s=120, marker='x', linewidths=2, zorder=4)
+        draw_cov_ellipse(m, c, ax, n_std=1.0, edgecolor=colors[i], lw=1.5, zorder=3)
+        #draw_cov_ellipse(m, c, ax, n_std=1.5, edgecolor=colors[i], lw=1.2, zorder=3)
+        draw_cov_ellipse(m, c, ax, n_std=2.0, edgecolor=colors[i], lw=1.0, zorder=3)
+    ax.set_title('GMM Clustering')
+    ax.scatter(0,0, c='black', s=100, marker='+', linewidths=2)
+    ax.scatter(gmm_means_lr[:,0], gmm_means_lr[:,1], c=['blue', 'red'], s=150, marker='x', linewidths=2)
+    ax.grid(True)
+    plt.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+# Helper: draw an n-std ellipse from a 2x2 covariance
+def draw_cov_ellipse(mean, cov, ax, n_std=2.0, edgecolor='k', facecolor='none', lw=2, zorder=3):
+    # Handle both 'full' and 'diag' forms
+    if cov.ndim == 1:
+        cov = np.diag(cov)
+    # Eigen-decomposition
+    vals, vecs = np.linalg.eigh(cov)
+    # Sort by descending eigenvalue
+    order = vals.argsort()[::-1]
+    vals, vecs = vals[order], vecs[:, order]
+    # Width/height are 2*n_std*sqrt(eigenvalues)
+    width, height = 2 * n_std * np.sqrt(vals)
+    # Angle of the largest eigenvector
+    angle = np.degrees(np.arctan2(vecs[1, 0], vecs[0, 0]))
+    e = Ellipse(xy=mean, width=width, height=height, angle=angle,
+                edgecolor=edgecolor, facecolor=facecolor, lw=lw, zorder=zorder)
+    ax.add_patch(e)
+
+def plot_single_gaussian(pts,intensity,keep_mask, means,covs, sigma_rms, output_path):
+    colors_list = ["#0d0887", "#6a00a8", "#b12a90", "#e16462", "#fca636", "#f0f921"]
+    my_cmap = LinearSegmentedColormap.from_list("my_cmap", colors_list, N=256)
+    vmin, vmax = np.quantile(intensity, (0.02, 0.98))
+    norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
+
+    fig, ax = plt.subplots(1,1, figsize=(12,6))
+    ax.scatter(pts[keep_mask,0], pts[keep_mask,1], c=intensity[keep_mask], cmap=my_cmap, s=10, alpha=0.5, label='Emitters')
+    ax.scatter(pts[~keep_mask,0], pts[~keep_mask,1], c='red', s=10, alpha=1.0, label='Filtered Emitters')
+    ax.scatter(0,0, c='black', s=50, marker='x', label='Cell Center')
+    ax.grid(True)
+    ax.set_title(f'GMM Clustering of Emitters ,rms_sigma={sigma_rms:.2f}')
+    draw_cov_ellipse(means[0], covs[0], ax, n_std=1.0, edgecolor='blue', lw=1)
+    draw_cov_ellipse(means[0], covs[0], ax, n_std=2.0, edgecolor='blue', lw=1)
+    draw_cov_ellipse(means[0], covs[0], ax, n_std=3.0, edgecolor='blue', lw=1)
+    cbar = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=my_cmap), ax=ax)
+    cbar.set_label('Emitter Intensity')
+    plt.legend()
+    fig.savefig(output_path)
+
+def plot_multiple_gaussians(n_components, pts, labels, means,covs, sigma_rms_n, cell_id, output_path):
+    fig,ax = plt.subplots(1,1,figsize=(12,6))
+    # Means and covariance ellipses (1σ and 2σ)
+    colors = ['blue', 'red', 'green', 'orange', 'purple']
+    for i, (m, c) in enumerate(zip(means, covs)):
+        ax.scatter(pts[:,0], pts[:,1], c=labels, cmap='coolwarm', s=8, edgecolors='none', zorder=1)
+        ax.scatter(m[0], m[1], c=colors[i], s=120, marker='x', linewidths=2, zorder=4)
+        draw_cov_ellipse(m, c, ax, n_std=1.0, edgecolor=colors[i], lw=1.5, zorder=3)
+        draw_cov_ellipse(m, c, ax, n_std=1.5, edgecolor=colors[i], lw=1.2, zorder=3)
+        draw_cov_ellipse(m, c, ax, n_std=2.0, edgecolor=colors[i], lw=1.0, zorder=3)
+    ax.set_title(f'GMM Clustering sigma_rms={[f"{s:.2f}" for s in sigma_rms_n]} for Cell {cell_id} with n={n_components}')
+    ax.scatter(0,0, c='black', s=100, marker='+', linewidths=2)
+    ax.scatter(means[:,0], means[:,1], c = colors[:n_components], s=150, marker='x', linewidths=2)
+    ax.grid(True)
+    plt.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
