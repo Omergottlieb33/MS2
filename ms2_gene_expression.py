@@ -188,7 +188,10 @@ class MS2GeneExpressionProcessor:
         for timepoint in tqdm(valid_timepoints, desc=f"Cell {cell_id}"):
             self._process_single_timepoint(timepoint)
         # Post processing
-        self.final_df = self.spatial_clustering(self.final_df, self.output_dir, cell_id)
+        if len(self.final_df) <2:
+            self.final_df = self.final_df.iloc[0:0]
+        else:
+            self.final_df = self.spatial_clustering(self.final_df, self.output_dir, cell_id)
         self.visualize_timepoints(timepoints)
         self._save_plots_and_animations(valid_timepoints)
         self._save_csv()
@@ -631,61 +634,61 @@ if __name__ == "__main__":
         prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    amp = processor.process_cell(8, 'global')
+    #amp = processor.process_cell(14, 'global')
 
-    # num_timepoints = ms2_background_removed.shape[0]
-    # expression_matrix = {
-    #     'timepoint': list(range(num_timepoints))
-    # }
+    num_timepoints = ms2_background_removed.shape[0]
+    expression_matrix = {
+        'timepoint': list(range(num_timepoints))
+    }
 
-    # valid_ids = [
-    # (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
-    # for key, cell_labels in tracklets.items()
-    # if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
-    # # valid_ids = np.arange(0, 50)
-    # non_zero_min = []
-    # cells_center_of_mass_df = pd.DataFrame(
-    #     columns=['cell_id', 'x', 'y', 'z', 'noise'])
-    # for cell_id, first_valid_timepoint in tqdm(valid_ids):
-    #     # #TODO: deal with allready present results
-    #     if os.path.exists(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv")):
-    #         print(f"Skipping cell {cell_id} as results already exist.")
-    #         amp = fill_amplitude_vector(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv"), first_valid_timepoint, n=num_timepoints)
-    #     else:
-    #         amp, noise, cell_center_of_mass = processor.process_cell(
-    #             cell_id, 'global')
-    #         cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
-    #             'cell_id': cell_id,
-    #             'x': cell_center_of_mass[0],
-    #             'y': cell_center_of_mass[1],
-    #             'z': cell_center_of_mass[2],
-    #             'noise': np.median(noise)
-    #         }])], ignore_index=True)
-    #     non_zero_min.append(np.min(amp[amp > 0])
-    #                         if np.any(amp > 0) else np.nan)
-    #     # Reconstruct full-length vector aligned to all timepoints
-    #     labels = tracklets[str(cell_id)]
-    #     full_series = [np.nan] * num_timepoints
-    #     valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+    valid_ids = [
+    (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
+    for key, cell_labels in tracklets.items()
+    if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
+    # valid_ids = np.arange(0, 50)
+    non_zero_min = []
+    cells_center_of_mass_df = pd.DataFrame(
+        columns=['cell_id', 'x', 'y', 'z', 'noise'])
+    for cell_id, first_valid_timepoint in tqdm(valid_ids):
+        
+        if os.path.exists(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv")):
+            print(f"Skipping cell {cell_id} as results already exist.")
+            amp = fill_amplitude_vector(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv"), first_valid_timepoint, n=num_timepoints)
+        else:
+            amp, noise, cell_center_of_mass = processor.process_cell(
+                cell_id, 'global')
+            cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
+                'cell_id': cell_id,
+                'x': cell_center_of_mass[0],
+                'y': cell_center_of_mass[1],
+                'z': cell_center_of_mass[2],
+                'noise': np.median(noise)
+            }])], ignore_index=True)
+        non_zero_min.append(np.min(amp[amp > 0])
+                            if np.any(amp > 0) else np.nan)
+        # Reconstruct full-length vector aligned to all timepoints
+        labels = tracklets[str(cell_id)]
+        full_series = [np.nan] * num_timepoints
+        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
 
-    #     # Map returned amplitudes to their corresponding timepoints
-    #     if not isinstance(amp, np.ndarray):
-    #         continue
-    #     for tp, amp in zip(valid_timepoints, amp):
-    #             full_series[tp] = amp
-    #     expression_matrix[f'cell_{cell_id}'] = full_series
-    # noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
-    # print(f"Noise level: {noise_level}")
-    # df = pd.DataFrame(expression_matrix)
-    # # # Replace zeros in cell columns with noise_level
-    # # cell_cols = [c for c in df.columns if c.startswith('cell_')]
-    # # if noise_level is not None and cell_cols:
-    # #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
-    # out_path = os.path.join(processor.output_dir,
-    #                         'gene_expression_results.csv')
-    # df.to_csv(out_path, index=False)
-    # print(f"Saved expression matrix to {out_path}")
-    # cells_center_of_mass_df.to_csv(os.path.join(
-    #     processor.output_dir, 'cells_center_of_mass.csv'), index=False)
-    # print(
-    #     f"Saved cells center of mass to {os.path.join(processor.output_dir, 'cells_center_of_mass.csv')}")
+        # Map returned amplitudes to their corresponding timepoints
+        if not isinstance(amp, np.ndarray):
+            continue
+        for tp, amp in zip(valid_timepoints, amp):
+                full_series[tp] = amp
+        expression_matrix[f'cell_{cell_id}'] = full_series
+    noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
+    print(f"Noise level: {noise_level}")
+    df = pd.DataFrame(expression_matrix)
+    # # Replace zeros in cell columns with noise_level
+    # cell_cols = [c for c in df.columns if c.startswith('cell_')]
+    # if noise_level is not None and cell_cols:
+    #     df[cell_cols] = df[cell_cols].replace(0, noise_level)
+    out_path = os.path.join(processor.output_dir,
+                            'gene_expression_results.csv')
+    df.to_csv(out_path, index=False)
+    print(f"Saved expression matrix to {out_path}")
+    cells_center_of_mass_df.to_csv(os.path.join(
+        processor.output_dir, 'cells_center_of_mass.csv'), index=False)
+    print(
+        f"Saved cells center of mass to {os.path.join(processor.output_dir, 'cells_center_of_mass.csv')}")  

@@ -514,7 +514,7 @@ def draw_cov_ellipse(mean, cov, ax, n_std=2.0, edgecolor='k', facecolor='none', 
     ax.add_patch(e)
 
 def plot_single_gaussian(pts,intensity,keep_mask, means,covs, sigma_rms, output_path):
-    colors_list = ["#0d0887", "#6a00a8", "#b12a90", "#e16462", "#fca636", "#f0f921"]
+    colors_list = ["#0d0887", "#6a00a8", "#b12a90", "#e16462", "#ffa93a", "#f0f921"]
     my_cmap = LinearSegmentedColormap.from_list("my_cmap", colors_list, N=256)
     vmin, vmax = np.quantile(intensity, (0.02, 0.98))
     norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
@@ -525,9 +525,16 @@ def plot_single_gaussian(pts,intensity,keep_mask, means,covs, sigma_rms, output_
     ax.scatter(0,0, c='black', s=50, marker='x', label='Cell Center')
     ax.grid(True)
     ax.set_title(f'GMM Clustering of Emitters ,rms_sigma={sigma_rms:.2f}')
-    draw_cov_ellipse(means[0], covs[0], ax, n_std=1.0, edgecolor='blue', lw=1)
-    draw_cov_ellipse(means[0], covs[0], ax, n_std=2.0, edgecolor='blue', lw=1)
-    draw_cov_ellipse(means[0], covs[0], ax, n_std=3.0, edgecolor='blue', lw=1)
+    if means.shape[0] == 1:
+        draw_cov_ellipse(means[0], covs[0], ax, n_std=1.0, edgecolor='blue', lw=1)
+        draw_cov_ellipse(means[0], covs[0], ax, n_std=2.0, edgecolor='blue', lw=1)
+        draw_cov_ellipse(means[0], covs[0], ax, n_std=3.0, edgecolor='blue', lw=1)
+    elif means.shape[0] == 2:
+        draw_cov_ellipse(means, covs, ax, n_std=1.0, edgecolor='blue', lw=1)
+        draw_cov_ellipse(means, covs, ax, n_std=2.0, edgecolor='blue', lw=1)
+        draw_cov_ellipse(means, covs, ax, n_std=3.0, edgecolor='blue', lw=1)
+    else:
+        raise ValueError("Means should have shape (1,2) or (2,)")
     cbar = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=my_cmap), ax=ax)
     cbar.set_label('Emitter Intensity')
     plt.legend()
