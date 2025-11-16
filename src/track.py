@@ -79,7 +79,7 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     
     Parameters:
         g1 (nx.Graph): Adjacency graph for frame 1
-        g2 (nx.Graph): Adjacency graph for frame 2  
+        g2 (nx.Graph): Adjacency graph for frame 2
         mask1 (np.ndarray): Segmentation mask for frame 1
         mask2 (np.ndarray): Segmentation mask for frame 2
         distance_threshold (float): Maximum distance for matching points
@@ -87,30 +87,57 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     Returns:
         dict: Mapping from frame2 cell IDs to frame1 cell IDs {cell_id_t2: cell_id_t1}
     """
-    # Get cell centers for both frames
+    # --- 1. Get cell centers and volumes for both frames ---
     centers1 = get_cell_centers(mask1)
     centers2 = get_cell_centers(mask2)
     labels_to_pos1 = centers_array_to_label_position_map(centers1)
     labels_to_pos2 = centers_array_to_label_position_map(centers2)
-    
+
+    # Efficiently compute volumes (voxel counts) for all cells
+    labels1_all = np.unique(mask1)
+    labels1_all = labels1_all[labels1_all > 0]
+    labels2_all = np.unique(mask2)
+    labels2_all = labels2_all[labels2_all > 0]
+
+    volumes1, volumes2 = {}, {}
+    if len(labels1_all) > 0 and len(labels2_all) > 0:
+        max_label = max(np.max(labels1_all), np.max(labels2_all))
+        vols1_all = np.bincount(mask1.ravel(), minlength=max_label + 1)
+        vols2_all = np.bincount(mask2.ravel(), minlength=max_label + 1)
+        volumes1 = {int(label): vols1_all[label] for label in labels1_all}
+        volumes2 = {int(label): vols2_all[label] for label in labels2_all}
+
     # Get valid cell labels (nodes) from graphs, excluding background (0)
-    nodes1 = [n for n in g1.nodes() if n != 0 and n in labels_to_pos1]
-    nodes2 = [n for n in g2.nodes() if n != 0 and n in labels_to_pos2]
+    nodes1 = [n for n in g1.nodes() if n != 0 and n in labels_to_pos1 and n in volumes1]
+    nodes2 = [n for n in g2.nodes() if n != 0 and n in labels_to_pos2 and n in volumes2]
 
     if not nodes1 or not nodes2:
         return {}
 
-    # For performance, extract positions into numpy arrays
+    # --- 2. Prepare data for vectorized calculations ---
+    # For performance, extract positions and volumes into numpy arrays
     pos1 = np.array([labels_to_pos1[n] for n in nodes1])
     pos2 = np.array([labels_to_pos2[n] for n in nodes2])
+    vol1 = np.array([volumes1[n] for n in nodes1])
+    vol2 = np.array([volumes2[n] for n in nodes2])
 
+    # --- 3. Calculate cost matrix with multiple metrics ---
     # Calculate the full pairwise distance matrix using vectorized operations (broadcasting).
-    # This is much faster than nested loops for large numbers of cells.
     diff = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]
-    #TODO: add cell graph degree to the distance metric, area metric, shape metric, etc.
-    cost_matrix = np.sqrt(np.sum(diff**2, axis=2))
+    distance_cost = np.sqrt(np.sum(diff**2, axis=2))
 
-    # Use the Hungarian algorithm (linear_sum_assignment) to find the optimal assignment
+    # Calculate a volume difference cost. This penalizes matches between cells of different sizes.
+    # We normalize by the volume of the first cell to get a relative size change.
+    vol_diff = np.abs(vol1[:, np.newaxis] - vol2[np.newaxis, :])
+    volume_cost = vol_diff / (vol1[:, np.newaxis] + 1e-6) # Add epsilon to avoid division by zero
+
+    # Combine costs with weights. These can be tuned.
+    # Here, we prioritize distance but also strongly consider volume similarity.
+    w_dist = 0.7
+    w_vol = 0.3
+    cost_matrix = (w_dist * (distance_cost / distance_threshold)) + (w_vol * volume_cost)
+
+    # --- 4. Find optimal assignment using the Hungarian algorithm ---
     # that minimizes the total distance.
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
@@ -118,7 +145,8 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     # Create the matches dictionary from the optimal assignments, but only include
     # pairs where the distance is within the specified threshold.
     for r, c in zip(row_ind, col_ind):
-        if cost_matrix[r, c] <= distance_threshold:
+        # The final check is still on the absolute physical distance, not the combined cost.
+        if distance_cost[r, c] <= distance_threshold:
             cell1_label = nodes1[r]
             cell2_label = nodes2[c]
             matches[cell2_label] = cell1_label
@@ -344,78 +372,111 @@ def match_cells_by_iou_hungarian_local(mask1: np.ndarray, mask2: np.ndarray,
 def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.ndarray,
                                                min_iou: float = 0.1,
                                                search_radius: int = 10,
-                                               max_centroid_distance: float = None) -> dict:
+                                               max_centroid_distance: float = None) -> dict: # type: ignore
     """
-    Ultra-optimized local IoU matching with additional speedups.
+    Ultra-optimized local IoU matching with improved robustness and speed.
+
+    This version is improved to be more robust to cell movement and significantly faster.
+
+    Key improvements:
+    1.  **Efficient Property Calculation:** Uses `scipy.ndimage.center_of_mass` and `np.bincount`
+        to compute all cell centroids and volumes in a highly optimized, vectorized manner,
+        avoiding slow Python loops.
+    2.  **Robust Bounding Box:** The local region for IoU calculation is now a bounding box
+        that encloses the centroids of *both* cells being compared. This makes the matching
+        robust to cell movement, which was a primary failure point in the previous version.
+    3.  **Clearer Parameters:** The relationship between `search_radius` and `max_centroid_distance`
+        is critical. `max_centroid_distance` acts as a hard filter for candidate pairs, while
+        `search_radius` defines the padding around the candidate pair's centroids to define
+        the local region for IoU calculation.
+
+    Parameters:
+        mask1 (np.ndarray): Segmentation mask for frame 1.
+        mask2 (np.ndarray): Segmentation mask for frame 2.
+        min_iou (float): Minimum IoU threshold for a valid match. Defaults to 0.1.
+        search_radius (int): Padding in pixels to add around the combined bounding box of two
+                             candidate cell centroids to define the local search area. Defaults to 10.
+        max_centroid_distance (float): The maximum distance between centroids for a pair of cells
+                                       to be considered a potential match. If None, it defaults to
+                                       a more generous value (`search_radius * 2.5`). A larger value
+                                       allows for matching faster-moving cells.
+        
+    Returns:
+        dict: Mapping from frame2 cell IDs to frame1 cell IDs.
     """
-    from scipy.ndimage import center_of_mass
     
     if max_centroid_distance is None:
-        max_centroid_distance = search_radius * 1.5
+        # A more generous default than the previous version to account for movement.
+        max_centroid_distance = search_radius * 2.5
     
-    # Get unique cell labels
-    cells1 = np.unique(mask1)[1:]
-    cells2 = np.unique(mask2)[1:]
+    # Get unique cell labels (excluding background 0)
+    labels1 = np.unique(mask1)
+    labels1 = labels1[labels1 > 0]
     
-    if len(cells1) == 0 or len(cells2) == 0:
+    labels2 = np.unique(mask2)
+    labels2 = labels2[labels2 > 0]
+    
+    if len(labels1) == 0 or len(labels2) == 0:
         return {}
     
-    # Compute centroids and volumes simultaneously
-    centroids1, volumes1 = {}, {}
-    centroids2, volumes2 = {}, {}
+    # --- 1. Optimized Property Calculation ---
+    # Compute centroids for all labels at once. Note: center_of_mass returns (z, y, x).
+    com1 = center_of_mass(mask1, mask1, labels1)
+    com2 = center_of_mass(mask2, mask2, labels2)
     
-    for cell in cells1:
-        cell_coords = np.where(mask1 == cell)
-        if len(cell_coords[0]) > 0:
-            centroid = (np.mean(cell_coords[0]), np.mean(cell_coords[1]), np.mean(cell_coords[2]))
-            centroids1[cell] = centroid
-            volumes1[cell] = len(cell_coords[0])
+    # Create a dictionary mapping label to centroid, filtering out any NaNs
+    centroids1 = {int(label): center for label, center in zip(labels1, com1) if not np.isnan(center).any()}
+    centroids2 = {int(label): center for label, center in zip(labels2, com2) if not np.isnan(center).any()}
+
+    # Compute volumes (pixel counts) for all labels at once using np.bincount.
+    max_label = max(np.max(labels1) if len(labels1) > 0 else 0, 
+                    np.max(labels2) if len(labels2) > 0 else 0)
+    vols1_all = np.bincount(mask1.ravel(), minlength=max_label + 1)
+    vols2_all = np.bincount(mask2.ravel(), minlength=max_label + 1)
     
-    for cell in cells2:
-        cell_coords = np.where(mask2 == cell)
-        if len(cell_coords[0]) > 0:
-            centroid = (np.mean(cell_coords[0]), np.mean(cell_coords[1]), np.mean(cell_coords[2]))
-            centroids2[cell] = centroid
-            volumes2[cell] = len(cell_coords[0])
+    volumes1 = {int(label): vols1_all[label] for label in centroids1.keys()}
+    volumes2 = {int(label): vols2_all[label] for label in centroids2.keys()}
+
+    valid_cells1 = sorted(list(centroids1.keys()))
+    valid_cells2 = sorted(list(centroids2.keys()))
     
-    valid_cells1 = list(centroids1.keys())
-    valid_cells2 = list(centroids2.keys())
-    
-    if len(valid_cells1) == 0 or len(valid_cells2) == 0:
+    if not valid_cells1 or not valid_cells2:
         return {}
     
-    # Pre-filter pairs based on centroid distance
+    # --- 2. Pre-filter pairs based on centroid distance ---
     valid_pairs = []
     for i, cell1 in enumerate(valid_cells1):
-        c1 = centroids1[cell1]
+        c1 = np.array(centroids1[cell1])
         for j, cell2 in enumerate(valid_cells2):
-            c2 = centroids2[cell2]
-            distance = np.sqrt((c1[0]-c2[0])**2 + (c1[1]-c2[1])**2 + (c1[2]-c2[2])**2)
+            c2 = np.array(centroids2[cell2])
+            # Manual distance calculation for clarity and consistency
+            distance = np.sqrt(np.sum((c1 - c2)**2))
             if distance <= max_centroid_distance:
                 valid_pairs.append((i, j, cell1, cell2))
     
-    # Create sparse cost matrix
+    # Create cost matrix (1 - IoU)
     n1, n2 = len(valid_cells1), len(valid_cells2)
     cost_matrix = np.full((n1, n2), 1.0)
     
-    # Calculate IoU only for valid pairs
+    # --- 3. Calculate IoU only for valid pairs in a robust local region ---
     for i, j, cell1, cell2 in valid_pairs:
         c1 = centroids1[cell1]
+        c2 = centroids2[cell2]
         
-        # Define local bounding box
-        z1, y1, x1 = int(c1[0]), int(c1[1]), int(c1[2])
-        z_min = max(0, z1 - search_radius)
-        z_max = min(mask1.shape[0], z1 + search_radius + 1)
-        y_min = max(0, y1 - search_radius)
-        y_max = min(mask1.shape[1], y1 + search_radius + 1)
-        x_min = max(0, x1 - search_radius)
-        x_max = min(mask1.shape[2], x1 + search_radius + 1)
+        # --- Robust Bounding Box Definition ---
+        # Define a bounding box that encloses both centroids, plus padding.
+        z_min = max(0, int(min(c1[0], c2[0]) - search_radius))
+        z_max = min(mask1.shape[0], int(max(c1[0], c2[0]) + search_radius) + 1)
+        y_min = max(0, int(min(c1[1], c2[1]) - search_radius))
+        y_max = min(mask1.shape[1], int(max(c1[1], c2[1]) + search_radius) + 1)
+        x_min = max(0, int(min(c1[2], c2[2]) - search_radius))
+        x_max = min(mask1.shape[2], int(max(c1[2], c2[2]) + search_radius) + 1)
         
-        # Extract local regions (much smaller than full masks)
+        # Extract local regions
         local_mask1 = mask1[z_min:z_max, y_min:y_max, x_min:x_max]
         local_mask2 = mask2[z_min:z_max, y_min:y_max, x_min:x_max]
         
-        # Calculate intersection in local region
+        # Calculate intersection in the local region
         intersection = np.sum((local_mask1 == cell1) & (local_mask2 == cell2))
         
         if intersection > 0:
@@ -428,10 +489,10 @@ def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.nd
                 iou = intersection / union
                 cost_matrix[i, j] = 1.0 - iou
     
-    # Apply Hungarian algorithm
+    # --- 4. Apply Hungarian algorithm to find optimal assignment ---
     row_indices, col_indices = linear_sum_assignment(cost_matrix)
     
-    # Extract valid matches
+    # Extract valid matches that meet the IoU threshold
     matches = {}
     for i, j in zip(row_indices, col_indices):
         iou = 1.0 - cost_matrix[i, j]

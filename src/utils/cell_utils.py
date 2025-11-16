@@ -3,7 +3,7 @@ from scipy.optimize import curve_fit
 from sklearn.linear_model import RANSACRegressor
 from sklearn.preprocessing import PolynomialFeatures
 
-def get_3d_bounding_box_corners(mask: np.ndarray) -> np.ndarray:
+def get_3d_bounding_box_corners(mask: np.ndarray):
     """
     Calculates the 8 corners of the 3D bounding box for a given 3D mask.
 
@@ -24,7 +24,7 @@ def get_3d_bounding_box_corners(mask: np.ndarray) -> np.ndarray:
     coords = np.where(mask > 0)
     if not coords[0].size:
         # No object found in the mask
-        return np.empty((0, 3), dtype=int)
+        return None
 
     z_coords, y_coords, x_coords = coords
 
@@ -333,11 +333,12 @@ def estimate_emitter_2d_gaussian_with_fixed_offset(image, initial_position, init
 
         initial_guess = (amp_guess, x0_guess, y0_guess, sx_guess, sy_guess)
 
+        #TODO: optimise gaussian sigma bounds
         # Bounds
         amp_upper = max(img.max() - float(fixed_offset), np.finfo(np.float64).eps)
         bounds = (
-            (0.0,       0.0,    0.0,   0.5, 0.5),            # lower
-            (amp_upper, w - 1,  h - 1, 1.0, 1.0),            # upper
+            (0.0,       0.0,    0.0,   0.25, 0.25),            # lower
+            (amp_upper, w - 1,  h - 1, 2.0, 2.0),            # upper
         )
 
         try:
