@@ -31,6 +31,10 @@ class SpaitalClustering:
             return df_filtered
         else:
             n_components, best_gmm = self.get_best_gmm_components()
+            if best_gmm is None:
+                # No valid GMM could be fitted
+                df_filtered = df.iloc[0:0]
+                return df_filtered
             labels = best_gmm.predict(self.pts)
             means_n = best_gmm.means_
             covs_n = best_gmm.covariances_
@@ -96,7 +100,10 @@ class SpaitalClustering:
             aics.append(gmm.aic(self.pts))
             counts = np.bincount(gmm.predict(self.pts), minlength=n)
             min_counts.append(counts.min())
-
+        # condition to handle no models case
+        if len(bics) == 0:
+            return None, None
+        
         sigma_rms_models = []
         for gmm in models:
             covs_g = gmm.covariances_

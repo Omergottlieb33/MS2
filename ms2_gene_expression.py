@@ -105,7 +105,6 @@ class MS2GeneExpressionProcessor:
 
     def _reset_processing_state(self):
         """Reset variables used during processing."""
-        self.ellipse_sums = []
         self.cell_noise = []
         self.visualization_figures = []
         self.segmentation_figures = []
@@ -192,10 +191,13 @@ class MS2GeneExpressionProcessor:
             self.final_df = self.final_df.iloc[0:0]
         else:
             self.final_df = self.spatial_clustering(self.final_df, self.output_dir, cell_id)
+        self.intensities = np.zeros(max(valid_timepoints)+1)
+        for i, row in self.final_df.iterrows():
+            self.intensities[row['timepoint']] = row['ellipse_sum']
         self.visualize_timepoints(timepoints)
         self._save_plots_and_animations(valid_timepoints)
         self._save_csv()
-        ellipse_sum_np = np.array(self.ellipse_sums)
+        ellipse_sum_np = np.array(self.intensities)
         cell_noise_np = np.array(self.cell_noise)
         cell_center_of_mass_np = np.mean(np.array(self.cell_center_of_mass), axis=0)
         self._cleanup_after_cell()
@@ -336,10 +338,9 @@ class MS2GeneExpressionProcessor:
                 med = np.median(positive)
                 mad = np.median(np.abs(positive - med))
                 noise = 1.4826 * mad if mad > 0 else (positive.std() if positive.size > 1 else 0.0)
-            ellipse_sum = 0.0  
+            ellipse_sum = 0.0
         self.final_df.loc[self.final_df['timepoint'] == timepoint, 'ellipse_sum'] = ellipse_sum
         self.final_df.loc[self.final_df['timepoint'] == timepoint, 'noise'] = noise
-        self.ellipse_sums.append(ellipse_sum)
         self.cell_noise.append(noise)
         self.gaussian_fit_params.append(gaussian_params)
 
@@ -488,11 +489,8 @@ class MS2GeneExpressionProcessor:
             self.visualizer.save_timepoint_animation(
                 self.cell_id, valid_timepoints, self.ransac_mad_k_th)
         if getattr(self.visualizer, 'enabled', False) and self.plot['intensity']:
-            intensities = np.zeros(max(valid_timepoints)+1)
-            for i, row in self.final_df.iterrows():
-                intensities[row['timepoint']] = row['ellipse_sum']
             self.visualizer.expression_plot(
-                self.cell_id, intensities, 'Intensity')
+                self.cell_id, self.intensities, 'Intensity')
         if getattr(self.visualizer, 'enabled', False) and self.plot['segmentation']:
             self.visualizer.save_segmentation_animation(
                 self.cell_id, valid_timepoints)
@@ -634,7 +632,8 @@ if __name__ == "__main__":
         prominence=args.prominence
     )
     # Example: Process a specific cell  using 'global' strategy
-    #amp = processor.process_cell(14, 'global')
+    # amp, noise, cell_center_of_mass = processor.process_cell(229, 'global')
+    # print(f"Cell 229 - Amplitudes: {amp}, Noise: {noise}, Center of Mass: {cell_center_of_mass}")
 
     num_timepoints = ms2_background_removed.shape[0]
     expression_matrix = {
