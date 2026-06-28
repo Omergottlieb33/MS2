@@ -1,0 +1,32 @@
+name: ds3d
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - "numpy>=1.24,<2"
+  - scipy
+  - pandas
+  - matplotlib
+  - tqdm
+  - networkx
+  - pillow
+  - imageio
+  - scikit-learn
+  - jupyter
+  - ipykernel
+  - ipython
+  - pip
+  - pip:
+    - scikit-image
+    - cellpose>=4.0
+    - czifile
+    - aicspylibczi
+    - findmaxima2d
+    - opencv-python
+    - opencv-rolling-ball
+    - --extra-index-url https://download.pytorch.org/whl/cu124
+    - torch
+    - torchvision

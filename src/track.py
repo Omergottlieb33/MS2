@@ -153,6 +153,27 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
 
     return matches
 
+def get_border_labels(mask: np.ndarray, margin: int = 5) -> set:
+    """
+    Return labels of cells whose centroid is within `margin` pixels of the XY
+    border.  Z borders are ignored — cells can freely enter/exit the focal volume.
+    """
+    labels = np.unique(mask)
+    labels = labels[labels > 0]
+    if len(labels) == 0:
+        return set()
+    H, W = mask.shape[-2], mask.shape[-1]
+    coms = center_of_mass(mask, mask, labels)
+    border = set()
+    for label, com in zip(labels, coms):
+        if np.isnan(com).any():
+            continue
+        _, y, x = com   # (z, y, x)
+        if y < margin or y > H - margin or x < margin or x > W - margin:
+            border.add(int(label))
+    return border
+
+
 def find_key_for_last_tracklet_value_optimized(tracklets, matches_dict, tracklet_id):
     """
     Optimized version using next() with generator expression for early termination.
@@ -162,38 +183,76 @@ def find_key_for_last_tracklet_value_optimized(tracklets, matches_dict, tracklet
     # Use next() with generator for immediate return on first match
     return next((key for key, value in matches_dict.items() if value == last_value), -1)
 
-def create_tracklets(matches:list) -> dict:
+def create_tracklets(matches: list, skip_matches: list = None,
+                     masks: list = None, border_margin: int = 5) -> dict:
+    """
+    Chain pairwise IoU matches into full tracklets.
+
+    Sentinel values in the output list:
+        positive int  — cell label in the segmentation mask at that frame
+        -1            — cell not detected / failed to match
+        -2            — cell exited the field of view (last position was near border)
+
+    Args:
+        matches:       list of {frame[t+1]_label: frame[t]_label} dicts.
+        skip_matches:  optional list for second-chance matching (frame t → t+2).
+        masks:         optional list of 3D masks; required for border-exit detection.
+        border_margin: pixels from XY edge considered "border" (used when masks provided).
+    """
     if not matches:
         return {}
 
+    # Pre-compute border labels per frame when masks are available
+    border_labels_per_frame = None
+    if masks is not None:
+        border_labels_per_frame = [get_border_labels(m, border_margin) for m in masks]
+
     matches_t0 = matches[0]
-    
+
     # Initialize tracklets from first frame matches
     tracklets = {}
     for i, (label_t_plus1, label_t) in enumerate(matches_t0.items()):
         tracklets[i] = [int(label_t), int(label_t_plus1)]
-    
+
     max_id = max(tracklets.keys()) if tracklets else -1
 
     for i in tqdm(range(1, len(matches)), desc='Creating tracklets'):
         matches_t = matches[i]
-        
-        # Track which keys from current matches have been used
+
         used_keys = set()
         next_labels = {}
-        
-        # First, determine the next label for all existing, active tracklets
+
+        # Determine the next label for all existing tracklets
         for tracklet_id, labels in tracklets.items():
-            if labels[-1] != -1:  # If the track is active
+            if labels[-1] > 0:  # Active (positive label)
                 key = find_key_for_last_tracklet_value_optimized(tracklets, matches_t, tracklet_id)
-                if key != -1:  # Match found
+                if key != -1:
                     next_labels[tracklet_id] = int(key)
                     used_keys.add(key)
-                else:  # No match found, terminate the track
-                    next_labels[tracklet_id] = -1
-            else:  # If the track was already terminated, keep it terminated
-                next_labels[tracklet_id] = -1
-        
+                else:
+                    # No match: check whether cell was near the border
+                    if border_labels_per_frame is not None and labels[-1] in border_labels_per_frame[i]:
+                        next_labels[tracklet_id] = -2   # exited FOV
+                    else:
+                        next_labels[tracklet_id] = -1   # failed to match
+            else:
+                # Already terminated (-1) or exited FOV (-2) — preserve state
+                next_labels[tracklet_id] = labels[-1]
+
+        # Second-chance: resurrect tracks that missed exactly one frame (not border exits).
+        # skip_matches[i-1] maps {frame[i+1]_label: frame[i-1]_label}.
+        if skip_matches is not None and (i - 1) < len(skip_matches):
+            skip_t = skip_matches[i - 1]
+            for tracklet_id, labels in tracklets.items():
+                # Only attempt resurrection if: missed frame i (-1) AND was active at i-1 (>0)
+                if labels[-1] == -1 and len(labels) >= 2 and labels[-2] > 0:
+                    last_active = labels[-2]
+                    for frame_label, src_label in skip_t.items():
+                        if src_label == last_active and frame_label not in used_keys:
+                            next_labels[tracklet_id] = int(frame_label)
+                            used_keys.add(frame_label)
+                            break
+
         for tracklet_id, next_label in next_labels.items():
             tracklets[tracklet_id].append(next_label)
 
@@ -201,10 +260,9 @@ def create_tracklets(matches:list) -> dict:
         for key, value in matches_t.items():
             if key not in used_keys:
                 max_id += 1
-                # A new tracklet starts at time `i`, so pad with `i` placeholders.
                 new_tracklet = [-1] * i + [int(value), int(key)]
                 tracklets[max_id] = new_tracklet
-    
+
     return tracklets
 
 def match_cells_by_iou(mask1: np.ndarray, mask2: np.ndarray,
@@ -370,9 +428,10 @@ def match_cells_by_iou_hungarian_local(mask1: np.ndarray, mask2: np.ndarray,
     return matches
 
 def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.ndarray,
-                                               min_iou: float = 0.1,
+                                               min_iou: float = 0.3,
                                                search_radius: int = 10,
-                                               max_centroid_distance: float = None) -> dict: # type: ignore
+                                               max_centroid_distance: float = None,
+                                               use_2d_distance: bool = True) -> dict:
     """
     Ultra-optimized local IoU matching with improved robustness and speed.
 
@@ -393,14 +452,18 @@ def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.nd
     Parameters:
         mask1 (np.ndarray): Segmentation mask for frame 1.
         mask2 (np.ndarray): Segmentation mask for frame 2.
-        min_iou (float): Minimum IoU threshold for a valid match. Defaults to 0.1.
+        min_iou (float): Minimum IoU threshold for a valid match. Defaults to 0.3.
         search_radius (int): Padding in pixels to add around the combined bounding box of two
                              candidate cell centroids to define the local search area. Defaults to 10.
         max_centroid_distance (float): The maximum distance between centroids for a pair of cells
                                        to be considered a potential match. If None, it defaults to
                                        a more generous value (`search_radius * 2.5`). A larger value
                                        allows for matching faster-moving cells.
-        
+        use_2d_distance (bool): If True (default), compute centroid distance using only Y and X
+                                axes.  This avoids the Z-axis pixel-scale mismatch common in
+                                3D fluorescence microscopy where z-step >> xy-pixel size.
+                                The IoU bounding box still uses all three dimensions.
+
     Returns:
         dict: Mapping from frame2 cell IDs to frame1 cell IDs.
     """
@@ -449,17 +512,24 @@ def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.nd
         c1 = np.array(centroids1[cell1])
         for j, cell2 in enumerate(valid_cells2):
             c2 = np.array(centroids2[cell2])
-            # Manual distance calculation for clarity and consistency
-            distance = np.sqrt(np.sum((c1 - c2)**2))
+            if use_2d_distance:
+                # Use only Y, X to avoid Z-axis pixel-scale mismatch
+                distance = np.linalg.norm(c1[1:] - c2[1:])
+            else:
+                distance = np.linalg.norm(c1 - c2)
             if distance <= max_centroid_distance:
                 valid_pairs.append((i, j, cell1, cell2))
-    
-    # Create cost matrix (1 - IoU)
+
+    # Cost matrix: 2.0 for pairs outside search radius (impossible matches),
+    # 1.0 for valid pairs with zero/unknown IoU, 1-IoU for pairs with overlap.
+    # Using 2.0 (not 1.0) as the impossible sentinel ensures Hungarian strongly
+    # prefers any valid pair over cross-region assignments.
     n1, n2 = len(valid_cells1), len(valid_cells2)
-    cost_matrix = np.full((n1, n2), 1.0)
-    
+    cost_matrix = np.full((n1, n2), 2.0)
+
     # --- 3. Calculate IoU only for valid pairs in a robust local region ---
     for i, j, cell1, cell2 in valid_pairs:
+        cost_matrix[i, j] = 1.0  # valid candidate, zero IoU until computed below
         c1 = centroids1[cell1]
         c2 = centroids2[cell2]
         
