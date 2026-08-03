@@ -1,0 +1,198 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>3D segmentation viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111; color: #ddd;
+         font: 13px system-ui, -apple-system, sans-serif; display: flex; height: 100vh; }
+  #panel { width: 230px; flex: none; padding: 14px; background: #191919;
+           border-right: 1px solid #2c2c2c; overflow-y: auto; }
+  #stage { flex: 1; overflow: hidden; position: relative; cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+  #frame { position: absolute; top: 0; left: 0; transform-origin: 0 0;
+           image-rendering: pixelated; user-select: none; -webkit-user-drag: none; }
+  label { display: block; margin: 13px 0 3px; color: #999; font-size: 11px;
+          text-transform: uppercase; letter-spacing: .04em; }
+  input[type=range] { width: 100%; }
+  .val { color: #6cf; font-variant-numeric: tabular-nums; }
+  #info { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,.75);
+          padding: 6px 10px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+  .keys { margin-top: 18px; padding-top: 12px; border-top: 1px solid #2c2c2c;
+          color: #777; font-size: 11px; line-height: 1.7; }
+  kbd { background: #2c2c2c; border-radius: 3px; padding: 1px 5px; color: #bbb; }
+  button { width: 100%; margin-top: 8px; padding: 6px; background: #2c2c2c;
+           color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #363636; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <label>Time <span class="val" id="tval">0</span></label>
+  <input type="range" id="t" min="0" max="0" value="0">
+
+  <label>Z slice <span class="val" id="zval">0</span></label>
+  <input type="range" id="z" min="0" max="0" value="0">
+
+  <label>Overlay <span class="val" id="aval">0.40</span></label>
+  <input type="range" id="alpha" min="0" max="1" step="0.05" value="0.4">
+
+  <label>Contrast low <span class="val" id="loval">1.0</span>%</label>
+  <input type="range" id="lo" min="0" max="20" step="0.5" value="1">
+
+  <label>Contrast high <span class="val" id="hival">99.5</span>%</label>
+  <input type="range" id="hi" min="80" max="100" step="0.1" value="99.5">
+
+  <button id="mode">mode: outline</button>
+  <button id="reset">reset view</button>
+
+  <div class="keys">
+    <kbd>←</kbd><kbd>→</kbd> time<br>
+    <kbd>↑</kbd><kbd>↓</kbd> z slice<br>
+    <kbd>space</kbd> toggle overlay<br>
+    <kbd>r</kbd> reset view<br>
+    wheel zoom · drag pan · click a cell
+  </div>
+</div>
+
+<div id="stage">
+  <img id="frame" draggable="false">
+  <div id="info">—</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const stage = $('stage'), img = $('frame'), info = $('info');
+let meta = {n_t: 1, n_z: 1}, mode = 'outline', overlay = true, savedAlpha = 0.4;
+let view = {x: 0, y: 0, k: 1};
+
+function params(t, z) {
+  return new URLSearchParams({
+    t, z,
+    alpha: overlay ? $('alpha').value : 0,
+    mode,
+    lo: $('lo').value,
+    hi: $('hi').value,
+  }).toString();
+}
+
+function applyView() {
+  img.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
+}
+
+function resetView() {
+  const k = Math.min(stage.clientWidth / meta.width, stage.clientHeight / meta.height);
+  view = {k, x: (stage.clientWidth - meta.width * k) / 2,
+               y: (stage.clientHeight - meta.height * k) / 2};
+  applyView();
+}
+
+function render() {
+  const t = +$('t').value, z = +$('z').value;
+  $('tval').textContent = t;
+  $('zval').textContent = z;
+  $('aval').textContent = (+$('alpha').value).toFixed(2);
+  $('loval').textContent = (+$('lo').value).toFixed(1);
+  $('hival').textContent = (+$('hi').value).toFixed(1);
+  img.src = '/frame?' + params(t, z);
+  prefetch(t, z);
+}
+
+// Keep neighbouring timepoints warm so scrubbing does not stall on npz decompression.
+function prefetch(t, z) {
+  for (const dt of [1, -1]) {
+    const n = t + dt;
+    if (n >= 0 && n < meta.n_t) new Image().src = '/frame?' + params(n, z);
+  }
+}
+
+function step(slider, delta) {
+  const el = $(slider);
+  el.value = Math.max(+el.min, Math.min(+el.max, +el.value + delta));
+  render();
+}
+
+// --- pan / zoom -------------------------------------------------------------
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = stage.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = Math.exp(-e.deltaY * 0.0015);
+  const k = Math.max(0.05, Math.min(60, view.k * f));
+  // keep the point under the cursor fixed
+  view.x = mx - (mx - view.x) * (k / view.k);
+  view.y = my - (my - view.y) * (k / view.k);
+  view.k = k;
+  applyView();
+}, {passive: false});
+
+let drag = null;
+stage.addEventListener('mousedown', e => {
+  drag = {x: e.clientX - view.x, y: e.clientY - view.y, moved: false};
+  stage.classList.add('dragging');
+});
+addEventListener('mousemove', e => {
+  if (!drag) return;
+  view.x = e.clientX - drag.x;
+  view.y = e.clientY - drag.y;
+  drag.moved = true;
+  applyView();
+});
+addEventListener('mouseup', async e => {
+  const wasDrag = drag && drag.moved;
+  drag = null;
+  stage.classList.remove('dragging');
+  if (wasDrag || !meta.has_masks) return;
+  const r = stage.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left - view.x) / view.k);
+  const y = Math.floor((e.clientY - r.top - view.y) / view.k);
+  if (x < 0 || y < 0 || x >= meta.width || y >= meta.height) return;
+  const q = new URLSearchParams({t: $('t').value, z: $('z').value, y, x});
+  const d = await (await fetch('/label?' + q)).json();
+  info.textContent = d.label
+    ? `label ${d.label}  ·  (${x}, ${y})  ·  ${d.n_cells} cells in slice`
+    : `background  ·  (${x}, ${y})  ·  ${d.n_cells} cells in slice`;
+});
+
+// --- controls ---------------------------------------------------------------
+for (const id of ['t', 'z', 'alpha', 'lo', 'hi']) $(id).addEventListener('input', render);
+
+$('mode').onclick = () => {
+  mode = mode === 'outline' ? 'fill' : 'outline';
+  $('mode').textContent = 'mode: ' + mode;
+  render();
+};
+$('reset').onclick = resetView;
+
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.key !== ' ') return;
+  const k = e.key;
+  if (k === 'ArrowRight') step('t', 1);
+  else if (k === 'ArrowLeft') step('t', -1);
+  else if (k === 'ArrowUp') step('z', 1);
+  else if (k === 'ArrowDown') step('z', -1);
+  else if (k === 'r' || k === 'R') resetView();
+  else if (k === ' ') {
+    overlay = !overlay;
+    if (overlay) $('alpha').value = savedAlpha; else savedAlpha = $('alpha').value;
+    render();
+  } else return;
+  e.preventDefault();
+});
+
+addEventListener('resize', resetView);
+
+(async () => {
+  meta = await (await fetch('/meta')).json();
+  $('t').max = meta.n_t - 1;
+  $('z').max = meta.n_z - 1;
+  $('z').value = Math.floor(meta.n_z / 2);
+  if (!meta.has_masks) info.textContent = 'no masks loaded';
+  img.onload = () => { img.onload = null; resetView(); };   // fit once, on the first frame
+  render();
+})();
+</script>
+</body>
+</html>
