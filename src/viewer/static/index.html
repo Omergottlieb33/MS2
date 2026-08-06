@@ -7,7 +7,7 @@
   :root { color-scheme: dark; }
   body { margin: 0; background: #111; color: #ddd;
          font: 13px system-ui, -apple-system, sans-serif; display: flex; height: 100vh; }
-  #panel { width: 230px; flex: none; padding: 14px; background: #191919;
+  #panel { width: 250px; flex: none; padding: 14px; background: #191919;
            border-right: 1px solid #2c2c2c; overflow-y: auto; }
   #stage { flex: 1; overflow: hidden; position: relative; cursor: grab; }
   #stage.dragging { cursor: grabbing; }
@@ -15,9 +15,11 @@
            image-rendering: pixelated; user-select: none; -webkit-user-drag: none; }
   label { display: block; margin: 13px 0 3px; color: #999; font-size: 11px;
           text-transform: uppercase; letter-spacing: .04em; }
-  input[type=range] { width: 100%; }
+  input[type=range], select { width: 100%; }
+  select { background: #2c2c2c; color: #ddd; border: 1px solid #3c3c3c;
+           border-radius: 4px; padding: 4px; }
   .val { color: #6cf; font-variant-numeric: tabular-nums; }
-  #info { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,.75);
+  #info { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,.78);
           padding: 6px 10px; border-radius: 4px; font-variant-numeric: tabular-nums; }
   .keys { margin-top: 18px; padding-top: 12px; border-top: 1px solid #2c2c2c;
           color: #777; font-size: 11px; line-height: 1.7; }
@@ -25,6 +27,29 @@
   button { width: 100%; margin-top: 8px; padding: 6px; background: #2c2c2c;
            color: #ddd; border: 1px solid #3c3c3c; border-radius: 4px; cursor: pointer; }
   button:hover { background: #363636; }
+  hr { border: 0; border-top: 1px solid #2c2c2c; margin: 16px 0 0; }
+
+  /* track list */
+  #tracklist { max-height: 260px; overflow-y: auto; margin-top: 6px;
+               border: 1px solid #2c2c2c; border-radius: 4px; }
+  .trow { display: flex; justify-content: space-between; padding: 4px 7px;
+          cursor: pointer; font-variant-numeric: tabular-nums; font-size: 12px;
+          border-bottom: 1px solid #222; }
+  .trow:hover { background: #242424; }
+  .trow.sel { background: #14435e; color: #fff; }
+  .trow .g { color: #e57373; }
+  .trow .dim { color: #777; }
+
+  /* timeline strip */
+  #timeline { display: flex; height: 20px; margin-top: 8px; gap: 1px;
+              border-radius: 3px; overflow: hidden; }
+  #timeline div { flex: 1 1 0; min-width: 0; cursor: pointer; }
+  .s-active { background: #4caf50; }
+  .s-gap { background: #e53935; }
+  .s-exited { background: #555; }
+  .s-outside { background: #1e1e1e; }
+  .s-missing { background: #ff9800; }
+  #timeline div.now { outline: 2px solid #6cf; outline-offset: -2px; }
 </style>
 </head>
 <body>
@@ -48,6 +73,23 @@
   <button id="mode">mode: outline</button>
   <button id="reset">reset view</button>
 
+  <div id="tracks" style="display:none">
+    <hr>
+    <label>Tracklets — sort by</label>
+    <select id="sort">
+      <option value="n_active:desc">longest (active frames)</option>
+      <option value="n_gaps:desc">most gaps</option>
+      <option value="n_resurrections:desc">most resurrections</option>
+      <option value="span:desc">widest span</option>
+      <option value="tid:desc">id — largest first</option>
+      <option value="tid:asc">id — smallest first</option>
+    </select>
+    <div id="tracklist"></div>
+    <div id="timeline"></div>
+    <button id="follow">follow: on</button>
+    <button id="clear">clear selection</button>
+  </div>
+
   <div class="keys">
     <kbd>←</kbd><kbd>→</kbd> time<br>
     <kbd>↑</kbd><kbd>↓</kbd> z slice<br>
@@ -67,6 +109,10 @@ const $ = id => document.getElementById(id);
 const stage = $('stage'), img = $('frame'), info = $('info');
 let meta = {n_t: 1, n_z: 1}, mode = 'outline', overlay = true, savedAlpha = 0.4;
 let view = {x: 0, y: 0, k: 1};
+let selected = null, follow = true, timeline = [], seq = 0;
+// Follow snaps z and re-centres only on arrival at a new timepoint.  Doing it on every
+// render would undo the z slider and any panning the moment you touched them.
+let lastFollowT = null;
 
 function params(t, z) {
   return new URLSearchParams({
@@ -75,6 +121,7 @@ function params(t, z) {
     mode,
     lo: $('lo').value,
     hi: $('hi').value,
+    tid: selected === null ? '' : selected,
   }).toString();
 }
 
@@ -89,13 +136,48 @@ function resetView() {
   applyView();
 }
 
-function render() {
-  const t = +$('t').value, z = +$('z').value;
+function centreOn(cx, cy) {
+  // keep the current zoom -- auto-zoom fighting the user is worse than no follow
+  view.x = stage.clientWidth / 2 - cx * view.k;
+  view.y = stage.clientHeight / 2 - cy * view.k;
+  applyView();
+}
+
+// --- rendering --------------------------------------------------------------
+async function render() {
+  const my = ++seq;                       // drop stale responses while scrubbing fast
+  const t = +$('t').value;
   $('tval').textContent = t;
-  $('zval').textContent = z;
   $('aval').textContent = (+$('alpha').value).toFixed(2);
   $('loval').textContent = (+$('lo').value).toFixed(1);
   $('hival').textContent = (+$('hi').value).toFixed(1);
+
+  if (selected !== null) {
+    const d = await (await fetch(`/track?tid=${selected}&t=${t}`)).json();
+    if (my !== seq) return;
+    if (d.state === 'active') {
+      if (follow && t !== lastFollowT) {
+        $('z').value = d.z;               // set before the frame url is built
+        centreOn(d.cx, d.cy);
+      }
+      lastFollowT = t;
+      const off = +$('z').value === d.z ? '' : `  (cell at z ${d.z})`;
+      info.textContent = `track ${selected} · t ${t} · label ${d.label} · z ${$('z').value}${off}`;
+    } else {
+      lastFollowT = t;
+      // hold the view where it is rather than jumping to origin
+      info.textContent = `track ${selected} · t ${t} · ` + ({
+        gap: 'GAP — not detected',
+        exited: 'left field of view',
+        missing: 'label missing from mask',
+        outside: 'outside track span',
+      }[d.state] || d.state);
+    }
+    markNow(t);
+  }
+
+  const z = +$('z').value;
+  $('zval').textContent = z;
   img.src = '/frame?' + params(t, z);
   prefetch(t, z);
 }
@@ -114,6 +196,56 @@ function step(slider, delta) {
   render();
 }
 
+// --- tracklets --------------------------------------------------------------
+async function loadTrackList() {
+  const [sort, dir] = $('sort').value.split(':');
+  const rows = await (await fetch(`/tracklets?sort=${sort}&dir=${dir}&limit=200`)).json();
+  $('tracklist').innerHTML = '';
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'trow' + (r.tid === selected ? ' sel' : '');
+    el.dataset.tid = r.tid;
+    el.innerHTML = `<span>#${r.tid}</span>` +
+      `<span class="dim">${r.n_active}f</span>` +
+      `<span class="${r.n_gaps ? 'g' : 'dim'}">${r.n_gaps} gap</span>` +
+      `<span class="dim">${r.border_exit ? 'exit' : ''}</span>`;
+    el.onclick = () => selectTrack(r.tid);
+    $('tracklist').appendChild(el);
+  }
+}
+
+async function selectTrack(tid) {
+  selected = tid;
+  lastFollowT = null;          // a fresh selection should snap to the cell straight away
+  for (const el of document.querySelectorAll('.trow'))
+    el.classList.toggle('sel', +el.dataset.tid === tid);
+  const d = await (await fetch(`/track?tid=${tid}&t=${$('t').value}&timeline=1`)).json();
+  timeline = d.timeline || [];
+  $('timeline').innerHTML = '';
+  timeline.forEach((s, i) => {
+    const seg = document.createElement('div');
+    seg.className = 's-' + s;
+    seg.title = `t ${i} — ${s}`;
+    seg.onclick = () => { $('t').value = i; render(); };
+    $('timeline').appendChild(seg);
+  });
+  render();
+}
+
+function markNow(t) {
+  const segs = $('timeline').children;
+  for (let i = 0; i < segs.length; i++) segs[i].classList.toggle('now', i === t);
+}
+
+function clearSelection() {
+  selected = null;
+  timeline = [];
+  $('timeline').innerHTML = '';
+  for (const el of document.querySelectorAll('.trow')) el.classList.remove('sel');
+  info.textContent = '—';
+  render();
+}
+
 // --- pan / zoom -------------------------------------------------------------
 stage.addEventListener('wheel', e => {
   e.preventDefault();
@@ -121,8 +253,7 @@ stage.addEventListener('wheel', e => {
   const mx = e.clientX - r.left, my = e.clientY - r.top;
   const f = Math.exp(-e.deltaY * 0.0015);
   const k = Math.max(0.05, Math.min(60, view.k * f));
-  // keep the point under the cursor fixed
-  view.x = mx - (mx - view.x) * (k / view.k);
+  view.x = mx - (mx - view.x) * (k / view.k);   // keep the point under the cursor fixed
   view.y = my - (my - view.y) * (k / view.k);
   view.k = k;
   applyView();
@@ -151,6 +282,7 @@ addEventListener('mouseup', async e => {
   if (x < 0 || y < 0 || x >= meta.width || y >= meta.height) return;
   const q = new URLSearchParams({t: $('t').value, z: $('z').value, y, x});
   const d = await (await fetch('/label?' + q)).json();
+  if (d.tid !== null && d.tid !== undefined) { selectTrack(d.tid); return; }
   info.textContent = d.label
     ? `label ${d.label}  ·  (${x}, ${y})  ·  ${d.n_cells} cells in slice`
     : `background  ·  (${x}, ${y})  ·  ${d.n_cells} cells in slice`;
@@ -158,6 +290,7 @@ addEventListener('mouseup', async e => {
 
 // --- controls ---------------------------------------------------------------
 for (const id of ['t', 'z', 'alpha', 'lo', 'hi']) $(id).addEventListener('input', render);
+$('sort').addEventListener('change', loadTrackList);
 
 $('mode').onclick = () => {
   mode = mode === 'outline' ? 'fill' : 'outline';
@@ -165,6 +298,12 @@ $('mode').onclick = () => {
   render();
 };
 $('reset').onclick = resetView;
+$('clear').onclick = clearSelection;
+$('follow').onclick = () => {
+  follow = !follow;
+  $('follow').textContent = 'follow: ' + (follow ? 'on' : 'off');
+  if (follow) { lastFollowT = null; render(); }   // re-centre now rather than at the next frame
+};
 
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && e.key !== ' ') return;
@@ -174,6 +313,7 @@ addEventListener('keydown', e => {
   else if (k === 'ArrowUp') step('z', 1);
   else if (k === 'ArrowDown') step('z', -1);
   else if (k === 'r' || k === 'R') resetView();
+  else if (k === 'Escape') clearSelection();
   else if (k === ' ') {
     overlay = !overlay;
     if (overlay) $('alpha').value = savedAlpha; else savedAlpha = $('alpha').value;
@@ -190,6 +330,7 @@ addEventListener('resize', resetView);
   $('z').max = meta.n_z - 1;
   $('z').value = Math.floor(meta.n_z / 2);
   if (!meta.has_masks) info.textContent = 'no masks loaded';
+  if (meta.has_tracklets) { $('tracks').style.display = 'block'; loadTrackList(); }
   img.onload = () => { img.onload = null; resetView(); };   // fit once, on the first frame
   render();
 })();

@@ -428,10 +428,11 @@ def match_cells_by_iou_hungarian_local(mask1: np.ndarray, mask2: np.ndarray,
     return matches
 
 def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.ndarray,
-                                               min_iou: float = 0.3,
+                                               min_iou: float = 0.0,
                                                search_radius: int = 10,
                                                max_centroid_distance: float = None,
-                                               use_2d_distance: bool = True) -> dict:
+                                               use_2d_distance: bool = True,
+                                               dist_weight: float = 0.3) -> dict:
     """
     Ultra-optimized local IoU matching with improved robustness and speed.
 
@@ -518,7 +519,7 @@ def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.nd
             else:
                 distance = np.linalg.norm(c1 - c2)
             if distance <= max_centroid_distance:
-                valid_pairs.append((i, j, cell1, cell2))
+                valid_pairs.append((i, j, cell1, cell2, distance))
 
     # Cost matrix: 2.0 for pairs outside search radius (impossible matches),
     # 1.0 for valid pairs with zero/unknown IoU, 1-IoU for pairs with overlap.
@@ -528,47 +529,55 @@ def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.nd
     cost_matrix = np.full((n1, n2), 2.0)
 
     # --- 3. Calculate IoU only for valid pairs in a robust local region ---
-    for i, j, cell1, cell2 in valid_pairs:
-        cost_matrix[i, j] = 1.0  # valid candidate, zero IoU until computed below
+    # iou_matrix stores the true IoU per (i,j) pair so the acceptance check
+    # doesn't have to reverse-engineer it from the combined cost.
+    iou_matrix = {}
+    for i, j, cell1, cell2, dist in valid_pairs:
+        dist_norm = dist / max_centroid_distance
         c1 = centroids1[cell1]
         c2 = centroids2[cell2]
-        
+
         # --- Robust Bounding Box Definition ---
-        # Define a bounding box that encloses both centroids, plus padding.
         z_min = max(0, int(min(c1[0], c2[0]) - search_radius))
         z_max = min(mask1.shape[0], int(max(c1[0], c2[0]) + search_radius) + 1)
         y_min = max(0, int(min(c1[1], c2[1]) - search_radius))
         y_max = min(mask1.shape[1], int(max(c1[1], c2[1]) + search_radius) + 1)
         x_min = max(0, int(min(c1[2], c2[2]) - search_radius))
         x_max = min(mask1.shape[2], int(max(c1[2], c2[2]) + search_radius) + 1)
-        
-        # Extract local regions
+
         local_mask1 = mask1[z_min:z_max, y_min:y_max, x_min:x_max]
         local_mask2 = mask2[z_min:z_max, y_min:y_max, x_min:x_max]
-        
-        # Calculate intersection in the local region
         intersection = np.sum((local_mask1 == cell1) & (local_mask2 == cell2))
-        
+
         if intersection > 0:
-            # Get volumes from pre-computed values
             vol1 = volumes1[cell1]
             vol2 = volumes2[cell2]
             union = vol1 + vol2 - intersection
-            
             if union > 0:
                 iou = intersection / union
-                cost_matrix[i, j] = 1.0 - iou
-    
+                # Blend IoU and distance: low cost = overlapping AND close
+                cost_matrix[i, j] = (1.0 - iou) * (1.0 - dist_weight) + dist_norm * dist_weight
+            else:
+                iou = 0.0
+                cost_matrix[i, j] = 0.5 + dist_norm * 0.5
+        else:
+            iou = 0.0
+            # No overlap: rank by distance so closer cells are preferred
+            cost_matrix[i, j] = 0.5 + dist_norm * 0.5   # range [0.5, 1.0]
+
+        iou_matrix[(i, j)] = iou
+
     # --- 4. Apply Hungarian algorithm to find optimal assignment ---
     row_indices, col_indices = linear_sum_assignment(cost_matrix)
-    
-    # Extract valid matches that meet the IoU threshold
+
+    # Accept pairs that were within max_centroid_distance and meet min_iou.
+    # Pairs forced by Hungarian outside the valid set have iou=-1.0 → rejected.
     matches = {}
     for i, j in zip(row_indices, col_indices):
-        iou = 1.0 - cost_matrix[i, j]
+        iou = iou_matrix.get((i, j), -1.0)
         if iou >= min_iou:
             cell1 = valid_cells1[i]
             cell2 = valid_cells2[j]
             matches[cell2] = cell1
-    
+
     return matches

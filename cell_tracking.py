@@ -50,7 +50,7 @@ def match_points_over_time_adjacency_graph(g_list:list, masks:list, t:int, dista
         matched_points.append(matches)
     return matched_points
 
-def match_over_time_cell_iou(masks: list, min_iou: float = 0.3,
+def match_over_time_cell_iou(masks: list, min_iou: float = 0.0,
                              max_centroid_distance: float = 15,
                              use_2d_distance: bool = True) -> list:
     """
@@ -74,7 +74,7 @@ def match_over_time_cell_iou(masks: list, min_iou: float = 0.3,
         matched_cells.append(matches)
     return matched_cells
 
-def compute_skip_matches(masks: list, min_iou: float = 0.3,
+def compute_skip_matches(masks: list, min_iou: float = 0.0,
                          max_centroid_distance: float = 15,
                          use_2d_distance: bool = True) -> list:
     """
@@ -122,7 +122,7 @@ def cell_tracking(masks_dir:str, t:int) -> dict:
     # create tracklets with second-chance matching; pass masks for border-exit detection
     tracklets = create_tracklets(matched_points, skip_matches=skip_matches, masks=masks)
     save_dir = os.path.dirname(masks_dir)
-    save_path = os.path.join(save_dir, 'tracklets_bug_fix.json')
+    save_path = os.path.join(save_dir, 'tracklets_bug_fix2.json')
     with open(save_path, 'w') as f:
         json.dump(tracklets, f, indent=4)
     print(f'Tracklets saved to {save_path}')
