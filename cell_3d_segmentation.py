@@ -5,6 +5,29 @@ from tqdm import tqdm
 from cellpose import models
 from src.utils.image_utils import load_czi_images
 
+CELL_CHANNEL = 1
+# Smallest object kept, in voxels.  Cellpose's default of 15 lets through a cloud of
+# sub-cell specks: they were 20% of all labels, median 92 voxels against a median cell of
+# ~1100, and they sit at the top and bottom of the stack where the signal fades.  Nothing
+# tracks them, so each one becomes a two-frame tracklet.  Raising this to a third of a cell
+# halved the frame-to-frame label churn in an A/B over 6 frames.
+MIN_SIZE = 400
+
+
+def intensity_bounds(image_data, channel=CELL_CHANNEL, n_samples=10, percentiles=(1.0, 99.0)):
+    """One intensity window for the whole movie, from a sample of timepoints.
+
+    Cellpose normalises each frame by its own percentiles, so identical tissue is scaled
+    differently at every timepoint and the flow field -- and with it the labelling --
+    wobbles frame to frame.  Fixing the window makes the input to the model comparable
+    across time, which is what stops labels splitting and merging between frames.
+    """
+    n_t = image_data.shape[0]
+    idx = np.unique(np.linspace(0, n_t - 1, min(n_samples, n_t), dtype=int))
+    sample = np.concatenate([image_data[i, channel].ravel() for i in idx])
+    lo, hi = np.percentile(sample, percentiles)
+    return float(lo), float(hi)
+
 
 def segment_3d_cells(input, output_dir,device):
     if not input.endswith('.czi'):
@@ -15,6 +38,8 @@ def segment_3d_cells(input, output_dir,device):
     os.makedirs(masks_dir, exist_ok=True)
     image_data = load_czi_images(input)
     t = np.linspace(0, image_data.shape[0]-1, image_data.shape[0], dtype=int)
+    lo, hi = intensity_bounds(image_data)
+    print(f"Fixed intensity window across all timepoints: {lo:.1f} - {hi:.1f}")
     torch_device = torch.device(device)
     model = models.CellposeModel(gpu=True, device=torch_device)
     for ti in tqdm(t):
@@ -22,9 +47,13 @@ def segment_3d_cells(input, output_dir,device):
         if os.path.exists(save_path):
             print(f"Skipping {save_path}, already exists.")
             continue
-        z_stack_t = image_data[ti, 1, :, :, :]
+        z_stack_t = image_data[ti, CELL_CHANNEL, :, :, :]
         masks, flows, _ = model.eval(
-            z_stack_t, z_axis=0, channel_axis=1, batch_size=32, do_3D=True, flow3D_smooth=1)
+            z_stack_t, z_axis=0, channel_axis=None, batch_size=32, do_3D=True,
+            flow3D_smooth=1, min_size=MIN_SIZE,
+            # norm3D keeps the whole stack on one scale; per-slice normalisation (the
+            # default) amplifies the faint top and bottom slices into spurious caps.
+            normalize={'norm3D': True, 'lowhigh': (lo, hi)})
         
         # Save compressed numpy array
         np.savez_compressed(save_path, masks=masks, flows_xyz_coord=flows[1], flows_circular_coord=flows[0])

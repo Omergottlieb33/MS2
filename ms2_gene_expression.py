@@ -28,7 +28,8 @@ class MS2GeneExpressionProcessor:
     """
 
     def __init__(self, tracklets, czi_file_path, masks_paths, ms2_background_removed, output_dir='output', plot=None,
-                 ransac_mad_k_th=2, strategy: str | None = 'global', prominence: float | None = 20):
+                 ransac_mad_k_th=2, strategy: str | None = 'global', prominence: float | None = 20,
+                 emitter_cells_matches: str | None = None):
         """
         Initialize the MS2 gene expression processor.
 
@@ -38,6 +39,9 @@ class MS2GeneExpressionProcessor:
             masks_paths (list): Paths to segmentation mask files
             ms2_background_removed (np.ndarray): MS2 channel background removed images
             output_dir (str): Directory for saving output files
+            emitter_cells_matches (str|None): Path to an existing peak-to-cell matching csv
+                (columns: timepoint, cell_label, x_peak, y_peak, slice_score).  When omitted
+                the matching is generated and saved under output_dir.
         """
         self.tracklets = tracklets
         self.czi_file_path = czi_file_path
@@ -51,6 +55,7 @@ class MS2GeneExpressionProcessor:
         self.strategy_name = strategy  # TODO: redundant
         self.czi_reader = None
         self.prominence = prominence
+        self.emitter_cells_matches = emitter_cells_matches
         self._mask_buffer = None
 
         # Only initialize the CZI reader if segmentation plotting is enabled to save memory.
@@ -80,13 +85,15 @@ class MS2GeneExpressionProcessor:
 
     def _init_strategy(self):
         self.strategy = self._build_strategy()
-        # Match peaks to cell emitters
-        emitter_cells_matches = os.path.join(
-            os.getcwd(), f'peak_to_cell_matching_prominence_{self.prominence}.csv')
-        if os.path.exists(emitter_cells_matches):
-            self.strategy.emitter_cell_matching(self, emitter_cells_matches)
-        else:
-            self.strategy.emitter_cell_matching(self)
+        # Match peaks to cell emitters.  Without a given csv the matching is generated once
+        # into the output directory and reused by later runs against the same output.
+        if self.emitter_cells_matches is None:
+            self.emitter_cells_matches = os.path.join(
+                self.output_dir, f'peak_to_cell_matching_prominence_{self.prominence}.csv')
+        elif not os.path.exists(self.emitter_cells_matches):
+            raise FileNotFoundError(
+                f"emitter_cells_matches csv not found: {self.emitter_cells_matches}")
+        self.strategy.emitter_cell_matching(self, self.emitter_cells_matches)
 
     def set_strategy(self, strategy: str):
         self.strategy_name = strategy
@@ -204,9 +211,14 @@ class MS2GeneExpressionProcessor:
         return ellipse_sum_np, cell_noise_np, cell_center_of_mass_np
 
     def _get_valid_timepoints(self):
-        """Get timepoints where the cell is present (label != -1)."""
+        """Get timepoints where the cell is actually segmented.
+
+        create_tracklets writes two sentinels, -1 for a missed detection and -2 for a cell
+        that left the field of view.  Testing for != -1 lets -2 through, and the mask then
+        contains no such label, so the bounding box comes back empty.
+        """
         return [t for t in range(len(self.cell_labels_by_timepoint))
-                if self.cell_labels_by_timepoint[t] != -1]
+                if self.cell_labels_by_timepoint[t] > 0]
 
     def _calculate_max_cell_intensity(self, valid_timepoints):
         """
@@ -230,8 +242,18 @@ class MS2GeneExpressionProcessor:
                 # bool uses 1 byte same as uint8 but operations (sum / >0) are fine
                 self._mask_buffer = np.empty(masks.shape, dtype=bool)
             np.equal(masks, cell_label, out=self._mask_buffer)
-            z1, y1, x1, z2, y2, x2 = get_3d_bounding_box_corners(
-                self._mask_buffer)
+            bbox = get_3d_bounding_box_corners(self._mask_buffer)
+            if bbox is None:
+                # A tracklet label that no voxel carries means the tracklets were built
+                # against a different segmentation than the one loaded here.  Splitting
+                # (src/track_unify.py) mints labels that exist only in its masks_split
+                # directory, so tracklets_unified.json must be paired with those masks.
+                raise ValueError(
+                    f"cell {self.cell_id}: label {cell_label} is absent from "
+                    f"{self.mask_file_paths[timepoint]} at timepoint {timepoint}. "
+                    "The tracklets and --seg_maps_dir disagree; unified tracklets index "
+                    "into the masks_split directory written beside them.")
+            z1, y1, x1, z2, y2, x2 = bbox
             self.cell_center_debug.append(((x1 + x2) // 2, (y1 + y2) // 2))
 
             # Project cell mask to 2D
@@ -536,6 +558,11 @@ class MS2GeneExpressionProcessor:
 
             # Ensure bbox and bbox image are set (used by ellipse sum)
             bbox = get_3d_bounding_box_corners(cell_mask_3d)
+            if bbox is None:
+                # This loop walks the whole span from first to last sighting, so it also
+                # visits frames the cell was never segmented in -- a gap, or after it left
+                # the field of view.  There is nothing to draw for those.
+                continue
             z1, y1, x1, z2, y2, x2 = bbox
             self.current_cell_bbox_ms2 = ms2_projection[y1:y2, x1:x2]
             if timepoint not in self.final_df['timepoint'].values:
@@ -578,6 +605,11 @@ def parse_args():
                         help="Path to the output directory.")
     parser.add_argument('--prominence', type=float, required=False, default=18.0,
                         help="Maxima finder prominence")
+    parser.add_argument('--emitter_cells_matches', type=str, required=False,
+                        help="Peak-to-cell matching csv; generated into --output_dir when omitted")
+    parser.add_argument('--roi', type=str, required=False,
+                        help="ROI json from the viewer's /roi page.  When given, cells are "
+                             "selected by the drawn boundaries instead of the gap filter.")
 
     return parser.parse_args()
 
@@ -629,7 +661,8 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         plot={'emitter_fit': True, 'intensity': True, 'segmentation': False},
         ransac_mad_k_th=2.0,
-        prominence=args.prominence
+        prominence=args.prominence,
+        emitter_cells_matches=args.emitter_cells_matches
     )
     # Example: Process a specific cell  using 'global' strategy
     # amp, noise, cell_center_of_mass = processor.process_cell(229, 'global')
@@ -640,10 +673,21 @@ if __name__ == "__main__":
         'timepoint': list(range(num_timepoints))
     }
 
-    valid_ids = [
-    (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
-    for key, cell_labels in tracklets.items()
-    if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
+    if args.roi:
+        # Spatial selection: a cell is analysed if it sits inside the boundary drawn on the
+        # first frame or the one drawn on the last.  Replaces the gap filter entirely.
+        from src.roi_selection import select_from_roi_file
+        selected = select_from_roi_file(args.roi, args.tracklets_path, args.seg_maps_dir)
+        valid_ids = [
+            (str(tid), next((i for i, v in enumerate(tracklets[str(tid)]) if v > 0), -1))
+            for tid in selected]
+        print(f"ROI {args.roi}: {len(valid_ids)} cells selected")
+    else:
+        #add a diffent temporal condition
+        valid_ids = [
+        (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
+        for key, cell_labels in tracklets.items()
+        if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
     # valid_ids = np.arange(0, 50)
     non_zero_min = []
     cells_center_of_mass_df = pd.DataFrame(
@@ -668,7 +712,9 @@ if __name__ == "__main__":
         # Reconstruct full-length vector aligned to all timepoints
         labels = tracklets[str(cell_id)]
         full_series = [np.nan] * num_timepoints
-        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl != -1]
+        # Must match _get_valid_timepoints exactly -- amplitudes are zipped against this
+        # list positionally, so any disagreement silently shifts the whole trace in time.
+        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl > 0]
 
         # Map returned amplitudes to their corresponding timepoints
         if not isinstance(amp, np.ndarray):

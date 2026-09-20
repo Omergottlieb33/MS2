@@ -29,6 +29,15 @@
   button:hover { background: #363636; }
   hr { border: 0; border-top: 1px solid #2c2c2c; margin: 16px 0 0; }
 
+  /* go to a track by id */
+  .goto { display: flex; gap: 6px; margin-top: 6px; }
+  .goto input { flex: 1; min-width: 0; background: #1c1c1c; color: #ddd;
+                border: 1px solid #3c3c3c; border-radius: 4px; padding: 5px 7px;
+                font: inherit; font-variant-numeric: tabular-nums; }
+  .goto button { width: auto; margin-top: 0; padding: 5px 12px; }
+  #gotomsg { color: #777; font-size: 11px; margin-top: 4px; min-height: 14px; }
+  #gotomsg.err { color: #e57373; }
+
   /* track list */
   #tracklist { max-height: 260px; overflow-y: auto; margin-top: 6px;
                border: 1px solid #2c2c2c; border-radius: 4px; }
@@ -73,8 +82,29 @@
   <button id="mode">mode: outline</button>
   <button id="reset">reset view</button>
 
+  <div id="ms2box" style="display:none">
+    <hr>
+    <button id="ms2">MS2 layer: off</button>
+    <label>MS2 threshold <span class="val" id="ms2val">18</span></label>
+    <input type="range" id="ms2thr" min="0" max="70" step="1" value="18">
+  </div>
+
+  <div id="peakbox" style="display:none">
+    <hr>
+    <button id="peaks">Detected emitters: off</button>
+    <label>min slice score <span class="val" id="peakval">0</span></label>
+    <input type="range" id="peakscore" min="0" max="99" step="1" value="0">
+  </div>
+
   <div id="tracks" style="display:none">
     <hr>
+    <label>Go to track id</label>
+    <div class="goto">
+      <input type="number" id="gotoid" min="0" placeholder="e.g. 818">
+      <button id="gotobtn">go</button>
+    </div>
+    <div id="gotomsg"></div>
+
     <label>Tracklets — sort by</label>
     <select id="sort">
       <option value="n_active:desc">longest (active frames)</option>
@@ -94,7 +124,9 @@
     <kbd>←</kbd><kbd>→</kbd> time<br>
     <kbd>↑</kbd><kbd>↓</kbd> z slice<br>
     <kbd>space</kbd> toggle overlay<br>
+    <kbd>m</kbd> toggle MS2 layer<br>
     <kbd>r</kbd> reset view<br>
+    <kbd>enter</kbd> in id box — go to track<br>
     wheel zoom · drag pan · click a cell
   </div>
 </div>
@@ -109,7 +141,7 @@ const $ = id => document.getElementById(id);
 const stage = $('stage'), img = $('frame'), info = $('info');
 let meta = {n_t: 1, n_z: 1}, mode = 'outline', overlay = true, savedAlpha = 0.4;
 let view = {x: 0, y: 0, k: 1};
-let selected = null, follow = true, timeline = [], seq = 0;
+let selected = null, follow = true, timeline = [], seq = 0, showMs2 = false, showPeaks = false;
 // Follow snaps z and re-centres only on arrival at a new timepoint.  Doing it on every
 // render would undo the z slider and any panning the moment you touched them.
 let lastFollowT = null;
@@ -122,6 +154,11 @@ function params(t, z) {
     lo: $('lo').value,
     hi: $('hi').value,
     tid: selected === null ? '' : selected,
+    ms2: showMs2 ? 1 : 0,
+    ms2_thr: $('ms2thr').value,
+    peaks: showPeaks ? 1 : 0,
+    peak_score: $('peakscore').value,
+    b: meta.build || 0,          // retires frames cached from a previous server build
   }).toString();
 }
 
@@ -144,6 +181,28 @@ function centreOn(cx, cy) {
 }
 
 // --- rendering --------------------------------------------------------------
+function paint(t) {
+  const z = +$('z').value;
+  $('zval').textContent = z;
+  img.src = '/frame?' + params(t, z);
+  prefetch(t, z);
+}
+
+function setStatus(t, d) {
+  if (d.state === 'active') {
+    const off = +$('z').value === d.z ? '' : `  (cell at z ${d.z})`;
+    info.textContent = `track ${selected} · t ${t} · label ${d.label}` +
+                       ` · z ${$('z').value} · xy (${Math.round(d.cx)}, ${Math.round(d.cy)})${off}`;
+  } else {
+    info.textContent = `track ${selected} · t ${t} · ` + ({
+      gap: 'GAP — not detected',
+      exited: 'left field of view',
+      missing: 'label missing from mask',
+      outside: 'outside track span',
+    }[d.state] || d.state);
+  }
+}
+
 async function render() {
   const my = ++seq;                       // drop stale responses while scrubbing fast
   const t = +$('t').value;
@@ -151,35 +210,30 @@ async function render() {
   $('aval').textContent = (+$('alpha').value).toFixed(2);
   $('loval').textContent = (+$('lo').value).toFixed(1);
   $('hival').textContent = (+$('hi').value).toFixed(1);
+  $('ms2val').textContent = $('ms2thr').value;
+  $('peakval').textContent = $('peakscore').value;
+
+  // Only a follow that is about to move z makes the frame url depend on /track.  In every
+  // other case -- clicking a cell, scrolling z, changing contrast -- start the image now and
+  // let /track resolve alongside it, rather than after it.
+  const willFollow = selected !== null && follow && t !== lastFollowT;
+  if (!willFollow) paint(t);
 
   if (selected !== null) {
-    const d = await (await fetch(`/track?tid=${selected}&t=${t}`)).json();
+    const wantTimeline = timeline.length === 0;     // one /track call, not two
+    const d = await (await fetch(
+      `/track?tid=${selected}&t=${t}` + (wantTimeline ? '&timeline=1' : ''))).json();
     if (my !== seq) return;
-    if (d.state === 'active') {
-      if (follow && t !== lastFollowT) {
-        $('z').value = d.z;               // set before the frame url is built
-        centreOn(d.cx, d.cy);
-      }
-      lastFollowT = t;
-      const off = +$('z').value === d.z ? '' : `  (cell at z ${d.z})`;
-      info.textContent = `track ${selected} · t ${t} · label ${d.label} · z ${$('z').value}${off}`;
-    } else {
-      lastFollowT = t;
-      // hold the view where it is rather than jumping to origin
-      info.textContent = `track ${selected} · t ${t} · ` + ({
-        gap: 'GAP — not detected',
-        exited: 'left field of view',
-        missing: 'label missing from mask',
-        outside: 'outside track span',
-      }[d.state] || d.state);
+    if (wantTimeline && d.timeline) buildTimeline(d.timeline);
+    if (d.state === 'active' && willFollow) {
+      $('z').value = d.z;                 // set before the frame url is built
+      centreOn(d.cx, d.cy);
     }
+    lastFollowT = t;                      // gap frames too: hold the view, do not jump
+    setStatus(t, d);
     markNow(t);
+    if (willFollow) paint(t);
   }
-
-  const z = +$('z').value;
-  $('zval').textContent = z;
-  img.src = '/frame?' + params(t, z);
-  prefetch(t, z);
 }
 
 // Keep neighbouring timepoints warm so scrubbing does not stall on npz decompression.
@@ -209,28 +263,61 @@ async function loadTrackList() {
       `<span class="dim">${r.n_active}f</span>` +
       `<span class="${r.n_gaps ? 'g' : 'dim'}">${r.n_gaps} gap</span>` +
       `<span class="dim">${r.border_exit ? 'exit' : ''}</span>`;
-    el.onclick = () => selectTrack(r.tid);
+    el.onclick = () => selectTrack(r.tid, true);
     $('tracklist').appendChild(el);
   }
 }
 
-async function selectTrack(tid) {
-  selected = tid;
-  lastFollowT = null;          // a fresh selection should snap to the cell straight away
-  for (const el of document.querySelectorAll('.trow'))
-    el.classList.toggle('sel', +el.dataset.tid === tid);
-  const d = await (await fetch(`/track?tid=${tid}&t=${$('t').value}&timeline=1`)).json();
-  timeline = d.timeline || [];
+function buildTimeline(states) {
+  timeline = states;
   $('timeline').innerHTML = '';
-  timeline.forEach((s, i) => {
+  states.forEach((s, i) => {
     const seg = document.createElement('div');
     seg.className = 's-' + s;
     seg.title = `t ${i} — ${s}`;
     seg.onclick = () => { $('t').value = i; render(); };
     $('timeline').appendChild(seg);
   });
+}
+
+// snap: jump to the cell and centre it.  True when picked from the list (you cannot see it
+// otherwise), false when clicked in the image -- you are already looking at it, and yanking
+// the view out from under the click is both jarring and slower, since the frame request would
+// have to wait on /track to learn the new z.
+function selectTrack(tid, snap) {
+  selected = tid;
+  timeline = [];                               // makes the next render fetch it, once
+  lastFollowT = snap ? null : +$('t').value;
+  for (const el of document.querySelectorAll('.trow'))
+    el.classList.toggle('sel', +el.dataset.tid === tid);
   render();
 }
+
+// The list only holds the top 200 of a sort, so most ids cannot be reached by scrolling.
+// Typing one jumps straight to it, and to the first frame the cell actually exists in --
+// selecting a track whose span does not cover the current timepoint would otherwise
+// highlight nothing and look like the id was wrong.
+async function gotoTrack() {
+  const msg = $('gotomsg');
+  const tid = parseInt($('gotoid').value, 10);
+  if (!Number.isInteger(tid)) { msg.className = 'err'; msg.textContent = 'enter a track id'; return; }
+
+  const d = await (await fetch(`/track?tid=${tid}&t=${+$('t').value}&timeline=1`)).json();
+  const states = d.timeline || [];
+  const first = states.indexOf('active');
+  if (first < 0) { msg.className = 'err'; msg.textContent = `no track ${tid} in this file`; return; }
+
+  let t = +$('t').value;
+  let note = '';
+  if (states[t] !== 'active') { t = first; $('t').value = t; note = ` — jumped to t=${t}`; }
+  const n = states.filter(s => s === 'active').length;
+  const gaps = states.filter(s => s === 'gap').length;
+  msg.className = '';
+  msg.textContent = `track ${tid}: ${n} active, ${gaps} gap${note}`;
+  selectTrack(tid, true);
+}
+$('gotobtn').onclick = gotoTrack;
+$('gotoid').addEventListener('keydown', e => { if (e.key === 'Enter') gotoTrack(); });
 
 function markNow(t) {
   const segs = $('timeline').children;
@@ -282,14 +369,14 @@ addEventListener('mouseup', async e => {
   if (x < 0 || y < 0 || x >= meta.width || y >= meta.height) return;
   const q = new URLSearchParams({t: $('t').value, z: $('z').value, y, x});
   const d = await (await fetch('/label?' + q)).json();
-  if (d.tid !== null && d.tid !== undefined) { selectTrack(d.tid); return; }
+  if (d.tid !== null && d.tid !== undefined) { selectTrack(d.tid, false); return; }
   info.textContent = d.label
     ? `label ${d.label}  ·  (${x}, ${y})  ·  ${d.n_cells} cells in slice`
     : `background  ·  (${x}, ${y})  ·  ${d.n_cells} cells in slice`;
 });
 
 // --- controls ---------------------------------------------------------------
-for (const id of ['t', 'z', 'alpha', 'lo', 'hi']) $(id).addEventListener('input', render);
+for (const id of ['t', 'z', 'alpha', 'lo', 'hi', 'ms2thr', 'peakscore']) $(id).addEventListener('input', render);
 $('sort').addEventListener('change', loadTrackList);
 
 $('mode').onclick = () => {
@@ -299,6 +386,19 @@ $('mode').onclick = () => {
 };
 $('reset').onclick = resetView;
 $('clear').onclick = clearSelection;
+function toggleMs2() {
+  showMs2 = !showMs2;
+  $('ms2').textContent = 'MS2 layer: ' + (showMs2 ? 'on' : 'off');
+  render();
+}
+$('ms2').onclick = toggleMs2;
+
+function togglePeaks() {
+  showPeaks = !showPeaks;
+  $('peaks').textContent = 'Detected emitters: ' + (showPeaks ? 'on' : 'off');
+  render();
+}
+$('peaks').onclick = togglePeaks;
 $('follow').onclick = () => {
   follow = !follow;
   $('follow').textContent = 'follow: ' + (follow ? 'on' : 'off');
@@ -313,6 +413,8 @@ addEventListener('keydown', e => {
   else if (k === 'ArrowUp') step('z', 1);
   else if (k === 'ArrowDown') step('z', -1);
   else if (k === 'r' || k === 'R') resetView();
+  else if ((k === 'm' || k === 'M') && meta.has_ms2) toggleMs2();
+  else if ((k === 'p' || k === 'P') && meta.has_peaks) togglePeaks();
   else if (k === 'Escape') clearSelection();
   else if (k === ' ') {
     overlay = !overlay;
@@ -331,6 +433,8 @@ addEventListener('resize', resetView);
   $('z').value = Math.floor(meta.n_z / 2);
   if (!meta.has_masks) info.textContent = 'no masks loaded';
   if (meta.has_tracklets) { $('tracks').style.display = 'block'; loadTrackList(); }
+  if (meta.has_ms2) { $('ms2box').style.display = 'block'; $('ms2thr').max = meta.ms2_max; }
+  if (meta.has_peaks) $('peakbox').style.display = 'block';
   img.onload = () => { img.onload = null; resetView(); };   // fit once, on the first frame
   render();
 })();

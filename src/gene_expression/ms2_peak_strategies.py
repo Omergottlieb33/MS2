@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -11,6 +12,17 @@ from src.utils.cell_utils import (
     filter_ransac_poly, calculate_center_of_mass_3d
 )
 from src.utils.emitter_utils import circular_z_score, get_indices_in_mask
+
+PEAK_MATCH_COLUMNS = ['timepoint', 'cell_label',
+                      'x_peak', 'y_peak', 'slice_score']
+
+
+def _read_peak_matches(csv_path):
+    df = pd.read_csv(csv_path)
+    missing = [c for c in PEAK_MATCH_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"{csv_path} is missing columns: {missing}")
+    return df
 
 
 class PeakStrategy:
@@ -178,15 +190,18 @@ class GlobalPeakStrategy(PeakStrategy):
 
         return gaussian_params, covariance_matrix, initial_center
 
-    def emitter_cell_matching(self, processor, csv_path=None):
+    def emitter_cell_matching(self, processor, csv_path):
         """
         Faster peak-to-cell matching:
         - Accumulate dict records instead of repeated DataFrame concat.
         - Skip frames with no peaks early.
         - Single groupby at end to retain highest slice_score per (timepoint, cell_label).
+
+        csv_path is the matching table for this run: read when it already exists, otherwise
+        the computed matching is written there.
         """
-        if csv_path is not None:
-            self.df_peaks = pd.read_csv(csv_path)
+        if os.path.exists(csv_path):
+            self.df_peaks = _read_peak_matches(csv_path)
             return
         records = []
         ms2_bg = processor.ms2_background_removed  # (T,Z,Y,X)
@@ -206,17 +221,14 @@ class GlobalPeakStrategy(PeakStrategy):
                 records.extend(df_t.to_dict('records'))
 
         if not records:
-            self.df_peaks = pd.DataFrame(
-                columns=['timepoint', 'cell_label',
-                         'x_peak', 'y_peak', 'slice_score']
-            )
+            self.df_peaks = pd.DataFrame(columns=PEAK_MATCH_COLUMNS)
             return
 
         df_all = pd.DataFrame.from_records(records)
         # filter emitter peaks in overlaping cells
         df_filtered = df_all.loc[df_all.groupby(["timepoint", "x_peak", "y_peak"])[
             "slice_score"].idxmax()]
-        df_filtered.to_csv(f"peak_to_cell_matching_prominence_{self.prominence}.csv", index=False)
+        df_filtered.to_csv(csv_path, index=False)
         self.df_peaks = df_filtered
 
     @staticmethod
@@ -229,14 +241,14 @@ class GlobalPeakStrategy(PeakStrategy):
         Returns a DataFrame with one row per (cell_label, peak) before later filtering.
         """
         if pts.size == 0:
-            return pd.DataFrame(columns=['timepoint', 'cell_label', 'x_peak', 'y_peak', 'slice_score'])
+            return pd.DataFrame(columns=PEAK_MATCH_COLUMNS)
 
         # Prepare
         intensity_stack = tzyx[timepoint]        # (Z,Y,X)
         labels = np.unique(masks)
         labels = labels[(labels != 0)]           # exclude background
         if labels.size == 0:
-            return pd.DataFrame(columns=['timepoint', 'cell_label', 'x_peak', 'y_peak', 'slice_score'])
+            return pd.DataFrame(columns=PEAK_MATCH_COLUMNS)
 
         # Buffers
         time_buf = []
@@ -275,7 +287,7 @@ class GlobalPeakStrategy(PeakStrategy):
             score_buf.append(slice_score.astype(np.float32))
 
         if not time_buf:
-            return pd.DataFrame(columns=['timepoint', 'cell_label', 'x_peak', 'y_peak', 'slice_score'])
+            return pd.DataFrame(columns=PEAK_MATCH_COLUMNS)
 
         # Concatenate buffers
         return pd.DataFrame({
