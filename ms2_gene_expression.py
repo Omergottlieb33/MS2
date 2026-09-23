@@ -1,6 +1,7 @@
 import gc
 from src.gene_expression.ms2_visualization import MS2VisualizationManager
 from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
+from src.gene_expression.expression_matrix import amplitudes_by_timepoint, expression_series, final_csv_path
 from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d
 from src.utils.plot_utils import plot_gmm_clustering
 from src.utils.cluster_utils import SpaitalClustering
@@ -360,6 +361,9 @@ class MS2GeneExpressionProcessor:
                 med = np.median(positive)
                 mad = np.median(np.abs(positive - med))
                 noise = 1.4826 * mad if mad > 0 else (positive.std() if positive.size > 1 else 0.0)
+            else:
+                # No positive MS2 signal inside the cell mask at this timepoint
+                noise = 0.0
             ellipse_sum = 0.0
         self.final_df.loc[self.final_df['timepoint'] == timepoint, 'ellipse_sum'] = ellipse_sum
         self.final_df.loc[self.final_df['timepoint'] == timepoint, 'noise'] = noise
@@ -613,33 +617,6 @@ def parse_args():
 
     return parser.parse_args()
 
-def fill_amplitude_vector(path,start, n, fill_value = 0.0):
-    df = pd.read_csv(path)
-    valid_timepoints = df['timepoint'].to_numpy().astype(int)
-    amplitudes = df['ellipse_sum'].to_numpy().astype(float)
-    filled_amplitudes = amplitudes.copy()
-    diff = np.diff(valid_timepoints)
-    out = []
-    if start > 0:
-        out.extend([np.nan] * start)
-    # Handle edge case where no valid timepoints exist
-    if len(valid_timepoints) == 0:
-        out.extend([fill_value] * (n-start))
-        return np.asarray(out, dtype=float)
-    # Prepend fill values if the first valid timepoint is greater than 0
-    if valid_timepoints[0] > 0:
-        out.extend([fill_value] * valid_timepoints[0])
-    # Fill gaps between valid timepoints
-    for i in range(amplitudes.size - 1):
-        out.append(amplitudes[i])
-        gap = int(diff[i]) - 1
-        if gap > 0:
-            out.extend([fill_value] * gap)
-    # Append the last amplitude
-    out.append(amplitudes[-1])
-    filled_amplitudes = np.asarray(out, dtype=float)
-    return filled_amplitudes
-
 if __name__ == "__main__":
     args = parse_args()
 
@@ -678,25 +655,22 @@ if __name__ == "__main__":
         # first frame or the one drawn on the last.  Replaces the gap filter entirely.
         from src.roi_selection import select_from_roi_file
         selected = select_from_roi_file(args.roi, args.tracklets_path, args.seg_maps_dir)
-        valid_ids = [
-            (str(tid), next((i for i, v in enumerate(tracklets[str(tid)]) if v > 0), -1))
-            for tid in selected]
+        valid_ids = [str(tid) for tid in selected]
         print(f"ROI {args.roi}: {len(valid_ids)} cells selected")
     else:
         #add a diffent temporal condition
         valid_ids = [
-        (key, next((i for i, v in enumerate(cell_labels) if v > 0), -1))
-        for key, cell_labels in tracklets.items()
+        key for key, cell_labels in tracklets.items()
         if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
     # valid_ids = np.arange(0, 50)
     non_zero_min = []
     cells_center_of_mass_df = pd.DataFrame(
         columns=['cell_id', 'x', 'y', 'z', 'noise'])
-    for cell_id, first_valid_timepoint in tqdm(valid_ids):
-        
-        if os.path.exists(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv")):
+    for cell_id in tqdm(valid_ids):
+
+        if os.path.exists(final_csv_path(processor.output_dir, cell_id)):
             print(f"Skipping cell {cell_id} as results already exist.")
-            amp = fill_amplitude_vector(os.path.join(processor.output_dir, f"cell_{cell_id}_data_global_peaks_final.csv"), first_valid_timepoint, n=num_timepoints)
+            amp = amplitudes_by_timepoint(final_csv_path(processor.output_dir, cell_id), num_timepoints)
         else:
             amp, noise, cell_center_of_mass = processor.process_cell(
                 cell_id, 'global')
@@ -709,19 +683,12 @@ if __name__ == "__main__":
             }])], ignore_index=True)
         non_zero_min.append(np.min(amp[amp > 0])
                             if np.any(amp > 0) else np.nan)
-        # Reconstruct full-length vector aligned to all timepoints
-        labels = tracklets[str(cell_id)]
-        full_series = [np.nan] * num_timepoints
-        # Must match _get_valid_timepoints exactly -- amplitudes are zipped against this
-        # list positionally, so any disagreement silently shifts the whole trace in time.
-        valid_timepoints = [t for t, lbl in enumerate(labels) if lbl > 0]
-
-        # Map returned amplitudes to their corresponding timepoints
         if not isinstance(amp, np.ndarray):
             continue
-        for tp, amp in zip(valid_timepoints, amp):
-                full_series[tp] = amp
-        expression_matrix[f'cell_{cell_id}'] = full_series
+        # amp is indexed by absolute timepoint, so it is read at t -- never zipped
+        # positionally against the valid timepoints, which shifted traces in time.
+        expression_matrix[f'cell_{cell_id}'] = expression_series(
+            amp, tracklets[str(cell_id)], num_timepoints)
     noise_level = np.nanmean(non_zero_min) if non_zero_min else 0
     print(f"Noise level: {noise_level}")
     df = pd.DataFrame(expression_matrix)
