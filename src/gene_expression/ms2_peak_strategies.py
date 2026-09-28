@@ -215,7 +215,7 @@ class GlobalPeakStrategy(PeakStrategy):
                 continue
             pts = np.vstack((x, y)).T  # (k,2)
 
-            masks = np.load(processor.mask_file_paths[timepoint])['masks']
+            masks = processor.load_masks(timepoint)
             df_t = self._match_cells_to_emitter(masks, pts, ms2_bg, timepoint)
             if not df_t.empty:
                 records.extend(df_t.to_dict('records'))

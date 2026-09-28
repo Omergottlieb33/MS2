@@ -7,7 +7,9 @@ from src.utils.plot_utils import plot_single_gaussian, plot_multiple_gaussians
 
 
 class SpaitalClustering:
-    def __init__(self, sigma_rms_threshold=6.0, random_state=42, nsig=3.0, bic_max_components=5, min_cluster_size=2):
+    def __init__(self, sigma_rms_threshold=6.0, random_state=42, nsig=3.0, bic_max_components=5, min_cluster_size=2,
+                 plot=True):
+        self.plot = plot
         self.sigma_rms_threshold = sigma_rms_threshold
         self.random_state = random_state
         self.nsig = nsig
@@ -26,8 +28,9 @@ class SpaitalClustering:
                 self.pts, labels, 0, means, covs, nsig=self.nsig)
             df_filtered = df[keep_mask].copy()
             output_path = f"{outpud_dir}/cell_{cell_id}_spatial_clustering.png"
-            plot_single_gaussian(self.pts, self.intensity, keep_mask, means, covs, np.sqrt(
-                covs[0][0][0] + covs[0][1][1]), output_path)
+            if self.plot:
+                plot_single_gaussian(self.pts, self.intensity, keep_mask, means, covs, np.sqrt(
+                    covs[0][0][0] + covs[0][1][1]), output_path)
             return df_filtered
         else:
             n_components, best_gmm = self.get_best_gmm_components()
@@ -44,7 +47,9 @@ class SpaitalClustering:
             keep_mask, best_idx = self._select_cluster(labels, means_n, covs_n)
             df_filtered = df[keep_mask].copy()
             output_path = f"{outpud_dir}/cell_{cell_id}_spatial_clustering.png"
-            if best_idx == -1:
+            if not self.plot:
+                pass
+            elif best_idx == -1:
                 plot_multiple_gaussians(n_components, self.pts, self.intensity, means_n, covs_n, sigma_rms_n,
                                     cell_id, output_path)
             else:

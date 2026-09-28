@@ -541,30 +541,31 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
-    os.makedirs(args.out_dir, exist_ok=True)
-    out_masks = os.path.join(args.out_dir, 'masks_split')
+def unify(masks_dir, tracklets_path, out_dir, anisotropy=2.52, properties_cache=None):
+    """Repair tracklets_path against masks_dir; returns the path of tracklets_unified.json
+    (the repaired masks are in out_dir/masks_split)."""
+    os.makedirs(out_dir, exist_ok=True)
+    out_masks = os.path.join(out_dir, 'masks_split')
 
-    props = cell_properties(args.masks_dir,
-                            args.properties_cache
-                            or os.path.join(args.out_dir, 'cell_properties.pkl'))
+    props = cell_properties(masks_dir,
+                            properties_cache
+                            or os.path.join(out_dir, 'cell_properties.pkl'))
     ts = sorted(props)
     volumes = median_volume(props)
-    tracklets = load_tracklets(args.tracklets)
+    tracklets = load_tracklets(tracklets_path)
 
     print('--- before ---')
     evaluate_tracklets({str(k): v.tolist() for k, v in tracklets.items()})
 
     repaired, log, absorbed = repair_clumps(tracklets, props, ts, volumes,
-                                            args.masks_dir, out_masks, args.anisotropy)
+                                            masks_dir, out_masks, anisotropy)
     repaired = absorb_fragments(repaired, absorbed, log)
 
     # The split moved voxels, so positions have to be re-read from what was written.
-    props = cell_properties(out_masks, os.path.join(args.out_dir,
+    props = cell_properties(out_masks, os.path.join(out_dir,
                                                     'cell_properties_split.pkl'))
     volumes = median_volume(props)
-    repaired = stitch_gaps(repaired, props, ts, volumes, log, args.anisotropy)
+    repaired = stitch_gaps(repaired, props, ts, volumes, log, anisotropy)
     flag_swaps(repaired, props, ts, log)
 
     print('\n--- repairs ---')
@@ -575,12 +576,19 @@ def main():
     print('\n--- after ---')
     evaluate_tracklets({str(k): list(map(int, v)) for k, v in repaired.items()})
 
-    tracklets_path = os.path.join(args.out_dir, 'tracklets_unified.json')
-    with open(tracklets_path, 'w') as f:
+    unified_path = os.path.join(out_dir, 'tracklets_unified.json')
+    with open(unified_path, 'w') as f:
         json.dump({str(k): list(map(int, v)) for k, v in repaired.items()}, f, indent=4)
-    with open(os.path.join(args.out_dir, 'tracklets_unified_log.json'), 'w') as f:
+    with open(os.path.join(out_dir, 'tracklets_unified_log.json'), 'w') as f:
         json.dump(log, f, indent=2)
-    print(f'\ntracklets -> {tracklets_path}\nmasks     -> {out_masks}')
+    print(f'\ntracklets -> {unified_path}\nmasks     -> {out_masks}')
+
+    return unified_path
+
+
+def main():
+    args = parse_args()
+    unify(args.masks_dir, args.tracklets, args.out_dir, args.anisotropy, args.properties_cache)
 
 
 if __name__ == '__main__':

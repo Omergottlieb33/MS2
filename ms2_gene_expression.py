@@ -1,4 +1,5 @@
 import gc
+import multiprocessing
 from src.gene_expression.ms2_visualization import MS2VisualizationManager
 from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
 from src.gene_expression.expression_matrix import amplitudes_by_timepoint, expression_series, final_csv_path
@@ -30,7 +31,7 @@ class MS2GeneExpressionProcessor:
 
     def __init__(self, tracklets, czi_file_path, masks_paths, ms2_background_removed, output_dir='output', plot=None,
                  ransac_mad_k_th=2, strategy: str | None = 'global', prominence: float | None = 20,
-                 emitter_cells_matches: str | None = None):
+                 emitter_cells_matches: str | None = None, preload_masks: bool = False):
         """
         Initialize the MS2 gene expression processor.
 
@@ -43,6 +44,8 @@ class MS2GeneExpressionProcessor:
             emitter_cells_matches (str|None): Path to an existing peak-to-cell matching csv
                 (columns: timepoint, cell_label, x_peak, y_peak, slice_score).  When omitted
                 the matching is generated and saved under output_dir.
+            preload_masks (bool): Decompress every mask npz once and keep it in memory
+                (~25 MB a frame) instead of re-reading each frame for every cell.
         """
         self.tracklets = tracklets
         self.czi_file_path = czi_file_path
@@ -58,6 +61,8 @@ class MS2GeneExpressionProcessor:
         self.prominence = prominence
         self.emitter_cells_matches = emitter_cells_matches
         self._mask_buffer = None
+        self._masks_cache = ([self._read_masks(p) for p in tqdm(masks_paths, desc='loading masks')]
+                             if preload_masks else None)
 
         # Only initialize the CZI reader if segmentation plotting is enabled to save memory.
         if self.plot and self.plot.get('segmentation', False):
@@ -82,7 +87,17 @@ class MS2GeneExpressionProcessor:
         # Initialize processing state variables
         self._reset_processing_state()
         self._init_strategy()
-        self.spatial_clustering = SpaitalClustering()
+        self.spatial_clustering = SpaitalClustering(plot=self.plot is not None)
+
+    @staticmethod
+    def _read_masks(path):
+        with np.load(path, mmap_mode='r') as data:
+            return data['masks']
+
+    def load_masks(self, timepoint):
+        if self._masks_cache is not None:
+            return self._masks_cache[timepoint]
+        return self._read_masks(self.mask_file_paths[timepoint])
 
     def _init_strategy(self):
         self.strategy = self._build_strategy()
@@ -232,8 +247,7 @@ class MS2GeneExpressionProcessor:
 
         for timepoint in valid_timepoints:
             # Load masks and get cell-specific data
-            with np.load(self.mask_file_paths[timepoint], mmap_mode='r') as data:
-                masks = data['masks']
+            masks = self.load_masks(timepoint)
             ms2_projection = self.ms2_z_projections[timepoint]
             cell_label = self.cell_labels_by_timepoint[timepoint]
 
@@ -437,8 +451,7 @@ class MS2GeneExpressionProcessor:
                 print(
                     f"Warning: Could not read timepoint {timepoint} from CZI file: {e}")
         ms2_stack = self.ms2_background_removed[timepoint]
-        with np.load(self.mask_file_paths[timepoint], mmap_mode='r') as data:
-            masks = data['masks']
+        masks = self.load_masks(timepoint)
         ms2_projection = self.ms2_z_projections[timepoint]
         return z_stack, ms2_stack, masks, ms2_projection
 
@@ -634,31 +647,56 @@ def parse_args():
                         help="ROI json from the viewer's /roi page.  When given, cells are "
                              "selected by the drawn boundaries instead of the gap filter.")
 
+    parser.add_argument('--no-plots', action='store_true',
+                        help="Skip the per-cell figures; the csv outputs are unchanged")
+    parser.add_argument('--workers', type=int, default=1,
+                        help="Cells fitted in parallel processes")
+
     return parser.parse_args()
 
-if __name__ == "__main__":
-    args = parse_args()
 
+_PROCESSOR = None
+
+
+def _init_worker():
+    # One BLAS thread per worker, or N workers x all cores oversubscribe the machine.
+    from threadpoolctl import threadpool_limits
+    threadpool_limits(1)
+
+
+def _process_cell_worker(cell_id):
+    return cell_id, _PROCESSOR.process_cell(cell_id, 'global')
+
+
+def run_gene_expression(czi_file_path, seg_maps_dir, tracklets_path, ms2_background_removed_path,
+                        output_dir='output', prominence=18.0, emitter_cells_matches=None, roi=None,
+                        plots=True, workers=1):
+    """The expression matrix of one recording; returns the path of gene_expression_results.csv.
+
+    plots=False skips every per-cell figure (intensity plot, spatial clustering); the csv
+    outputs are the same.  workers > 1 fits cells in that many forked processes.
+    """
     # Load tracklets
-    with open(args.tracklets_path, 'r') as f:
+    with open(tracklets_path, 'r') as f:
         tracklets = json.load(f)
 
     # Load MS2 z-projections
-    ms2_background_removed = tifffile.imread(args.ms2_background_removed)
+    ms2_background_removed = tifffile.imread(ms2_background_removed_path)
 
-    masks_paths = get_masks_paths(args.seg_maps_dir)
+    masks_paths = get_masks_paths(seg_maps_dir)
 
     # Create processor instance
     processor = MS2GeneExpressionProcessor(
         tracklets=tracklets,
-        czi_file_path=args.czi_file_path,
+        czi_file_path=czi_file_path,
         masks_paths=masks_paths,
         ms2_background_removed=ms2_background_removed,
-        output_dir=args.output_dir,
-        plot={'emitter_fit': False, 'intensity': True, 'segmentation': False},
+        output_dir=output_dir,
+        plot={'emitter_fit': False, 'intensity': True, 'segmentation': False} if plots else None,
         ransac_mad_k_th=2.0,
-        prominence=args.prominence,
-        emitter_cells_matches=args.emitter_cells_matches
+        prominence=prominence,
+        emitter_cells_matches=emitter_cells_matches,
+        preload_masks=True
     )
     # Example: Process a specific cell  using 'global' strategy
     # amp, noise, cell_center_of_mass = processor.process_cell(229, 'global')
@@ -669,13 +707,13 @@ if __name__ == "__main__":
         'timepoint': list(range(num_timepoints))
     }
 
-    if args.roi:
+    if roi:
         # Spatial selection: a cell is analysed if it sits inside the boundary drawn on the
         # first frame or the one drawn on the last.  Replaces the gap filter entirely.
         from src.roi_selection import select_from_roi_file
-        selected = select_from_roi_file(args.roi, args.tracklets_path, args.seg_maps_dir)
+        selected = select_from_roi_file(roi, tracklets_path, seg_maps_dir)
         valid_ids = [str(tid) for tid in selected]
-        print(f"ROI {args.roi}: {len(valid_ids)} cells selected")
+        print(f"ROI {roi}: {len(valid_ids)} cells selected")
     else:
         #add a diffent temporal condition
         valid_ids = [
@@ -685,14 +723,27 @@ if __name__ == "__main__":
     non_zero_min = []
     cells_center_of_mass_df = pd.DataFrame(
         columns=['cell_id', 'x', 'y', 'z', 'noise'])
-    for cell_id in tqdm(valid_ids):
+    todo = [c for c in valid_ids if not os.path.exists(final_csv_path(processor.output_dir, c))]
+    results = {}
+    if workers > 1 and len(todo) > 1:
+        # Forked workers share the processor, and its mask cache, copy-on-write.
+        global _PROCESSOR
+        _PROCESSOR = processor
+        with multiprocessing.get_context('fork').Pool(workers, initializer=_init_worker) as pool:
+            for cell_id, result in tqdm(pool.imap_unordered(_process_cell_worker, todo),
+                                        total=len(todo), desc='cells'):
+                results[cell_id] = result
+        _PROCESSOR = None
+    else:
+        for cell_id in tqdm(todo, desc='cells'):
+            results[cell_id] = processor.process_cell(cell_id, 'global')
 
-        if os.path.exists(final_csv_path(processor.output_dir, cell_id)):
+    for cell_id in valid_ids:
+        if cell_id not in results:
             print(f"Skipping cell {cell_id} as results already exist.")
             amp = amplitudes_by_timepoint(final_csv_path(processor.output_dir, cell_id), num_timepoints)
         else:
-            amp, noise, cell_center_of_mass = processor.process_cell(
-                cell_id, 'global')
+            amp, noise, cell_center_of_mass = results[cell_id]
             cells_center_of_mass_df = pd.concat([cells_center_of_mass_df, pd.DataFrame([{
                 'cell_id': cell_id,
                 'x': cell_center_of_mass[0],
@@ -723,3 +774,11 @@ if __name__ == "__main__":
         processor.output_dir, 'cells_center_of_mass.csv'), index=False)
     print(
         f"Saved cells center of mass to {os.path.join(processor.output_dir, 'cells_center_of_mass.csv')}")  
+    return out_path
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    run_gene_expression(args.czi_file_path, args.seg_maps_dir, args.tracklets_path,
+                        args.ms2_background_removed, args.output_dir, args.prominence,
+                        args.emitter_cells_matches, args.roi, not args.no_plots, args.workers)
