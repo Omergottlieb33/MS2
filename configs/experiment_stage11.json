@@ -1,0 +1,17 @@
+{
+  "out": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-11/New-02-v3-ST11-12/New-02-v3-ST11-12/pipeline_test",
+  "recordings": {
+    "New-02-v3-ST11-12": {
+      "czi": "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-11/STAGE-11/New-02-v3-ST11-12.czi",
+      "roi": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-11/New-02-v3-ST11-12/New-02-v3-ST11-12/masks/roi_selection.json",
+      "t_start": 47,
+      "t_end": 108
+    },
+    "New-03-v1-ST11-12": {
+      "czi": "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-11/STAGE-11/New-03-v1-ST11-12.czi",
+      "roi": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-11/New-03-v1-ST11-12/New-03-v1-ST11-12/masks/roi_selection.json",
+      "t_start": 24,
+      "t_end": 75
+    }
+  }
+}
