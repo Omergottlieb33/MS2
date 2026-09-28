@@ -12,6 +12,7 @@ dependencies:
   - matplotlib
   - tqdm
   - networkx
+  - numba
   - pillow
   - imageio
   - scikit-learn
