@@ -9,6 +9,8 @@ make the numbers comparable between embryos:
            compare.  src/cell_activity.py fits a ladder per recording, where "high" in one
            embryo is a different threshold than in the next.  Silent and short burst / noise
            use the same absolute thresholds in both.  Active = weakly active or above.
+           --ladder per_recording fits one ladder per recording instead, to see how much of a
+           level difference is the shared thresholds.
   space    the embryo is cut off by the field of view and mounted at any rotation, so every
            spatial measure is orientation-free and relative to the imaged tissue -- the cells
            tracked in the window -- not to the whole embryo.
@@ -21,14 +23,20 @@ Per recording (metrics.csv):
     n_<level>, frac_<level>, n_active, frac_active      composition on the shared ladder
     median_rate, median_peak, median_duty                strength of the active cells
     median_onset                                         first frame above the floor, 0..1 of window
+    median_onset_tracked                                 the same, 0..1 of the cell's own tracked frames
     mean_frac_firing                                     mean share of cells above the floor per frame
     frac_active_{inner,middle,outer}                     tissue split into thirds by distance from
                                                          its centre, equal cell counts per third
     radial_bias                                          median r_norm, active minus all (>0 = edge)
-    nn_index, nn_p                                       nearest-neighbour distance of active cells
+    nn_index                                             nearest-neighbour distance of active cells
                                                          over random sets of as many cells (<1 =
-                                                         clustered), one-sided permutation p
+                                                         clustered, >1 = spaced out)
+    nn_p_clustered, nn_p_dispersed                       permutation p of each tail of nn_index
     hull_coverage                                        convex hull of active cells / of all cells
+
+The config is checked before anything is measured and a background diagnostic is written to
+out_dir/calibration first -- see src/cell_activity_validate.py and
+src/cell_activity_calibration.py.  --skip-validate skips the first for a known-good config.
 """
 import argparse
 import itertools
@@ -41,13 +49,15 @@ import pandas as pd
 from scipy.spatial import ConvexHull, cKDTree
 from scipy.stats import chi2_contingency, false_discovery_control, kruskal, mannwhitneyu
 
-from src.cell_activity import (LEVEL_NAMES, MIN_PRESENCE, NOISE_FLOOR, activity_descriptors,
-                               classify_cells, load_window, save_figure)
+from src.cell_activity import (K_LEVELS, LEVEL_NAMES, MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK,
+                               activity_descriptors, classify_cells, load_window, save_figure)
+from src.cell_activity_calibration import run_calibration
+from src.cell_activity_validate import raise_on_errors, validate_config
 from src.track_diagnostics import cell_properties
 
 # Weakly active and above; below are silent cells and 1-2 frame blips.
 ACTIVE_LEVEL = 2
-LEVEL_KEYS = {0: 'silent', 1: 'noise', 2: 'weak', 3: 'moderate', 4: 'high'}
+LEVEL_KEYS = {0: 'silent', 1: 'noise', 2: 'weak', 3: 'moderate', 4: 'high', 5: 'very_high'}
 # r_norm = distance from the tissue centre over this percentile of all cells' distances, so a
 # few stray cells don't set the scale.
 RADIUS_PERCENTILE = 95
@@ -60,7 +70,8 @@ PER_CELL_METRICS = ('rate', 'peak', 'duty', 'onset', 'r_norm')
 RECORDING_COLORS = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100',
                     '#e87ba4', '#008300', '#4a3aa7', '#e34948')
 EXTRA_RECORDING_COLOR = '#8c8a83'
-LEVEL_PLOT_COLORS = {0: '#d3d1cb', 1: '#9a988f', 2: '#86b6ef', 3: '#2a78d6', 4: '#104281'}
+LEVEL_PLOT_COLORS = {0: '#d3d1cb', 1: '#9a988f', 2: '#86b6ef', 3: '#2a78d6', 4: '#104281',
+                     5: '#071d3a'}
 INK, MUTED = '#0b0b0b', '#52514e'
 
 
@@ -84,10 +95,16 @@ def radial_position(positions):
 
 def nn_clustering(positions, active, rng):
     """Mean nearest-neighbour distance among the active cells over its mean for random sets of
-    as many cells of the tissue, and the one-sided permutation p-value of the clustering."""
+    as many cells of the tissue, and the permutation p-value of each tail.
+
+    Both tails are reported because both are biology: active cells sitting closer together than
+    chance (clustered, index < 1) and further apart than chance (overdispersed, index > 1, what
+    lateral inhibition produces).  Testing only the clustering tail hides the second inside a
+    non-significant result.
+    """
     n = int(active.sum())
     if n < 2:
-        return np.nan, np.nan
+        return np.nan, np.nan, np.nan
 
     def mean_nn(points):
         return cKDTree(points).query(points, k=2)[0][:, 1].mean()
@@ -95,7 +112,9 @@ def nn_clustering(positions, active, rng):
     observed = mean_nn(positions[active])
     null = np.array([mean_nn(positions[rng.choice(len(positions), n, replace=False)])
                      for _ in range(N_PERMUTATIONS)])
-    return observed / null.mean(), (1 + (null <= observed).sum()) / (1 + N_PERMUTATIONS)
+    return (observed / null.mean(),
+            (1 + (null <= observed).sum()) / (1 + N_PERMUTATIONS),
+            (1 + (null >= observed).sum()) / (1 + N_PERMUTATIONS))
 
 
 def hull_coverage(positions, active):
@@ -119,6 +138,9 @@ def measure_recording(name, rec, cache_dir):
     table = activity_descriptors(signals, present, noise_floor)
     table.insert(0, 'cell', cells)
     table.insert(0, 'recording', name)
+    # Carried per cell because the ladder is fitted once over the pooled recordings, so the
+    # blip threshold has to travel with the row rather than be passed as one number
+    table['noise_peak'] = rec.get('noise_peak', NOISE_PEAK)
     table['y'], table['x'], table['r_norm'] = positions[:, 0], positions[:, 1], r_norm
     table['shell'] = pd.qcut(r_norm, len(SHELLS), labels=SHELLS).astype(str)
 
@@ -138,16 +160,35 @@ def recording_metrics(cells, timecourse):
         row[f'n_{key}'] = int((cells['level'] == level).sum())
         row[f'frac_{key}'] = row[f'n_{key}'] / len(cells)
     row['n_active'], row['frac_active'] = int(active.sum()), active.mean()
-    for metric in ('rate', 'peak', 'duty', 'onset'):
+    for metric in ('rate', 'peak', 'duty', 'onset', 'onset_tracked'):
         row[f'median_{metric}'] = cells.loc[active, metric].median()
     row['mean_frac_firing'] = timecourse['frac_firing'].mean()
     for shell in SHELLS:
         row[f'frac_active_{shell}'] = cells.loc[cells['shell'] == shell, 'active'].mean()
     row['radial_bias'] = cells.loc[active, 'r_norm'].median() - cells['r_norm'].median()
     # Seeded per recording so a recording's numbers don't depend on what it is compared with
-    row['nn_index'], row['nn_p'] = nn_clustering(positions, active, np.random.default_rng(0))
+    row['nn_index'], row['nn_p_clustered'], row['nn_p_dispersed'] = nn_clustering(
+        positions, active, np.random.default_rng(0))
     row['hull_coverage'] = hull_coverage(positions, active)
     return row
+
+
+def composition_test(cells, composition):
+    """Chi-square of the level composition, permuted when the asymptotic approximation does not
+    hold.  Below an expected count of 5 the chi-square distribution is a poor fit, so the
+    recording labels are shuffled instead and the p read off the empirical distribution.
+    Shuffling a label vector preserves both margins exactly, so no shuffled table can have an
+    empty row or column."""
+    chi2, p, _, expected = chi2_contingency(composition)
+    if expected.min() >= 5:
+        return {'test': 'chi-square', 'metric': 'level composition', 'statistic': chi2, 'p': p}
+
+    rng = np.random.default_rng(0)
+    labels, levels = cells['recording'].to_numpy(), cells['level'].to_numpy()
+    null = np.array([chi2_contingency(pd.crosstab(rng.permutation(labels), levels))[0]
+                     for _ in range(N_PERMUTATIONS)])
+    return {'test': 'chi-square (permutation)', 'metric': 'level composition', 'statistic': chi2,
+            'p': (1 + (null >= chi2).sum()) / (1 + N_PERMUTATIONS)}
 
 
 def comparison_stats(cells):
@@ -158,9 +199,7 @@ def comparison_stats(cells):
     composition = pd.crosstab(cells['recording'], cells['level'])
     composition = composition.loc[:, composition.sum() > 0]
     if composition.shape[0] > 1 and composition.shape[1] > 1:
-        chi2, p, _, _ = chi2_contingency(composition)
-        rows.append({'test': 'chi-square', 'metric': 'level composition',
-                     'statistic': chi2, 'p': p})
+        rows.append(composition_test(cells, composition))
 
     active = {name: g for name, g in cells[cells['active']].groupby('recording', sort=False)}
     pairwise = []
@@ -199,7 +238,7 @@ def style_axes(ax):
     ax.set_axisbelow(True)
 
 
-def plot_level_composition(metrics, path_stem):
+def plot_level_composition(metrics, path_stem, ladder='shared ladder'):
     fig, ax = plt.subplots(figsize=(1.2 * len(metrics) + 3, 4.5))
     x = np.arange(len(metrics))
     bottom = np.zeros(len(metrics))
@@ -212,7 +251,7 @@ def plot_level_composition(metrics, path_stem):
         ax.text(xi, 1.02, f'n={n}', ha='center', va='bottom', fontsize=8, color=MUTED)
     ax.set_xticks(x, metrics['recording'], rotation=30, ha='right')
     ax.set(ylabel='fraction of cells', ylim=(0, 1.1),
-           title='Activity level composition (shared ladder)')
+           title=f'Activity level composition ({ladder})')
     style_axes(ax)
     ax.legend(loc='upper left', bbox_to_anchor=(1, 1), frameon=False, fontsize=8)
     save_figure(fig, path_stem)
@@ -299,11 +338,33 @@ def plot_spatial_maps(cells, geometry, path_stem):
     save_figure(fig, path_stem)
 
 
-def compare_recordings(recordings, out_dir):
+STATS_README = """\
+stats.csv: the sampling unit is the CELL, not the embryo.
+
+Every test here pools the cells of a recording and treats them as independent samples.  Cells
+within one embryo are not independent of each other, so a small p means "these two recordings
+differ", not "these two stages differ" or "this condition has an effect".  One embryo per stage
+cannot separate a stage effect from an embryo effect, however many cells it contributes -- more
+cells only shrink the p-value of the difference between those two particular embryos.
+
+To test a stage or a condition, image several embryos per group and test at the embryo level,
+with each embryo's summary (the rows of metrics.csv) as one sample.
+"""
+
+
+def compare_recordings(recordings, out_dir, skip_validate=False, k=K_LEVELS, ladder='joint'):
     """Measure every recording of {name: recording dict} in its window, put all on the shared
-    ladder, and write the tables and figures into out_dir.  Returns the metrics table."""
+    ladder, and write the tables and figures into out_dir.  Returns the metrics table.  k is
+    the number of ladder levels above the blips, None to choose it by silhouette.
+
+    ladder='per_recording' fits a separate ladder to each recording instead, on the same rate,
+    so "high" is relative to its own recording.  Only the split of the active cells into levels
+    changes: which cells are active, and every per-cell metric, are the same in both modes."""
     cache_dir = os.path.join(out_dir, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
+    if not skip_validate:
+        raise_on_errors(validate_config(recordings, cache_dir))
+    run_calibration(recordings, os.path.join(out_dir, 'calibration'))
     tables, timecourses, geometry = [], [], {}
     for name, rec in recordings.items():
         table, timecourse, geometry[name] = measure_recording(name, rec, cache_dir)
@@ -312,8 +373,15 @@ def compare_recordings(recordings, out_dir):
     cells = pd.concat(tables, ignore_index=True)
     timecourse = pd.concat(timecourses, ignore_index=True)
 
-    # One ladder over all recordings, on rate so different window lengths compare
-    cells['level'] = classify_cells(cells, score='rate')
+    # One ladder over all recordings (or one per recording), on rate so different window
+    # lengths compare.  The blip threshold is per row, so recordings may set their own
+    # noise_peak.
+    groups = ([cells.index] if ladder == 'joint'
+              else list(cells.groupby('recording', sort=False).groups.values()))
+    cells['level'] = 0
+    for idx in groups:
+        cells.loc[idx, 'level'] = classify_cells(
+            cells.loc[idx], score='rate', noise_peak=cells.loc[idx, 'noise_peak'].to_numpy(), k=k)
     cells['level_name'] = cells['level'].map(LEVEL_NAMES)
     cells['active'] = cells['level'] >= ACTIVE_LEVEL
     metrics = pd.DataFrame([recording_metrics(cells[cells['recording'] == name],
@@ -324,9 +392,12 @@ def compare_recordings(recordings, out_dir):
     timecourse.to_csv(os.path.join(out_dir, 'timecourse.csv'), index=False)
     metrics.to_csv(os.path.join(out_dir, 'metrics.csv'), index=False)
     comparison_stats(cells).to_csv(os.path.join(out_dir, 'stats.csv'), index=False)
+    with open(os.path.join(out_dir, 'stats_readme.txt'), 'w') as f:
+        f.write(STATS_README)
 
     colors = recording_colors(list(recordings))
-    plot_level_composition(metrics, os.path.join(out_dir, 'level_composition'))
+    plot_level_composition(metrics, os.path.join(out_dir, 'level_composition'),
+                           'shared ladder' if ladder == 'joint' else 'ladder per recording')
     plot_per_cell_metrics(cells, colors, os.path.join(out_dir, 'per_cell_metrics'))
     plot_timecourse(timecourse, colors, os.path.join(out_dir, 'timecourse'))
     plot_radial_profile(metrics, colors, os.path.join(out_dir, 'radial_profile'))
@@ -339,6 +410,14 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--config', required=True, help='json of {name: recording dict}')
     p.add_argument('--out-dir', required=True, help='tables, figures and the positions cache')
+    p.add_argument('--skip-validate', action='store_true',
+                   help='skip the config checks, for a rerun of a known-good config')
+    p.add_argument('--k', type=int, default=K_LEVELS,
+                   help='ladder levels above the blips (default %(default)s)')
+    p.add_argument('--silhouette', action='store_true',
+                   help='choose k between 2 and N_LEVELS by silhouette instead of --k')
+    p.add_argument('--ladder', choices=('joint', 'per_recording'), default='joint',
+                   help='one ladder over all recordings (default) or one per recording')
     return p.parse_args()
 
 
@@ -346,7 +425,8 @@ def main():
     args = parse_args()
     with open(args.config) as f:
         recordings = json.load(f)
-    metrics = compare_recordings(recordings, args.out_dir)
+    metrics = compare_recordings(recordings, args.out_dir, args.skip_validate,
+                                 None if args.silhouette else args.k, args.ladder)
     print(metrics.set_index('recording').T.to_string())
 
 

@@ -116,6 +116,81 @@ python ms2_gene_expression.py \
 `--prominence` is the maxima-finder threshold for calling MS2 spots; it is the main knob to tune
 against your signal-to-noise.
 
+### 4. Activity analysis — `src/cell_activity*.py`
+
+Classifies every tracked cell of one developmental-stage window into an activity ladder, and
+compares those windows across embryos. All four modules take the same config: a JSON of
+`{name: recording dict}`, one entry per recording.
+
+```json
+{
+  "New-02-ST11-12": {
+    "csv":        "/path/to/gene_expression/gene_expression_results_fixed.csv",
+    "tracklets":  "/path/to/outputs/acquisition/masks/tracklets.json",
+    "masks_dir":  "/path/to/outputs/acquisition/masks",
+    "t_start":    0,
+    "t_end":      60,
+    "noise_floor":  20,
+    "min_presence": 0.5
+  }
+}
+```
+
+`t_start`/`t_end` are 0-based and both included. `noise_floor` (a frame at or below it is
+background), `noise_peak` (cells whose peak never clears it are 1–2 frame blips) and
+`min_presence` (the share of the window a cell must be tracked in to count) are optional and fall
+back to the constants at the top of `src/cell_activity.py`.
+
+Point `csv` at `gene_expression_results_fixed.csv`, not `gene_expression_results.csv` — the
+original matrix holds most traces at the wrong timepoints, which a stage window then cuts wrongly.
+`src/gene_expression/expression_matrix.py` rebuilds a corrected matrix from an existing run.
+
+**Check the config first.** Every check runs on every recording, so one pass lists everything
+wrong rather than the first thing wrong:
+
+```bash
+python -m src.cell_activity_validate --config recordings.json
+```
+
+Errors (a missing mask timepoint, a cell with no tracklet, a window outside the matrix) stop the
+run. Warnings are comparability traps — the unfixed matrix, or a threshold that differs between
+recordings — where each recording is fine on its own and the comparison between them is not.
+
+**Check the photometry next.** `ellipse_sum` is a raw, uncalibrated AU sum, so an absolute
+threshold only means the same thing in two recordings if the two were imaged under matched
+conditions. This measures each recording's background and reports where its configured floor
+falls in it:
+
+```bash
+python -m src.cell_activity_calibration --config recordings.json --out-dir .../calibration
+```
+
+Read `floor_percentile` in `calibration.csv`. A floor at the 8th percentile in one recording and
+the 40th in another is one constant meaning two different things, and every number downstream —
+level composition, rate, duty, onset — inherits the difference. This diagnoses the problem; it
+does not fix it, which needs a reference standard per acquisition.
+
+**Then run the analysis.** Per recording — heatmaps, the activity ladder, PCA of temporal shape
+and a cluster-overlay GIF:
+
+```bash
+python -m src.cell_activity --config recordings.json --out-dir .../stage_activity
+```
+
+Across recordings, on one shared ladder fitted over all their pooled cells:
+
+```bash
+python -m src.cell_activity_compare --config recordings.json --out-dir .../compare
+```
+
+Both validate the config first; `--skip-validate` skips that for a rerun of a known-good one, and
+`cell_activity_compare` also writes the calibration diagnostic into `<out-dir>/calibration`.
+
+The comparison writes `cells.csv`, `metrics.csv`, `timecourse.csv` and `stats.csv` plus figures.
+**Read `stats_readme.txt` before quoting a p-value**: the sampling unit is the cell, not the
+embryo, so a small p means "these two recordings differ", not "these two stages differ". Testing a
+stage or a condition needs several embryos per group, tested at the embryo level.
+
 ## Viewer
 
 A browser-based viewer for inspecting segmentation and tracking. It renders each `(t, z)` slice

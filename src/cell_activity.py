@@ -6,17 +6,20 @@ src/cell_activity_compare.py builds on the functions here.  A cell's activity is
 ellipse sum above the noise floor, and the levels form a ladder:
 
     0 silent                  never above the noise floor in the window
-    1 short burst / noise     peak never clears NOISE_PEAK above the floor: 1-2 frame blips
-    2-4 weak/moderate/high    KMeans on log total activity (it spans ~3 orders of magnitude),
-                              renumbered so the level rises with activity
+    1 short burst / noise     peak never clears noise_peak above the floor: 1-2 frame blips
+    2..2+k-1 weak..high       KMeans on log total activity (it spans ~3 orders of magnitude),
+                              renumbered so the level rises with activity.  k is K_LEVELS = 3
+                              (weakly, moderate, high active).  --silhouette chooses it between
+                              2 and N_LEVELS instead, but that choice is unstable on real
+                              recordings -- see src/cell_activity_silhouette.py.
 
 Recordings are described by a dict, the same one src/cell_activity_compare.py takes, stored
-as json for the command line (noise_floor and min_presence are optional):
+as json for the command line (noise_floor, noise_peak and min_presence are optional):
 
     {"New-02-ST11-12": {"csv": ".../gene_expression_results_fixed.csv",
                         "tracklets": ".../masks/tracklets_bug_fix2.json",
                         "masks_dir": ".../masks", "t_start": 0, "t_end": 60,
-                        "noise_floor": 20, "min_presence": 0.5}}
+                        "noise_floor": 20, "noise_peak": 10, "min_presence": 0.5}}
 
     python -m src.cell_activity --config recordings.json --out-dir .../stage_activity
 
@@ -34,6 +37,7 @@ import pandas as pd
 from matplotlib.patches import Patch
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
 
 from src.track_diagnostics import load_masks, mask_paths_by_t
 from src.utils.gif_utils import create_gif_from_figures
@@ -43,16 +47,21 @@ from src.utils.gif_utils import create_gif_from_figures
 NOISE_FLOOR = 20.0
 # Counts above the floor.  Cells whose peak never clears this are 1-2 frame blips.
 NOISE_PEAK = 10.0
-# Levels the KMeans splits the cells above the blips into.
-N_LEVELS = 3
+# Levels the KMeans splits the cells above the blips into: weakly, moderate, high active.
+# Fixed because the silhouette's pick flips between bootstrap resamples and ties to the third
+# decimal (src/cell_activity_silhouette.py); a Gaussian mixture on the pooled STAGE-12 cells
+# also prefers 3.
+K_LEVELS = 3
+# Most levels the silhouette search may split the cells into, when k=None asks for it.
+N_LEVELS = 4
 # Fraction of the window's frames a cell must be tracked in to count.  Tracklet fragments
 # would otherwise pad the silent level; 0 keeps every cell, as the notebook did.
 MIN_PRESENCE = 0.5
 
 LEVEL_NAMES = {0: 'silent', 1: 'short burst / noise', 2: 'weakly active',
-               3: 'moderate active', 4: 'high active'}
+               3: 'moderate active', 4: 'high active', 5: 'very high active'}
 LEVEL_COLORS = {0: (64, 64, 64), 1: (255, 0, 0), 2: (255, 165, 0),
-                3: (255, 255, 0), 4: (255, 255, 255)}
+                3: (255, 255, 0), 4: (255, 255, 255), 5: (0, 255, 255)}
 
 
 def load_window(csv_path, t_start, t_end, min_presence=MIN_PRESENCE):
@@ -79,18 +88,28 @@ def activity_descriptors(signals, present, noise_floor=NOISE_FLOOR):
     rate, duty            total and frames per tracked frame, comparable across cells and
                           windows of different length
     onset                 first frame above the floor as a fraction of the window, 0..1
+    onset_tracked         the same first frame as a fraction of the cell's OWN tracked frames.
+                          onset is inflated for a cell first tracked late in the window -- a
+                          daughter after a division fires early in its life but late in the
+                          window -- and this one is not.
     """
     above = np.clip(signals - noise_floor, 0.0, None)
     fired = above > 0
     tracked = present.sum(axis=1)
     frames = fired.sum(axis=1)
+    first = fired.argmax(axis=1)
+    # Tracked frames elapsed at the firing frame.  A cell can only fire on a tracked frame:
+    # untracked ones are NaN in the matrix, which load_window fills with 0.
+    tracked_at_first = np.take_along_axis(present.cumsum(axis=1), first[:, None], axis=1)[:, 0]
     return pd.DataFrame({
         'total': above.sum(axis=1),
         'peak': above.max(axis=1),
         'frames': frames,
         'rate': above.sum(axis=1) / tracked,
         'duty': frames / tracked,
-        'onset': np.where(frames > 0, fired.argmax(axis=1) / max(signals.shape[1] - 1, 1), np.nan),
+        'onset': np.where(frames > 0, first / max(signals.shape[1] - 1, 1), np.nan),
+        'onset_tracked': np.where(frames > 0,
+                                  (tracked_at_first - 1) / np.maximum(tracked - 1, 1), np.nan),
     })
 
 
@@ -102,24 +121,55 @@ def order_labels_by_activity(labels, signals):
     return np.array([remap[l] for l in labels])
 
 
-def activity_levels(score, n_levels=N_LEVELS, seed=0):
-    """Levels 0..k-1 of the scores: KMeans on log1p(score), renumbered lowest to highest."""
+def activity_levels(score, n_levels=N_LEVELS, seed=0, k=K_LEVELS):
+    """Levels 0..k-1 of the scores: KMeans on log1p(score), renumbered lowest to highest.
+
+    k levels are fitted, fewer only when the scores have fewer distinct values.  With k=None
+    every k from 2 to n_levels that the sample allows is fitted and scored by its silhouette,
+    the best one wins, and all the scores are printed so a run's number of tiers can be read
+    back from its log.  The silhouette on one dimension leans towards fewer clusters, so a k
+    below n_levels is a statement about separation, not about biology.
+    """
     score = np.log1p(np.asarray(score, dtype=float))
-    k = min(n_levels, len(np.unique(score)))
-    if k < n_levels:
-        print(f'warning: {len(score)} cells with {k} distinct activities, '
-              f'fitting {k} levels instead of {n_levels}')
-    if k == 0:
+    k_max = min(n_levels if k is None else k, len(np.unique(score)))
+    if k_max == 0:
         return np.zeros(0, dtype=int)
-    labels = KMeans(n_clusters=k, random_state=seed, n_init=10).fit_predict(score.reshape(-1, 1))
-    return order_labels_by_activity(labels, score)
+    if k_max < 2:
+        print(f'warning: {len(score)} cells with {k_max} distinct activities, fitting 1 level')
+        return np.zeros(len(score), dtype=int)
+
+    X = score.reshape(-1, 1)
+    if k is not None:
+        if k_max < k:
+            print(f'warning: {len(score)} cells have only {k_max} distinct activities, '
+                  f'fitting {k_max} levels instead of {k}')
+        print(f'fixed k: {k_max} activity levels over {len(score)} cells')
+        labels = KMeans(n_clusters=k_max, random_state=seed, n_init=10).fit_predict(X)
+        return order_labels_by_activity(labels, score)
+
+    fits = {}
+    for k in range(2, k_max + 1):
+        labels = KMeans(n_clusters=k, random_state=seed, n_init=10).fit_predict(X)
+        # silhouette needs at least two labels and one sample more than labels
+        if len(np.unique(labels)) < 2 or len(score) <= len(np.unique(labels)):
+            continue
+        fits[k] = (labels, silhouette_score(X, labels))
+    if not fits:  # too few cells to score any split, e.g. two cells and two clusters
+        print(f'warning: {len(score)} cells are too few to score a split, fitting 1 level')
+        return np.zeros(len(score), dtype=int)
+
+    best = max(fits, key=lambda k: fits[k][1])
+    scores = ', '.join(f'k={k} {s:.3f}' for k, (_, s) in sorted(fits.items()))
+    print(f'silhouette over {len(score)} cells: {scores} -> {best} activity levels')
+    return order_labels_by_activity(fits[best][0], score)
 
 
-def classify_cells(desc, score='total', noise_peak=NOISE_PEAK, n_levels=N_LEVELS):
-    """LEVEL_NAMES level of every row of desc, the ladder fitted on desc[score]."""
+def classify_cells(desc, score='total', noise_peak=NOISE_PEAK, n_levels=N_LEVELS, k=K_LEVELS):
+    """LEVEL_NAMES level of every row of desc, the ladder fitted on desc[score]; k is the
+    number of levels above the blips, None to choose it by silhouette (see activity_levels)."""
     levels = np.where(desc['peak'] > 0, 1, 0)
     ranked = (desc['peak'] >= noise_peak).to_numpy()
-    levels[ranked] = 2 + activity_levels(desc[score].to_numpy()[ranked], n_levels)
+    levels[ranked] = 2 + activity_levels(desc[score].to_numpy()[ranked], n_levels, k=k)
     return levels
 
 
@@ -241,7 +291,7 @@ def render_overlay_gif(masks_dir, tracklets, cells, levels, signals, timepoints,
     create_gif_from_figures(figures, os.path.join(out_dir, 'cluster_overlay.gif'), fps=1)
 
 
-def analyze_recording(name, rec, out_dir):
+def analyze_recording(name, rec, out_dir, k=K_LEVELS):
     """Everything the notebook produced, for one recording dict (see the module docstring)
     and its window.  Writes into out_dir and returns the per-cell table."""
     os.makedirs(out_dir, exist_ok=True)
@@ -249,7 +299,7 @@ def analyze_recording(name, rec, out_dir):
     signals, present, cells, timepoints = load_window(
         rec['csv'], rec['t_start'], rec['t_end'], rec.get('min_presence', MIN_PRESENCE))
     desc = activity_descriptors(signals, present, noise_floor)
-    levels = classify_cells(desc)
+    levels = classify_cells(desc, noise_peak=rec.get('noise_peak', NOISE_PEAK), k=k)
 
     table = pd.concat([pd.DataFrame({'cell': cells, 'cluster': levels,
                                      'cluster_name': [LEVEL_NAMES[l] for l in levels]}),
@@ -285,15 +335,28 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--config', required=True, help='json of {name: recording dict}')
     p.add_argument('--out-dir', required=True, help='one sub-folder per recording is written here')
+    p.add_argument('--skip-validate', action='store_true',
+                   help='skip the config checks, for a rerun of a known-good config')
+    p.add_argument('--k', type=int, default=K_LEVELS,
+                   help='levels above the blips (default %(default)s)')
+    p.add_argument('--silhouette', action='store_true',
+                   help='choose k between 2 and N_LEVELS by silhouette instead of --k')
     return p.parse_args()
 
 
 def main():
+    # Local: src.cell_activity_validate reads this module's defaults, so importing it at the
+    # top would be a cycle.
+    from src.cell_activity_validate import raise_on_errors, validate_config
+
     args = parse_args()
     with open(args.config) as f:
         recordings = json.load(f)
+    if not args.skip_validate:
+        raise_on_errors(validate_config(recordings))
     for name, rec in recordings.items():
-        analyze_recording(name, rec, os.path.join(args.out_dir, name))
+        analyze_recording(name, rec, os.path.join(args.out_dir, name),
+                          None if args.silhouette else args.k)
 
 
 if __name__ == '__main__':

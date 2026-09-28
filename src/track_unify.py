@@ -29,7 +29,7 @@ import os
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, find_objects
-from scipy.optimize import linear_sum_assignment
+from src.track import optional_assignment
 from skimage.segmentation import watershed
 from tqdm import tqdm
 
@@ -425,14 +425,15 @@ def absorb_fragments(repaired, absorbed, log):
     return repaired
 
 
-def stitch_gaps(repaired, props, ts, volumes, log):
+def stitch_gaps(repaired, props, ts, volumes, log, anisotropy=2.52):
     """Re-link a track that ends with one that starts nearby a few frames later.
 
-    Cheapest-first global assignment, but pairs outside the motion gate are rejected after
-    solving rather than forced onto a partner -- the forced one-to-one in the frame matcher
-    is what lets one bad steal cascade through a frame.
+    Optional assignment with gap/volume penalties. Apply whole chains in reverse
+    temporal order so deleting a donor never discards its selected successor.
     """
     tracklets = {tid: np.asarray(labels) for tid, labels in repaired.items()}
+    if not tracklets:
+        return repaired
     tracks = track_table(tracklets, props, ts)
     cell = float(np.median(list(volumes.values())))
     full = tracks[tracks.mean_volume >= FRAGMENT_FACTOR * cell]
@@ -460,11 +461,17 @@ def stitch_gaps(repaired, props, ts, volumes, log):
             b = centre(other, i + dt)
             if b is None:
                 continue
-            dxy = float(np.hypot(a[1] - b[1], a[2] - b[2]))
-            if dxy <= STITCH_BUDGET * dt and abs(a[0] - b[0]) <= STITCH_MAX_DZ:
-                cost[r, c] = dxy / dt
+            # Diffusive uncertainty grows more slowly than a linear search radius.
+            distance = float(np.linalg.norm((np.asarray(a[:3])-b[:3]) * [anisotropy, 1, 1]))
+            gate = STITCH_BUDGET * np.sqrt(dt)
+            volume_change = abs(np.log(max(a[3], 1) / max(b[3], 1)))
+            if distance <= gate and abs(a[0] - b[0]) <= STITCH_MAX_DZ:
+                cost[r, c] = distance / gate + 0.12*(dt-1) + 0.2*volume_change
 
-    for r, c in zip(*linear_sum_assignment(np.where(np.isinf(cost), 1e6, cost))):
+    selected = optional_assignment(cost, unmatched_cost=1.0)
+    # B->C must be applied before A->B, regardless of dictionary/track ID order.
+    selected.sort(key=lambda rc: int(tails.at[tail_ids[rc[0]], 'death']), reverse=True)
+    for r, c in selected:
         if not np.isfinite(cost[r, c]):
             continue
         tid, other = tail_ids[r], head_ids[c]
@@ -476,7 +483,7 @@ def stitch_gaps(repaired, props, ts, volumes, log):
         _splice(repaired, tid, other, birth)
         log.append({'kind': 'gap_stitched', 'tail': tid, 'head': other,
                     'death_frame': ts[death], 'birth_frame': ts[birth],
-                    'dxy_per_frame': round(float(cost[r, c]), 2)})
+                    'cost': round(float(cost[r, c]), 4)})
     return repaired
 
 
@@ -557,7 +564,7 @@ def main():
     props = cell_properties(out_masks, os.path.join(args.out_dir,
                                                     'cell_properties_split.pkl'))
     volumes = median_volume(props)
-    repaired = stitch_gaps(repaired, props, ts, volumes, log)
+    repaired = stitch_gaps(repaired, props, ts, volumes, log, args.anisotropy)
     flag_swaps(repaired, props, ts, log)
 
     print('\n--- repairs ---')

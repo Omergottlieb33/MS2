@@ -154,24 +154,15 @@ def match_points_between_frames(g1: nx.Graph, g2: nx.Graph, mask1: np.ndarray, m
     return matches
 
 def get_border_labels(mask: np.ndarray, margin: int = 5) -> set:
+    """Possible XY exits from mask contact, not just centroid proximity.
+
+    Z contact alone is ambiguous in shallow stacks; leave it unresolved.
     """
-    Return labels of cells whose centroid is within `margin` pixels of the XY
-    border.  Z borders are ignored — cells can freely enter/exit the focal volume.
-    """
-    labels = np.unique(mask)
-    labels = labels[labels > 0]
-    if len(labels) == 0:
+    if margin < 1:
         return set()
-    H, W = mask.shape[-2], mask.shape[-1]
-    coms = center_of_mass(mask, mask, labels)
-    border = set()
-    for label, com in zip(labels, coms):
-        if np.isnan(com).any():
-            continue
-        _, y, x = com   # (z, y, x)
-        if y < margin or y > H - margin or x < margin or x > W - margin:
-            border.add(int(label))
-    return border
+    faces = [mask[:, :margin, :], mask[:, -margin:, :],
+             mask[:, :, :margin], mask[:, :, -margin:]]
+    return set(map(int, np.unique(np.concatenate([f.ravel() for f in faces])))) - {0}
 
 
 def find_key_for_last_tracklet_value_optimized(tracklets, matches_dict, tracklet_id):
@@ -185,85 +176,62 @@ def find_key_for_last_tracklet_value_optimized(tracklets, matches_dict, tracklet
 
 def create_tracklets(matches: list, skip_matches: list = None,
                      masks: list = None, border_margin: int = 5) -> dict:
-    """
-    Chain pairwise IoU matches into full tracklets.
+    """Track every detection, preserving gaps without assuming biological death.
 
-    Sentinel values in the output list:
-        positive int  — cell label in the segmentation mask at that frame
-        -1            — cell not detected / failed to match
-        -2            — cell exited the field of view (last position was near border)
-
-    Args:
-        matches:       list of {frame[t+1]_label: frame[t]_label} dicts.
-        skip_matches:  optional list for second-chance matching (frame t → t+2).
-        masks:         optional list of 3D masks; required for border-exit detection.
-        border_margin: pixels from XY edge considered "border" (used when masks provided).
+    With masks, skip recovery is reassigned over only missing sources and free
+    targets. Border exits are annotated after recovery, never used to block it.
+    Without masks, only labels present in the supplied matches are knowable.
     """
-    if not matches:
+    n = len(masks) if masks is not None else len(matches) + 1
+    if n == 0:
         return {}
-
-    # Pre-compute border labels per frame when masks are available
-    border_labels_per_frame = None
+    if len(matches) != n - 1:
+        raise ValueError('Expected one match dictionary per consecutive frame pair')
+    detections = [set() for _ in range(n)]
     if masks is not None:
-        border_labels_per_frame = [get_border_labels(m, border_margin) for m in masks]
-
-    matches_t0 = matches[0]
-
-    # Initialize tracklets from first frame matches
-    tracklets = {}
-    for i, (label_t_plus1, label_t) in enumerate(matches_t0.items()):
-        tracklets[i] = [int(label_t), int(label_t_plus1)]
-
-    max_id = max(tracklets.keys()) if tracklets else -1
-
-    for i in tqdm(range(1, len(matches)), desc='Creating tracklets'):
-        matches_t = matches[i]
-
-        used_keys = set()
-        next_labels = {}
-
-        # Determine the next label for all existing tracklets
-        for tracklet_id, labels in tracklets.items():
-            if labels[-1] > 0:  # Active (positive label)
-                key = find_key_for_last_tracklet_value_optimized(tracklets, matches_t, tracklet_id)
-                if key != -1:
-                    next_labels[tracklet_id] = int(key)
-                    used_keys.add(key)
-                else:
-                    # No match: check whether cell was near the border
-                    if border_labels_per_frame is not None and labels[-1] in border_labels_per_frame[i]:
-                        next_labels[tracklet_id] = -2   # exited FOV
-                    else:
-                        next_labels[tracklet_id] = -1   # failed to match
+        detections = [set(map(int, np.unique(m))) - {0} for m in masks]
+    else:
+        for t, pair in enumerate(matches):
+            detections[t].update(map(int, pair.values()))
+            detections[t + 1].update(map(int, pair))
+        for t, pair in enumerate(skip_matches or []):
+            detections[t].update(map(int, pair.values()))
+            detections[t + 2].update(map(int, pair))
+    tracks = {}
+    for t in range(n):
+        used = set()
+        previous = {row[t-1]: tid for tid, row in tracks.items()
+                    if t and row[t-1] > 0}
+        if t:
+            for target, source in matches[t-1].items():
+                if source in previous and target in detections[t]:
+                    tracks[previous[source]][t] = int(target)
+                    used.add(int(target))
+        if t >= 2 and skip_matches is not None:
+            missing = {row[t-2]: tid for tid, row in tracks.items()
+                       if row[t-2] > 0 and row[t-1] == -1}
+            free = detections[t] - used
+            if masks is not None and missing and free:
+                pair = match_cells_by_iou_hungarian_local_optimized(
+                    masks[t-2], masks[t], max_centroid_distance=15 * np.sqrt(2),
+                    source_labels=missing, target_labels=free)
             else:
-                # Already terminated (-1) or exited FOV (-2) — preserve state
-                next_labels[tracklet_id] = labels[-1]
+                pair = skip_matches[t-2] if t-2 < len(skip_matches) else {}
+            for target, source in pair.items():
+                if source in missing and target in free:
+                    tracks[missing[source]][t] = int(target)
+                    used.add(int(target))
+        for label in sorted(detections[t] - used):
+            tracks[len(tracks)] = [-1] * n
+            tracks[len(tracks)-1][t] = int(label)
+    if masks is not None:
+        borders = [get_border_labels(m, border_margin) for m in masks]
+        for row in tracks.values():
+            last = max(i for i, label in enumerate(row) if label > 0)
+            if last < n-1 and row[last] in borders[last]:
+                row[last+1:] = [-2] * (n-last-1)
+    return tracks
 
-        # Second-chance: resurrect tracks that missed exactly one frame (not border exits).
-        # skip_matches[i-1] maps {frame[i+1]_label: frame[i-1]_label}.
-        if skip_matches is not None and (i - 1) < len(skip_matches):
-            skip_t = skip_matches[i - 1]
-            for tracklet_id, labels in tracklets.items():
-                # Only attempt resurrection if: missed frame i (-1) AND was active at i-1 (>0)
-                if labels[-1] == -1 and len(labels) >= 2 and labels[-2] > 0:
-                    last_active = labels[-2]
-                    for frame_label, src_label in skip_t.items():
-                        if src_label == last_active and frame_label not in used_keys:
-                            next_labels[tracklet_id] = int(frame_label)
-                            used_keys.add(frame_label)
-                            break
-
-        for tracklet_id, next_label in next_labels.items():
-            tracklets[tracklet_id].append(next_label)
-
-        # Create new tracklets for unmatched cells
-        for key, value in matches_t.items():
-            if key not in used_keys:
-                max_id += 1
-                new_tracklet = [-1] * i + [int(value), int(key)]
-                tracklets[max_id] = new_tracklet
-
-    return tracklets
 
 def match_cells_by_iou(mask1: np.ndarray, mask2: np.ndarray,
                       min_iou: float = 0.3) -> dict:
@@ -427,157 +395,76 @@ def match_cells_by_iou_hungarian_local(mask1: np.ndarray, mask2: np.ndarray,
     
     return matches
 
+def optional_assignment(cost, unmatched_cost=0.85):
+    """Minimum-cost matching with a combined unmatched-pair cost threshold.
+
+    Each source has its own dummy column. Free target columns implicitly cost
+    zero; this is equivalent to charging half the threshold to each unmatched
+    endpoint. Forbidden edges are excluded before solving.
+    """
+    cost = np.asarray(cost, dtype=float)
+    if cost.ndim != 2 or not np.isfinite(unmatched_cost) or unmatched_cost <= 0:
+        raise ValueError('Expected a matrix and a positive finite unmatched cost')
+    n, m = cost.shape
+    if not n or not m:
+        return []
+    augmented = np.full((n, m+n), np.inf)
+    augmented[:, :m] = np.where(np.isfinite(cost) & (cost < unmatched_cost), cost, np.inf)
+    augmented[np.arange(n), m+np.arange(n)] = unmatched_cost
+    rows, cols = linear_sum_assignment(augmented)
+    return [(int(r), int(c)) for r, c in zip(rows, cols) if c < m]
+
+
 def match_cells_by_iou_hungarian_local_optimized(mask1: np.ndarray, mask2: np.ndarray,
                                                min_iou: float = 0.0,
                                                search_radius: int = 10,
                                                max_centroid_distance: float = None,
-                                               use_2d_distance: bool = True,
-                                               dist_weight: float = 0.3) -> dict:
+                                               use_2d_distance: bool = False,
+                                               dist_weight: float = 0.3,
+                                               voxel_scale=(2.52, 1.0, 1.0),
+                                               unmatched_cost: float = 0.85,
+                                               source_labels=None, target_labels=None) -> dict:
+    """Exact full-volume IoU with scaled 3D distance and optional assignments.
+
+    Distances are in XY-pixel units with the default microscope voxel scale.
+    Zero-overlap links use the same continuous cost as overlapping links; weak
+    candidates can remain unmatched. search_radius remains for API compatibility
+    and sets the default distance gate, but no longer crops intersections.
     """
-    Ultra-optimized local IoU matching with improved robustness and speed.
-
-    This version is improved to be more robust to cell movement and significantly faster.
-
-    Key improvements:
-    1.  **Efficient Property Calculation:** Uses `scipy.ndimage.center_of_mass` and `np.bincount`
-        to compute all cell centroids and volumes in a highly optimized, vectorized manner,
-        avoiding slow Python loops.
-    2.  **Robust Bounding Box:** The local region for IoU calculation is now a bounding box
-        that encloses the centroids of *both* cells being compared. This makes the matching
-        robust to cell movement, which was a primary failure point in the previous version.
-    3.  **Clearer Parameters:** The relationship between `search_radius` and `max_centroid_distance`
-        is critical. `max_centroid_distance` acts as a hard filter for candidate pairs, while
-        `search_radius` defines the padding around the candidate pair's centroids to define
-        the local region for IoU calculation.
-
-    Parameters:
-        mask1 (np.ndarray): Segmentation mask for frame 1.
-        mask2 (np.ndarray): Segmentation mask for frame 2.
-        min_iou (float): Minimum IoU threshold for a valid match. Defaults to 0.3.
-        search_radius (int): Padding in pixels to add around the combined bounding box of two
-                             candidate cell centroids to define the local search area. Defaults to 10.
-        max_centroid_distance (float): The maximum distance between centroids for a pair of cells
-                                       to be considered a potential match. If None, it defaults to
-                                       a more generous value (`search_radius * 2.5`). A larger value
-                                       allows for matching faster-moving cells.
-        use_2d_distance (bool): If True (default), compute centroid distance using only Y and X
-                                axes.  This avoids the Z-axis pixel-scale mismatch common in
-                                3D fluorescence microscopy where z-step >> xy-pixel size.
-                                The IoU bounding box still uses all three dimensions.
-
-    Returns:
-        dict: Mapping from frame2 cell IDs to frame1 cell IDs.
-    """
-    
-    if max_centroid_distance is None:
-        # A more generous default than the previous version to account for movement.
-        max_centroid_distance = search_radius * 2.5
-    
-    # Get unique cell labels (excluding background 0)
-    labels1 = np.unique(mask1)
-    labels1 = labels1[labels1 > 0]
-    
-    labels2 = np.unique(mask2)
-    labels2 = labels2[labels2 > 0]
-    
-    if len(labels1) == 0 or len(labels2) == 0:
+    if mask1.shape != mask2.shape or mask1.ndim != 3:
+        raise ValueError('Masks must have identical (Z,Y,X) shapes')
+    gate = search_radius * 2.5 if max_centroid_distance is None else max_centroid_distance
+    if gate <= 0 or not 0 <= min_iou <= 1 or not 0 <= dist_weight <= 1:
+        raise ValueError('Invalid distance gate, IoU threshold, or distance weight')
+    scale = np.asarray(voxel_scale, dtype=float)
+    if scale.shape != (3,) or not np.all(np.isfinite(scale) & (scale > 0)):
+        raise ValueError('voxel_scale must contain three positive finite values')
+    labels1 = np.unique(mask1); labels1 = labels1[labels1 > 0]
+    labels2 = np.unique(mask2); labels2 = labels2[labels2 > 0]
+    if source_labels is not None:
+        labels1 = np.intersect1d(labels1, list(source_labels))
+    if target_labels is not None:
+        labels2 = np.intersect1d(labels2, list(target_labels))
+    if not len(labels1) or not len(labels2):
         return {}
-    
-    # --- 1. Optimized Property Calculation ---
-    # Compute centroids for all labels at once. Note: center_of_mass returns (z, y, x).
-    com1 = center_of_mass(mask1, mask1, labels1)
-    com2 = center_of_mass(mask2, mask2, labels2)
-    
-    # Create a dictionary mapping label to centroid, filtering out any NaNs
-    centroids1 = {int(label): center for label, center in zip(labels1, com1) if not np.isnan(center).any()}
-    centroids2 = {int(label): center for label, center in zip(labels2, com2) if not np.isnan(center).any()}
-
-    # Compute volumes (pixel counts) for all labels at once using np.bincount.
-    max_label = max(np.max(labels1) if len(labels1) > 0 else 0, 
-                    np.max(labels2) if len(labels2) > 0 else 0)
-    vols1_all = np.bincount(mask1.ravel(), minlength=max_label + 1)
-    vols2_all = np.bincount(mask2.ravel(), minlength=max_label + 1)
-    
-    volumes1 = {int(label): vols1_all[label] for label in centroids1.keys()}
-    volumes2 = {int(label): vols2_all[label] for label in centroids2.keys()}
-
-    valid_cells1 = sorted(list(centroids1.keys()))
-    valid_cells2 = sorted(list(centroids2.keys()))
-    
-    if not valid_cells1 or not valid_cells2:
-        return {}
-    
-    # --- 2. Pre-filter pairs based on centroid distance ---
-    valid_pairs = []
-    for i, cell1 in enumerate(valid_cells1):
-        c1 = np.array(centroids1[cell1])
-        for j, cell2 in enumerate(valid_cells2):
-            c2 = np.array(centroids2[cell2])
-            if use_2d_distance:
-                # Use only Y, X to avoid Z-axis pixel-scale mismatch
-                distance = np.linalg.norm(c1[1:] - c2[1:])
-            else:
-                distance = np.linalg.norm(c1 - c2)
-            if distance <= max_centroid_distance:
-                valid_pairs.append((i, j, cell1, cell2, distance))
-
-    # Cost matrix: 2.0 for pairs outside search radius (impossible matches),
-    # 1.0 for valid pairs with zero/unknown IoU, 1-IoU for pairs with overlap.
-    # Using 2.0 (not 1.0) as the impossible sentinel ensures Hungarian strongly
-    # prefers any valid pair over cross-region assignments.
-    n1, n2 = len(valid_cells1), len(valid_cells2)
-    cost_matrix = np.full((n1, n2), 2.0)
-
-    # --- 3. Calculate IoU only for valid pairs in a robust local region ---
-    # iou_matrix stores the true IoU per (i,j) pair so the acceptance check
-    # doesn't have to reverse-engineer it from the combined cost.
-    iou_matrix = {}
-    for i, j, cell1, cell2, dist in valid_pairs:
-        dist_norm = dist / max_centroid_distance
-        c1 = centroids1[cell1]
-        c2 = centroids2[cell2]
-
-        # --- Robust Bounding Box Definition ---
-        z_min = max(0, int(min(c1[0], c2[0]) - search_radius))
-        z_max = min(mask1.shape[0], int(max(c1[0], c2[0]) + search_radius) + 1)
-        y_min = max(0, int(min(c1[1], c2[1]) - search_radius))
-        y_max = min(mask1.shape[1], int(max(c1[1], c2[1]) + search_radius) + 1)
-        x_min = max(0, int(min(c1[2], c2[2]) - search_radius))
-        x_max = min(mask1.shape[2], int(max(c1[2], c2[2]) + search_radius) + 1)
-
-        local_mask1 = mask1[z_min:z_max, y_min:y_max, x_min:x_max]
-        local_mask2 = mask2[z_min:z_max, y_min:y_max, x_min:x_max]
-        intersection = np.sum((local_mask1 == cell1) & (local_mask2 == cell2))
-
-        if intersection > 0:
-            vol1 = volumes1[cell1]
-            vol2 = volumes2[cell2]
-            union = vol1 + vol2 - intersection
-            if union > 0:
-                iou = intersection / union
-                # Blend IoU and distance: low cost = overlapping AND close
-                cost_matrix[i, j] = (1.0 - iou) * (1.0 - dist_weight) + dist_norm * dist_weight
-            else:
-                iou = 0.0
-                cost_matrix[i, j] = 0.5 + dist_norm * 0.5
-        else:
-            iou = 0.0
-            # No overlap: rank by distance so closer cells are preferred
-            cost_matrix[i, j] = 0.5 + dist_norm * 0.5   # range [0.5, 1.0]
-
-        iou_matrix[(i, j)] = iou
-
-    # --- 4. Apply Hungarian algorithm to find optimal assignment ---
-    row_indices, col_indices = linear_sum_assignment(cost_matrix)
-
-    # Accept pairs that were within max_centroid_distance and meet min_iou.
-    # Pairs forced by Hungarian outside the valid set have iou=-1.0 → rejected.
-    matches = {}
-    for i, j in zip(row_indices, col_indices):
-        iou = iou_matrix.get((i, j), -1.0)
-        if iou >= min_iou:
-            cell1 = valid_cells1[i]
-            cell2 = valid_cells2[j]
-            matches[cell2] = cell1
-
-    return matches
+    c1 = np.asarray(center_of_mass(mask1, mask1, labels1))
+    c2 = np.asarray(center_of_mass(mask2, mask2, labels2))
+    delta = (c1[:, None] - c2[None, :]) * scale
+    if use_2d_distance:
+        delta = delta[..., 1:]
+    distances = np.linalg.norm(delta, axis=-1)
+    v1 = np.bincount(mask1.ravel())[labels1]
+    v2 = np.bincount(mask2.ravel())[labels2]
+    # Accumulate exact intersections without a dense max_label**2 allocation.
+    both = (mask1 > 0) & (mask2 > 0)
+    stride = int(mask2.max()) + 1
+    keys, counts = np.unique(mask1[both].astype(np.int64) * stride + mask2[both],
+                             return_counts=True)
+    overlap = dict(zip(keys.tolist(), counts.tolist()))
+    intersections = np.array([[overlap.get(int(a)*stride+int(b), 0)
+                               for b in labels2] for a in labels1], dtype=float)
+    iou = intersections / (v1[:, None] + v2[None, :] - intersections)
+    cost = (1-dist_weight) * (1-iou) + dist_weight * distances / gate
+    cost[(distances > gate) | (iou < min_iou)] = np.inf
+    return {int(labels2[j]): int(labels1[i])
+            for i, j in optional_assignment(cost, unmatched_cost)}

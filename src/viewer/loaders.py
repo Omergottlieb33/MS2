@@ -13,7 +13,6 @@ import numpy as np
 import tifffile
 
 from cell_tracking import evaluate_tracklets, extract_time_number, get_masks_paths
-from src.utils.image_utils import load_czi_images
 
 # Matches cell_3d_segmentation.py:25 -- image_data[ti, 1, :, :, :]
 CELL_CHANNEL = 1
@@ -39,6 +38,7 @@ def load_image(path, channel=CELL_CHANNEL):
         except (ValueError, MemoryError):
             arr = tifffile.imread(path)   # compressed tifs cannot be memory-mapped
     elif ext == '.czi':
+        from src.utils.image_utils import load_czi_images
         arr = load_czi_images(path)
         if arr is None:
             raise ValueError(f'could not read czi: {path}')

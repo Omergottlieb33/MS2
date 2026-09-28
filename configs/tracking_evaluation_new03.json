@@ -1,0 +1,15 @@
+{
+  "title": "New-03 · Cell tracking",
+  "tracklets": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-03-V/New-03-V/tracking_fixed_20260924/unified/tracklets_unified.json",
+  "masks": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-03-V/New-03-V/tracking_fixed_20260924/unified/masks_split",
+  "settings": {
+    "voxel_size_um": [
+      0.5,
+      0.198,
+      0.198
+    ],
+    "max_step_um": 3,
+    "neighbor_radius_um": 10,
+    "neighbor_k": 5
+  }
+}

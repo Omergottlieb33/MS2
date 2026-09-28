@@ -26,6 +26,17 @@ def get_masks_paths(masks_dir:str) -> list:
         raise ValueError(f'No masks found in {masks_dir} with expected naming convention.')
     return masks_paths
 
+def get_num_frames(masks_dir: str) -> int:
+    """Return number of frames in recording, validating that mask time indices are contiguous 0..T-1."""
+    masks_paths = get_masks_paths(masks_dir)
+    times = [extract_time_number(os.path.basename(p)) for p in masks_paths]
+    t = len(masks_paths)
+    if times != list(range(t)):
+        missing = sorted(set(range(max(times) + 1)) - set(times))
+        raise ValueError(f'Mask time indices in {masks_dir} are not contiguous 0..{t - 1}. '
+                         f'Found {t} masks, max t={max(times)}, missing t={missing}')
+    return t
+
 def get_adjaceny_graphs(masks:list, t:int) -> tuple:
     centers_list, g_list = [], [], []
     # get cell centers and adjacency graphs for each time point
@@ -52,14 +63,14 @@ def match_points_over_time_adjacency_graph(g_list:list, masks:list, t:int, dista
 
 def match_over_time_cell_iou(masks: list, min_iou: float = 0.0,
                              max_centroid_distance: float = 15,
-                             use_2d_distance: bool = True) -> list:
+                             use_2d_distance: bool = False) -> list:
     """
     Match cells over time using IoU.
     Args:
         masks (list): List of segmentation masks for each time point.
         min_iou: Minimum IoU to accept a match.
         max_centroid_distance: Max XY (or 3D) centroid distance to consider a pair.
-        use_2d_distance: Use only Y, X for distance (recommended for 3D microscopy).
+        use_2d_distance: Opt in to XY-only distance; default uses scaled 3D distance.
     Returns:
         list: List of matched cells for each time point.
     """
@@ -76,7 +87,7 @@ def match_over_time_cell_iou(masks: list, min_iou: float = 0.0,
 
 def compute_skip_matches(masks: list, min_iou: float = 0.0,
                          max_centroid_distance: float = 15,
-                         use_2d_distance: bool = True) -> list:
+                         use_2d_distance: bool = False) -> list:
     """
     Compute IoU matches between frames separated by 2 time points.
     skip_matches[k] maps {frame[k+2]_label: frame[k]_label}.
@@ -87,7 +98,7 @@ def compute_skip_matches(masks: list, min_iou: float = 0.0,
         matches = match_cells_by_iou_hungarian_local_optimized(
             masks[i], masks[i + 2],
             min_iou=min_iou,
-            max_centroid_distance=max_centroid_distance,
+            max_centroid_distance=max_centroid_distance * np.sqrt(2),
             use_2d_distance=use_2d_distance,
         )
         skip_matches.append(matches)
@@ -95,40 +106,34 @@ def compute_skip_matches(masks: list, min_iou: float = 0.0,
 
 
 
-def cell_tracking(masks_dir:str, t:int) -> dict:
+def cell_tracking(masks_dir: str, t: int = None, output_path: str = None) -> dict:
+    """Track up to t consecutive frames; None/nonpositive means all frames.
+
+    Missing observations are gaps, not biological deaths. Fail on missing files
+    or unreadable masks instead of silently changing the time axis.
     """
-    Perform cell tracking using adjacency graphs.
-    Args:
-        masks_dir (str): Directory containing segmentation masks.
-        t (int): Number of time points to process. If None, processes all available masks.
-        distance_threshold (float): Distance threshold for matching points between frames.
-        degree_weight (float): Weight for degree similarity in matching score.
-    Returns:
-        dict: Tracklets mapping cell IDs across time points.
-    """
-    masks_paths = get_masks_paths(masks_dir)
+    paths = get_masks_paths(masks_dir)
+    if t is not None and t > 0:
+        paths = paths[:t]
+    times = [extract_time_number(os.path.basename(p)) for p in paths]
+    if times != list(range(len(times))):
+        raise ValueError('Masks must start at t0 and contain every requested frame')
     masks = []
-    for i in range(len(masks_paths)):
-        try:
-            z_stack_seg_mask = np.load(masks_paths[i], allow_pickle=True)['masks']
-            masks.append(z_stack_seg_mask)
-        except Exception as e:
-            print(f"Error loading {masks_paths[i]}: {e}")
-    if t<=0 or t> len(masks_paths):
-        t = len(masks_paths) - 1
-    # IoU matching
-    matched_points = match_over_time_cell_iou(masks)
-    skip_matches = compute_skip_matches(masks)
-    # create tracklets with second-chance matching; pass masks for border-exit detection
-    tracklets = create_tracklets(matched_points, skip_matches=skip_matches, masks=masks)
-    save_dir = os.path.dirname(masks_dir)
-    save_path = os.path.join(save_dir, 'tracklets_bug_fix2.json')
-    with open(save_path, 'w') as f:
+    for path in tqdm(paths, desc='loading masks'):
+        with np.load(path, allow_pickle=True) as f:
+            masks.append(f['masks'])
+    matched = match_over_time_cell_iou(masks)
+    # Recovery is computed against only missing sources/free targets by the builder.
+    tracklets = create_tracklets(matched, skip_matches=[], masks=masks)
+    if output_path is None:
+        output_path = os.path.join(os.path.dirname(os.path.normpath(masks_dir)),
+                                   'tracklets_v3.json')
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, 'w') as f:
         json.dump(tracklets, f, indent=4)
-    print(f'Tracklets saved to {save_path}')
+    print(f'Tracklets saved to {output_path}')
     return tracklets
 
-        
 
 def evaluate_matches(matched_cells: list, masks: list, jump_threshold: float = 20.0,
                      frame_gap: int = 1) -> pd.DataFrame:
@@ -244,6 +249,9 @@ def evaluate_tracklets(tracklets: dict) -> pd.DataFrame:
             'border_exit': border_exit,
         })
 
+    if not rows:
+        print('No detected tracks to evaluate.')
+        return pd.DataFrame()
     df = pd.DataFrame(rows).set_index('tracklet_id')
 
     total_active = df['n_active'].sum()
@@ -382,7 +390,8 @@ def visualize_cell_track(tracklet_id, tracklets: dict, masks: list, pad: int = 2
 
 
 if __name__ == "__main__":
-    masks_dir = "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-11/New-02-v3-ST11-12/New-02-v3-ST11-12/masks/"
-    t = 109  # Number of time points to process, set to None to process all available masks
+    masks_dir = "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-01-ST13-V/New-01-v/masks/"
+    t = get_num_frames(masks_dir)  # Number of time points to process, set to None to process all available masks
     tracklets = cell_tracking(masks_dir, t=t)
+    print(f"Processed {t} frames, obtained {len(tracklets)} tracklets.")
     

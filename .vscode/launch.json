@@ -1,0 +1,44 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "cell_tracking",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/dafei/git/MS2/cell_tracking.py",
+            "console": "integratedTerminal",
+            "cwd": "/home/dafei/git/MS2",
+            "env": {
+                "PYTHONPATH": "/home/dafei/git/MS2"
+            }
+        },
+        {
+            "name": "gene_expression",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/dafei/git/MS2/ms2_gene_expression.py",
+            "console": "integratedTerminal",
+            "cwd": "/home/dafei/git/MS2",
+            "env": {
+                "PYTHONPATH": "/home/dafei/git/MS2"
+            },
+            "args": [
+                "--czi_file_path",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-06-ST14-V.czi",
+                "--seg_maps_dir",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-06-ST14-V/New-06-ST14-V/unified/masks_split/",
+                "--tracklets_path",
+              "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-06-ST14-V/New-06-ST14-V/unified/tracklets_unified.json",
+                "--ms2_background_removed",
+               "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-06-ST14-V/C1-New-06-ST14-V_bg_removed.tif",
+                "--output_dir",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-06-ST14-V/New-06-ST14-V/gene_expression_roi_selection",
+                "--roi",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-06-ST14-V/New-06-ST14-V/unified/roi_selection.json"
+            ]
+        }
+    ]
+}

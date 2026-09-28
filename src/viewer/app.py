@@ -175,6 +175,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({
                     't_first': t_first, 't_last': t_last,
                     'height': v.projection.shape[1], 'width': v.projection.shape[2],
+                    'build': BUILD,
                     'default_out': os.path.join(
                         os.path.dirname(v.tracklets_path or '.'), 'roi_selection.json'),
                 }).encode(), 'application/json')

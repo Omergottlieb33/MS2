@@ -311,27 +311,33 @@ class MS2GeneExpressionProcessor:
                     [self.final_df, row.to_frame().T], ignore_index=True)
         else:
             if len(cell_df_t) > 1:
-                #TODO: debug condition
                 if (cell_df_t['diff_intensity_slice'].to_numpy() / cell_df_t['intensity'].to_numpy() <= 0.5).all():
-                    gsx = cell_df_t['gauss_sigma_x']
-                    gsy = cell_df_t['gauss_sigma_y']
-                    cz  = cell_df_t['circular_z_score']
+                    # A transcription site is diffraction-limited, so the narrowest fit is the
+                    # point source and the broadest is out-of-focus signal or a background
+                    # blob.  Restrict to plausible emitters before taking the narrowest: the
+                    # global minimum is usually a fit that collapsed onto a hot pixel, which
+                    # _filter_emitter then rejects, losing the timepoint altogether.
+                    is_valid = cell_df_t.apply(self._emitter_is_valid, axis=1)
+                    pool = cell_df_t[is_valid] if is_valid.any() else cell_df_t
+                    gsx = pool['gauss_sigma_x']
+                    gsy = pool['gauss_sigma_y']
+                    cz  = pool['circular_z_score']
 
                     # Handle NaNs: they cannot "win"
-                    max_gsx = gsx.max(skipna=True)
-                    max_gsy = gsy.max(skipna=True)
+                    min_gsx = gsx.min(skipna=True)
+                    min_gsy = gsy.min(skipna=True)
                     min_cz  = cz.min(skipna=True)
 
                     wins = (
-                        gsx.eq(max_gsx).fillna(False).astype(int) +
-                        gsy.eq(max_gsy).fillna(False).astype(int) +
+                        gsx.eq(min_gsx).fillna(False).astype(int) +
+                        gsy.eq(min_gsy).fillna(False).astype(int) +
                         cz.eq(min_cz).fillna(False).astype(int)
                     )
-                    temp = cell_df_t.assign(_wins=wins)
+                    temp = pool.assign(_wins=wins)
 
                     row = temp.sort_values(
                         ['_wins', 'gauss_sigma_x', 'gauss_sigma_y', 'circular_z_score'],
-                        ascending=[False, False, False, True],
+                        ascending=[False, True, True, True],
                         na_position='last'
                     ).iloc[0]
                     del temp
@@ -387,12 +393,25 @@ class MS2GeneExpressionProcessor:
                            }
         return gaussian_params
 
+    @staticmethod
+    def _emitter_is_valid(row):
+        """Is this candidate a plausible diffraction-limited emitter?
+
+        Rejects a fit that collapsed onto a hot pixel (narrower than a real PSF), one that
+        railed to the upper sigma bound (a diffuse blob rather than a point source), and a
+        peak whose angle around the nucleus is an outlier.
+        """
+        # TODO: Threshold optimization
+        return not ((row['gauss_sigma_x'] <= 0.48 and row['gauss_sigma_y'] <= 0.48)
+                    or row['circular_z_score'] > 2.8
+                    or (row['gauss_sigma_x'] < 0.3 or row['gauss_sigma_y'] < 0.3)
+                    or (row['gauss_sigma_x'] > 1.95 or row['gauss_sigma_y'] > 1.95))
+
     def _filter_emitter(self, row, x1, y1):
         """
         The following method filter emitter by the area of sigma ellipse or Z score
         """
-        # TODO: Threshold optimization
-        if (row['gauss_sigma_x'] <= 0.48 and row['gauss_sigma_y'] <= 0.48) or row['circular_z_score'] > 2.8 or (row['gauss_sigma_x'] < 0.3 or row['gauss_sigma_y'] < 0.3) or (row['gauss_sigma_x'] > 1.95 or row['gauss_sigma_y'] > 1.95):
+        if not self._emitter_is_valid(row):
             peak_xy = (0, 0)
             gaussian_params = None
         else:

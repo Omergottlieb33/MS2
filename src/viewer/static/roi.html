@@ -95,7 +95,7 @@ function mkPanel(i, t) {
     stage: $('stage' + i), wrap: $('wrap' + i), img: $('img' + i), svg: $('svg' + i),
     view: {x: 0, y: 0, k: 1},
   };
-  p.img.src = `/projection?t=${t}`;
+  p.img.src = `/projection?t=${t}&b=${meta.build || 0}`;   // retires projections cached from a previous server
   p.img.onload = () => { fit(p); draw(p); };
 
   p.stage.addEventListener('wheel', e => {

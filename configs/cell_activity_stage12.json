@@ -1,0 +1,23 @@
+{
+  "New-03-V": {
+    "csv": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-03-V/New-03-V/gene_expression_roi_selection/gene_expression_results.csv",
+    "tracklets": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-03-V/New-03-V/unify/tracklets_unified.json",
+    "masks_dir": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-03-V/New-03-V/unify/masks_split",
+    "t_start": 0,
+    "t_end": 71
+  },
+  "New-14-v1": {
+    "csv": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-14-v1/New-14-v1/gene_expression_roi_selection/gene_expression_results.csv",
+    "tracklets": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-14-v1/New-14-v1/unify/tracklets_unified.json",
+    "masks_dir": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-14-v1/New-14-v1/unify/masks_split",
+    "t_start": 0,
+    "t_end": 36
+  },
+  "New-17-ST12-V": {
+    "csv": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-17-ST12-V/New-17-ST12-V/gene_expression_roi_selection/gene_expression_results.csv",
+    "tracklets": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-17-ST12-V/New-17-ST12-V/unify/tracklets_unified.json",
+    "masks_dir": "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-12/New-17-ST12-V/New-17-ST12-V/unify/masks_split",
+    "t_start": 0,
+    "t_end": 47
+  }
+}

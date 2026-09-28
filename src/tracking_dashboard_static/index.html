@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cell tracking</title><link rel="stylesheet" href="/style.css"></head>
+<body><header><div><div class="eyebrow">MS2 · CELL TRACKING</div><h1 id="title">Tracklet quality</h1><p id="subtitle"></p></div><button id="csv">Export track metrics</button></header>
+<main>
+<div class="toolbar"><label>Find track ID <input id="search" placeholder="All tracks"></label><label>Minimum detected frames <input id="minFrames" type="number" min="1" value="1"></label><label>Order tracks <select id="sort"><option value="length">Longest first</option><option value="volume">Most variable volume</option><option value="movement">Largest movement</option><option value="neighbors">Least stable neighbors</option></select></label><span id="count"></span></div>
+<div class="toolbar"><label>Region of interest (JSON) <input id="roiFile" type="file" accept=".json,application/json"></label><button id="clearRoi" hidden>Clear ROI</button><span id="roiStatus" role="status">All tracks · no ROI selected</span></div>
+<div id="cards" class="cards"></div>
+<section class="panel" id="detail"><div class="section-head"><div><h2 id="selectedTitle">Select a track</h2><p id="selectedSummary"></p></div><span class="muted">Click a row below to inspect a cell.</span></div>
+<div id="plots" class="plots"></div></section>
+<section class="panel"><div class="section-head"><h2>Tracklets</h2><span class="muted">Length uses detected frames, including gaps in the recording denominator.</span></div><div class="table-wrap"><table><thead><tr><th>Track ID</th><th>Length / recording</th><th>Volume CV ↓</th><th>Movement p95 ↓</th><th>Neighbor retention ↑</th></tr></thead><tbody id="rows"></tbody></table></div><button id="more" class="more">Show more tracks</button></section>
+<p class="footnote" id="definitions"></p><p class="footnote">These are consistency measures. Short tracks can be real exits; changes in nearby cells can be real movement. Missing evidence is shown as —.</p><p class="paths" id="paths"></p>
+</main><script src="/app.js"></script></body></html>
