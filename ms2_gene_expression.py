@@ -655,7 +655,7 @@ if __name__ == "__main__":
         masks_paths=masks_paths,
         ms2_background_removed=ms2_background_removed,
         output_dir=args.output_dir,
-        plot={'emitter_fit': True, 'intensity': True, 'segmentation': False},
+        plot={'emitter_fit': False, 'intensity': True, 'segmentation': False},
         ransac_mad_k_th=2.0,
         prominence=args.prominence,
         emitter_cells_matches=args.emitter_cells_matches
