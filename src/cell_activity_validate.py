@@ -79,6 +79,10 @@ def check_thresholds(name, rec):
     if value is not None and not (isinstance(value, (int, float)) and 0.0 <= value <= 1.0):
         rows.append(row(name, 'error', 'thresholds',
                         f'min_presence must be a number in 0..1, got {value!r}'))
+    value = rec.get('max_volume_cv')
+    if value is not None and not (isinstance(value, (int, float)) and value >= 0):
+        rows.append(row(name, 'error', 'thresholds',
+                        f'max_volume_cv must be a number >= 0, got {value!r}'))
     return rows
 
 

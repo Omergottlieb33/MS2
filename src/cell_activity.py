@@ -121,7 +121,7 @@ def order_labels_by_activity(labels, signals):
     return np.array([remap[l] for l in labels])
 
 
-def activity_levels(score, n_levels=N_LEVELS, seed=0, k=K_LEVELS):
+def activity_levels(score, n_levels=N_LEVELS, seed=0, k=K_LEVELS, weights=None):
     """Levels 0..k-1 of the scores: KMeans on log1p(score), renumbered lowest to highest.
 
     k levels are fitted, fewer only when the scores have fewer distinct values.  With k=None
@@ -129,6 +129,8 @@ def activity_levels(score, n_levels=N_LEVELS, seed=0, k=K_LEVELS):
     the best one wins, and all the scores are printed so a run's number of tiers can be read
     back from its log.  The silhouette on one dimension leans towards fewer clusters, so a k
     below n_levels is a statement about separation, not about biology.
+
+    weights, one per score, weigh the KMeans fit (the silhouette stays unweighted).
     """
     score = np.log1p(np.asarray(score, dtype=float))
     k_max = min(n_levels if k is None else k, len(np.unique(score)))
@@ -144,12 +146,14 @@ def activity_levels(score, n_levels=N_LEVELS, seed=0, k=K_LEVELS):
             print(f'warning: {len(score)} cells have only {k_max} distinct activities, '
                   f'fitting {k_max} levels instead of {k}')
         print(f'fixed k: {k_max} activity levels over {len(score)} cells')
-        labels = KMeans(n_clusters=k_max, random_state=seed, n_init=10).fit_predict(X)
+        labels = KMeans(n_clusters=k_max, random_state=seed, n_init=10).fit_predict(
+            X, sample_weight=weights)
         return order_labels_by_activity(labels, score)
 
     fits = {}
     for k in range(2, k_max + 1):
-        labels = KMeans(n_clusters=k, random_state=seed, n_init=10).fit_predict(X)
+        labels = KMeans(n_clusters=k, random_state=seed, n_init=10).fit_predict(
+            X, sample_weight=weights)
         # silhouette needs at least two labels and one sample more than labels
         if len(np.unique(labels)) < 2 or len(score) <= len(np.unique(labels)):
             continue
@@ -164,12 +168,15 @@ def activity_levels(score, n_levels=N_LEVELS, seed=0, k=K_LEVELS):
     return order_labels_by_activity(fits[best][0], score)
 
 
-def classify_cells(desc, score='total', noise_peak=NOISE_PEAK, n_levels=N_LEVELS, k=K_LEVELS):
+def classify_cells(desc, score='total', noise_peak=NOISE_PEAK, n_levels=N_LEVELS, k=K_LEVELS,
+                   weights=None):
     """LEVEL_NAMES level of every row of desc, the ladder fitted on desc[score]; k is the
-    number of levels above the blips, None to choose it by silhouette (see activity_levels)."""
+    number of levels above the blips, None to choose it by silhouette (see activity_levels).
+    weights, one per row, weigh the ladder fit."""
     levels = np.where(desc['peak'] > 0, 1, 0)
     ranked = (desc['peak'] >= noise_peak).to_numpy()
-    levels[ranked] = 2 + activity_levels(desc[score].to_numpy()[ranked], n_levels, k=k)
+    levels[ranked] = 2 + activity_levels(desc[score].to_numpy()[ranked], n_levels, k=k,
+                                         weights=None if weights is None else weights[ranked])
     return levels
 
 

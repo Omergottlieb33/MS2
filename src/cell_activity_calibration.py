@@ -70,7 +70,7 @@ def calibration_row(name, rec):
     return row, nonzero
 
 
-def plot_background(distributions, floors, path_stem):
+def plot_background(distributions, floors, path_stem, title=None):
     """One ECDF per recording over the nonzero tracked values, its floor as a dashed line in the
     same colour.  Comparable floors sit at the same height on comparable curves."""
     fig, ax = plt.subplots(figsize=(7, 4.5))
@@ -85,14 +85,15 @@ def plot_background(distributions, floors, path_stem):
     ax.set_xscale('log')
     ax.set(xlabel='ellipse sum of tracked, nonzero frames (AU)',
            ylabel='fraction of frames at or below', ylim=(0, 1),
-           title='Background per recording; dashed = its configured noise floor')
+           title=(f'{title} - Background\n' if title else '')
+           + 'Background per recording; dashed = its configured noise floor')
     ax.legend(frameon=False, fontsize=8)
     save_figure(fig, path_stem, eps=False)
 
 
-def run_calibration(recordings, out_dir):
+def run_calibration(recordings, out_dir, title=None):
     """Summarise every recording's background into out_dir/calibration.csv and background.png.
-    Returns the table."""
+    Returns the table.  title, e.g. 'Stage 12', heads the figure as '<title> - Background'."""
     os.makedirs(out_dir, exist_ok=True)
     rows, distributions, floors = [], {}, {}
     for name, rec in recordings.items():
@@ -102,7 +103,7 @@ def run_calibration(recordings, out_dir):
 
     table = pd.DataFrame(rows)
     table.to_csv(os.path.join(out_dir, 'calibration.csv'), index=False)
-    plot_background(distributions, floors, os.path.join(out_dir, 'background'))
+    plot_background(distributions, floors, os.path.join(out_dir, 'background'), title)
 
     spread = table['floor_percentile'].max() - table['floor_percentile'].min()
     print(table.set_index('recording')[
