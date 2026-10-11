@@ -8,6 +8,6 @@ package or the pipeline imports from here, and none of it is maintained or teste
 - `streaming_tracker.py` – early streaming tracker prototype
 - `cell_activity_normalize.py`, `cell_activity_silhouette.py` – diagnostics behind the
   activity-ladder choices in `ms2/cell_activity.py`
-- `eval_utils.py`, `save_utils.py` – old helpers
+- `eval_utils.py`, `save_utils.py`, `visualize_cell_track.py` – old helpers
 - `notebooks/` – exploratory notebooks (paths inside are hard-coded to the lab server)
 - `notes/` – tracking review, fixes, comparison and dashboard write-ups
