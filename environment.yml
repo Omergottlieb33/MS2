@@ -13,6 +13,7 @@ dependencies:
   - tqdm
   - networkx
   - numba
+  - threadpoolctl
   - pillow
   - imageio
   - scikit-learn
@@ -22,6 +23,7 @@ dependencies:
   - pip
   - pip:
     - scikit-image
+    - tifffile
     - cellpose>=4.0
     - czifile
     - aicspylibczi
@@ -31,3 +33,4 @@ dependencies:
     - --extra-index-url https://download.pytorch.org/whl/cu124
     - torch
     - torchvision
+    - -e .            # the ms2 package and its `ms2` command

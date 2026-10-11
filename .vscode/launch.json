@@ -5,26 +5,28 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "cell_tracking",
+            "name": "ms2 run",
             "type": "python",
             "request": "launch",
-            "program": "/home/dafei/git/MS2/ms2/tracking.py",
+            "module": "ms2.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/dafei/git/MS2",
-            "env": {
-                "PYTHONPATH": "/home/dafei/git/MS2"
-            }
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "run",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-06-ST14-V.czi",
+                "--out",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-06-ST14-V",
+                "--roi",
+                "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-06-ST14-V/New-06-ST14-V/unified/roi_selection.json"
+            ]
         },
         {
             "name": "gene_expression",
             "type": "python",
             "request": "launch",
-            "program": "/home/dafei/git/MS2/ms2/gene_expression/run.py",
+            "module": "ms2.gene_expression.run",
             "console": "integratedTerminal",
-            "cwd": "/home/dafei/git/MS2",
-            "env": {
-                "PYTHONPATH": "/home/dafei/git/MS2"
-            },
+            "cwd": "${workspaceFolder}",
             "args": [
                 "--czi_file_path",
                 "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-06-ST14-V.czi",
