@@ -1,0 +1,17 @@
+# MS2 launcher settings. Fill these in once; MS2.bat (Windows) and ms2.sh (Linux) read them.
+# Lines starting with # are ignored. No spaces around the = sign.
+
+# The lab server, and your username on it. If "golgi" is not found (e.g. from home over
+# the VPN), use its address: HOST=132.68.106.73. On Linux, HOST=localhost
+# runs the app on this machine instead (ms2.sh only).
+HOST=golgi
+SSH_USER=your-username
+
+# A port only you use, so two people's apps don't collide (any number 8700-8799)
+PORT=8765
+
+# The ms2 command on the server (in the lab's shared conda environment)
+MS2=/zjbd/zd1/shechtmanlab/conda_envs/ms2/bin/ms2
+
+# Folder the app may browse for CZI files and write results into
+DATA_ROOT=/zjbd/zd1/shechtmanlab

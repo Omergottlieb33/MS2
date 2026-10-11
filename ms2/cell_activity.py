@@ -1,6 +1,6 @@
 """Activity level of every cell inside one developmental-stage window of a recording.
 
-The module form of notebooks/gene_expression_analysis_v2.ipynb, restricted to the frames
+The module form of research/notebooks/gene_expression_analysis_v2.ipynb, restricted to the frames
 t_start..t_end (0-based, both included) so that embryos can be compared stage by stage --
 ms2/cell_activity_compare.py builds on the functions here.  A cell's activity is its MS2
 ellipse sum above the noise floor, and the levels form a ladder:

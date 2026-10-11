@@ -5,121 +5,92 @@ Infrastructure for cell and fluorescence analysis in MS2 live-imaging research.
 ## Overview
 
 The repository turns a multi-channel live-imaging acquisition into per-cell transcriptional
-activity traces, in three stages:
+activity:
 
-1. **Segmentation** — Cellpose segments every cell in each 3D z-stack, one timepoint at a time.
-2. **Tracking** — segmented cells are linked across time into tracklets, so a cell keeps one
+1. **Segmentation**: Cellpose segments every cell in each 3D z-stack, one timepoint at a time.
+2. **Tracking**: segmented cells are linked across time into tracklets, so a cell keeps one
    identity through the movie.
-3. **Gene expression** — MS2 transcription-site spots are detected, matched to their parent cell,
+3. **Gene expression**: MS2 transcription-site spots are detected, matched to their parent cell,
    and quantified per cell over time.
+4. **Activity**: cells are placed on an activity ladder, and stages are compared across embryos.
 
-A browser-based **viewer** is included for inspecting segmentation and tracking results visually.
+A browser app runs all of it, and a viewer and a dashboard inspect the results.
+
+## Running it
+
+**Lab members:** see the [user guide](docs/USER_GUIDE.md). Double-click a launcher and the app
+opens in your browser. From there you pick a CZI, draw the ROI, start the run and open the
+results, with no terminal needed.
+
+**On the command line**, everything is one command, `ms2`:
+
+```bash
+ms2 app                                  # the browser app (what the launchers start)
+ms2 run <rec>.czi --out <root> [--roi roi.json] [--device cuda:0] [--stop-after STEP]
+ms2 compare experiment.json              # several recordings, then their comparison
+ms2 view --image ... --masks-dir ...     # segmentation / tracking viewer
+ms2 dashboard --tracklets ... --masks-dir ...   # tracking-quality dashboard
+```
+
+`ms2 <command> -h` lists each command's options.
+
+### What a run does
+
+`ms2 run` (`ms2/pipeline.py`) takes one recording through six steps, each into
+`<root>/<rec>/`. Each step marks itself done, so a rerun resumes where the last one stopped:
+
+| Step | Writes | |
+|---|---|---|
+| preprocess | `preprocess/C1-<rec>.tif`, `C2-<rec>.tif`, `C1-<rec>_bg_removed.tif`, `SUM_C2-<rec>.tif` | channel split; ImageJ's Subtract Background and Sum Slices, reproduced pixel for pixel |
+| segment | `masks/z_stack_t{N}_seg_masks.npz` | Cellpose 3D, GPU |
+| track | `tracklets.json` | IoU + Hungarian matching, with a second chance across a one-frame gap |
+| unify | `unified/masks_split/`, `unified/tracklets_unified.json` | splits fused labels, retires fragments |
+| gene_expression | `gene_expression/gene_expression_results.csv` | MS2 spots matched to cells and quantified per frame |
+| activity | `activity/clusters.csv` and figures | the activity ladder (below) |
+
+**ROI.** Boundaries are drawn on `SUM_C2-<rec>.tif` at two frames, the start and end of the
+stage. Use `ms2 app`, or `ms2 view --projection <SUM_C2 tif>`. This can happen before
+anything else has run, because the app builds the projection straight from the CZI. Pass the
+saved `roi_selection.json` as `--roi`. Gene expression then keeps the tracklets inside either
+boundary, and activity is measured between the two frames. Without `--roi`, gene expression
+keeps cells with fewer than 20 missing frames, and activity covers the whole recording.
 
 ### Data
 
-Acquisitions are Zeiss `.czi` time series with shape `(T, C, Z, Y, X)`. Channel **`C=1` is the cell
-channel** used for segmentation and tracking; the MS2 channel is supplied separately to the
-expression stage as a background-subtracted TIF.
+Acquisitions are Zeiss `.czi` time series with shape `(T, C, Z, Y, X)`. Channel `C=0` is MS2
+and **`C=1` is the cell channel** used for segmentation and tracking. A representative dataset
+is 109 timepoints × 2 channels × 11 z-slices × 1024 × 1024.
 
-A representative dataset is 109 timepoints × 2 channels × 11 z-slices × 1024 × 1024.
-
-Segmentation writes one compressed archive per timepoint:
-
-```
-<output_dir>/<acquisition>/masks/z_stack_t{N}_seg_masks.npz     # keys: masks, flows_xyz_coord, flows_circular_coord
-```
-
-Tracking writes a single JSON mapping each tracklet to its label at every frame, using two
-sentinels — `-1` for a frame where the cell was not detected, `-2` for a cell that left the field
-of view:
+Tracklets are a JSON mapping each tracklet to its label at every frame, using two sentinels:
+`-1` for a frame where the cell was not detected, and `-2` for a cell that left the field of
+view.
 
 ```json
 { "0": [1, 1, 2, 3, -1, 4, -2, -2], "1": [...] }
 ```
 
-## Environment
+## Installation
 
-Conda, Python 3.12, CUDA 12.4 build of PyTorch. Segmentation requires a GPU.
-
-```bash
-conda env create -f environment.yml
-conda activate ms2
-```
-
-Key dependencies: `cellpose>=4.0`, `torch`, `czifile`, `aicspylibczi`, `tifffile`, `scikit-image`,
-`networkx`, `scipy`, `findmaxima2d`.
-
-Run everything from the repository root — the modules import as `src.*`, so the root must be on
-`PYTHONPATH` (which it is by default when invoking from there).
-
-## Running the pipeline
-
-> **The end-to-end pipeline is still in development.** The three stages currently run as separate
-> scripts, and the output of each must be passed by hand to the next. Two of the three take their
-> parameters from hardcoded values in their `__main__` block rather than from the command line —
-> edit those before running. Unified orchestration is planned.
-
-### 1. Segmentation — `cell_3d_segmentation.py`
-
-Edit the values at the bottom of the file, then run it:
-
-```python
-if __name__ == "__main__":
-    czi_file_path = "/path/to/acquisition.czi"
-    output_dir    = "/path/to/outputs/acquisition"
-    device        = "cuda:3"
-    segment_3d_cells(czi_file_path, output_dir, device)
-```
+On the GPU server, once for the whole lab. Conda, Python 3.12, CUDA 12.4 build of PyTorch.
 
 ```bash
-python cell_3d_segmentation.py
+git clone https://github.com/Omergottlieb33/MS2.git
+cd MS2
+conda env create -p /zjbd/zd1/shechtmanlab/conda_envs/ms2 -f environment.yml
 ```
 
-Already-segmented timepoints are skipped, so an interrupted run can simply be restarted.
+The environment installs this clone in editable mode, so `git pull` in the clone updates
+everyone. The `ms2` command is then at `/zjbd/zd1/shechtmanlab/conda_envs/ms2/bin/ms2`, which
+is what `launchers/ms2_settings.txt` points at. Copy `launchers/` to wherever lab members can
+get it.
 
-### 2. Tracking — `cell_tracking.py`
+For your own development environment, `conda env create -f environment.yml` creates `ms2`.
 
-Cells are matched between consecutive frames by IoU with Hungarian assignment, with a second-chance
-pass across a one-frame gap so a single missed detection does not end a track.
+## Activity analysis in detail: `ms2/cell_activity*.py`
 
-Edit the bottom of the file, then run:
-
-```python
-if __name__ == "__main__":
-    masks_dir = "/path/to/outputs/acquisition/masks/"
-    t = 109                      # number of timepoints; <=0 uses all available
-    tracklets = cell_tracking(masks_dir, t=t)
-```
-
-```bash
-python cell_tracking.py
-```
-
-Writes a tracklets JSON next to the masks directory. `evaluate_tracklets()` in the same module
-prints track counts, gap totals and a fragmentation index for a result.
-
-### 3. Gene expression — `ms2_gene_expression.py`
-
-The only stage with a full command-line interface. The MS2 channel must already be
-background-subtracted (rolling-ball or equivalent) and saved as a TIF.
-
-```bash
-python ms2_gene_expression.py \
-  --czi_file_path /path/to/acquisition.czi \
-  --seg_maps_dir /path/to/outputs/acquisition/masks \
-  --tracklets_path /path/to/outputs/acquisition/tracklets.json \
-  --ms2_background_removed /path/to/acquisition_ms2_bg_removed.tif \
-  --output_dir /path/to/outputs/acquisition/gene_expression \
-  --prominence 18.0
-```
-
-`--prominence` is the maxima-finder threshold for calling MS2 spots; it is the main knob to tune
-against your signal-to-noise.
-
-### 4. Activity analysis — `src/cell_activity*.py`
-
-Classifies every tracked cell of one developmental-stage window into an activity ladder, and
-compares those windows across embryos. All four modules take the same config: a JSON of
+`ms2 run` and `ms2 compare` run this for you. The modules below are for working on one stage
+window by hand. They classify every tracked cell of the window into an activity ladder, and
+compare those windows across embryos. All four modules take the same config: a JSON of
 `{name: recording dict}`, one entry per recording.
 
 ```json
@@ -139,17 +110,19 @@ compares those windows across embryos. All four modules take the same config: a 
 `t_start`/`t_end` are 0-based and both included. `noise_floor` (a frame at or below it is
 background), `noise_peak` (cells whose peak never clears it are 1–2 frame blips) and
 `min_presence` (the share of the window a cell must be tracked in to count) are optional and fall
-back to the constants at the top of `src/cell_activity.py`.
+back to the constants at the top of `ms2/cell_activity.py`.
 
-Point `csv` at `gene_expression_results_fixed.csv`, not `gene_expression_results.csv` — the
-original matrix holds most traces at the wrong timepoints, which a stage window then cuts wrongly.
-`src/gene_expression/expression_matrix.py` rebuilds a corrected matrix from an existing run.
+For gene-expression runs made before 2026-09-23, point `csv` at
+`gene_expression_results_fixed.csv`. Those matrices hold most traces at the wrong timepoints,
+which a stage window then cuts wrongly. `python -m ms2.gene_expression.expression_matrix`
+rebuilds a corrected matrix from such a run. Runs since then write the corrected matrix
+directly.
 
 **Check the config first.** Every check runs on every recording, so one pass lists everything
 wrong rather than the first thing wrong:
 
 ```bash
-python -m src.cell_activity_validate --config recordings.json
+python -m ms2.cell_activity_validate --config recordings.json
 ```
 
 Errors (a missing mask timepoint, a cell with no tracklet, a window outside the matrix) stop the
@@ -162,7 +135,7 @@ conditions. This measures each recording's background and reports where its conf
 falls in it:
 
 ```bash
-python -m src.cell_activity_calibration --config recordings.json --out-dir .../calibration
+python -m ms2.cell_activity_calibration --config recordings.json --out-dir .../calibration
 ```
 
 Read `floor_percentile` in `calibration.csv`. A floor at the 8th percentile in one recording and
@@ -174,13 +147,13 @@ does not fix it, which needs a reference standard per acquisition.
 and a cluster-overlay GIF:
 
 ```bash
-python -m src.cell_activity --config recordings.json --out-dir .../stage_activity
+python -m ms2.cell_activity --config recordings.json --out-dir .../stage_activity
 ```
 
 Across recordings, on one shared ladder fitted over all their pooled cells:
 
 ```bash
-python -m src.cell_activity_compare --config recordings.json --out-dir .../compare
+python -m ms2.cell_activity_compare --config recordings.json --out-dir .../compare
 ```
 
 Both validate the config first; `--skip-validate` skips that for a rerun of a known-good one, and
@@ -198,12 +171,14 @@ server-side and sends a PNG, so it works comfortably over SSH against data that 
 acquisition machine.
 
 ```bash
-python -m src.viewer.app \
+ms2 view \
   --image /path/to/acquisition.czi \        # or a 4D (T, Z, Y, X) tif
   --masks-dir /path/to/outputs/acquisition/masks \
   --tracklets /path/to/outputs/acquisition/tracklets.json \
   --port 5057
 ```
+
+The app opens this viewer for a finished run from its **Runs & results** page.
 
 Reach it through a tunnel:
 
@@ -244,10 +219,23 @@ Sorting by gap count is the fastest way to find where tracking is failing.
 
 ### Planned
 
-- **Per-cell activity** — the MS2 expression trace for the selected cell, plotted alongside the
+- **Per-cell activity**: the MS2 expression trace for the selected cell, plotted alongside the
   timeline strip so transcriptional bursts can be read against the cell's own tracking history.
-- **MS2 channel display** — overlaying the MS2 channel and its detected spots on the cell channel,
-  so a called spot can be checked against the cell it was assigned to.
+
+## Repository layout
+
+```
+ms2/            the package: pipeline steps, app/, viewer/, gene_expression/, cell_activity*
+launchers/      double-click launchers for the app (Windows, Linux) and their settings
+docs/           the user guide
+configs/        example experiment and activity configs (paths on the lab server)
+tests/          python tests/test_<name>.py, one script per module
+research/       experiments, notebooks and notes; not maintained, not imported by ms2/
+```
+
+Tests are plain scripts: `for f in tests/test_*.py; do python $f; done`. The preprocessing
+test also compares against ImageJ output when the reference data is mounted. Set
+`MS2_TEST_DATA` to its folder.
 
 ## Citation
 
