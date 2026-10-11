@@ -6,16 +6,18 @@
 Steps, each writing into <root>/<rec>/ and marking itself done there, so a rerun resumes
 where the last one stopped:
 
-    preprocess        preprocess/C1-<rec>.tif, C2-<rec>.tif, C1-<rec>_bg_removed.tif
+    preprocess        preprocess/C1-<rec>.tif, C2-<rec>.tif, C1-<rec>_bg_removed.tif, SUM_C2-<rec>.tif
     segment           masks/z_stack_t{t}_seg_masks.npz               (Cellpose, GPU)
     track             tracklets.json                                   (ms2/tracking.py)
     unify             unified/masks_split/, unified/tracklets_unified.json
     gene_expression   gene_expression/gene_expression_results.csv  (per-cell figures with --plots)
-    activity          activity/clusters.csv and figures, over the whole recording
+    activity          activity/clusters.csv and figures, over the ROI's frames (all without --roi)
 
-To pick cells by ROI: run with --stop-after unify, draw the boundaries in the viewer
-(python -m ms2.viewer.app ... on unified/), then rerun with --roi <roi_selection.json>.
-Without --roi, gene expression keeps cells with fewer than 20 missing frames.
+To pick cells by ROI, draw the boundaries first -- in `ms2 app`, or with
+`ms2 view --projection preprocess/SUM_C2-<rec>.tif` -- on the two frames that bound the
+stage, and pass the saved file as --roi.  Gene expression keeps the cells inside either
+boundary and activity is measured between the two frames.  Without --roi, gene expression
+keeps cells with fewer than 20 missing frames and activity covers the whole recording.
 """
 import argparse
 import datetime
@@ -34,6 +36,8 @@ class Recording:
         self.dir = os.path.join(self.root, self.name)
         self.preprocess = os.path.join(self.dir, 'preprocess')
         self.ms2_bg_removed = os.path.join(self.preprocess, f'C1-{self.name}_bg_removed.tif')
+        self.projection = os.path.join(self.preprocess, f'SUM_C2-{self.name}.tif')
+        self.roi = os.path.join(self.dir, 'roi_selection.json')    # where the app saves one
         self.masks = os.path.join(self.dir, 'masks')    # where segment_3d_cells writes
         self.tracklets = os.path.join(self.dir, 'tracklets.json')
         self.unified = os.path.join(self.dir, 'unified')
@@ -69,10 +73,21 @@ def run_step(rec, step, args):
     elif step == 'activity':
         import pandas as pd
         from ms2.cell_activity import analyze_recording
-        n = len(pd.read_csv(rec.expression_csv))
+        t_start, t_end = activity_window(args.roi, len(pd.read_csv(rec.expression_csv)))
         analyze_recording(rec.name, {'csv': rec.expression_csv, 'tracklets': rec.unified_tracklets,
-                                     'masks_dir': rec.unified_masks, 't_start': 0, 't_end': n - 1},
+                                     'masks_dir': rec.unified_masks,
+                                     't_start': t_start, 't_end': t_end},
                           rec.activity)
+
+
+def activity_window(roi, n_frames):
+    """The frames activity is measured over: the ROI's window when there is one, else all."""
+    if roi:
+        from ms2.roi_selection import load_roi
+        r = load_roi(roi)
+        t_last = r.get('t_last')
+        return r.get('t_first', 0), n_frames - 1 if t_last is None or t_last < 0 else t_last
+    return 0, n_frames - 1
 
 
 def git_hash():

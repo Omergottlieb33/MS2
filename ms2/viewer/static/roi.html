@@ -36,6 +36,7 @@
   #count { font-variant-numeric: tabular-nums; }
   #count b { color: #4caf50; font-size: 15px; }
   .warn { color: #e0a030; }
+  .ptitle input[type=range] { width: 180px; vertical-align: middle; }
 </style>
 </head>
 <body>
@@ -43,14 +44,15 @@
 <header>
   <h1>ROI cell selection</h1>
   <span class="hint">Click to place vertices · <b>close</b> to finish the shape ·
-    wheel zoom, right-drag pan · a cell counts if it is inside <b>either</b> boundary</span>
-  <span style="margin-left:auto"><a href="/">← viewer</a></span>
+    wheel zoom, right-drag pan · slide to pick each frame · a cell counts if it is inside
+    <b>either</b> boundary</span>
+  <span style="margin-left:auto"><a href="/" id="back" hidden>← viewer</a></span>
 </header>
 
 <div id="panels">
   <div class="panel">
     <div class="ptitle">
-      <span>first frame &nbsp;<b id="tf">t0</b></span>
+      <span>start frame &nbsp;<input type="range" id="r0" min="0" step="1"> <b id="tf">t0</b></span>
       <span class="btns">
         <button data-a="close" data-p="0">close</button>
         <button data-a="undo"  data-p="0">undo</button>
@@ -64,7 +66,7 @@
   </div>
   <div class="panel">
     <div class="ptitle">
-      <span>last frame &nbsp;<b id="tl">tn</b></span>
+      <span>end frame &nbsp;<input type="range" id="r1" min="0" step="1"> <b id="tl">tn</b></span>
       <span class="btns">
         <button data-a="close" data-p="1">close</button>
         <button data-a="undo"  data-p="1">undo</button>
@@ -95,8 +97,8 @@ function mkPanel(i, t) {
     stage: $('stage' + i), wrap: $('wrap' + i), img: $('img' + i), svg: $('svg' + i),
     view: {x: 0, y: 0, k: 1},
   };
-  p.img.src = `/projection?t=${t}&b=${meta.build || 0}`;   // retires projections cached from a previous server
-  p.img.onload = () => { fit(p); draw(p); };
+  p.img.onload = () => { if (!p.fitted) { fit(p); p.fitted = true; } draw(p); };
+  setFrame(p, t);
 
   p.stage.addEventListener('wheel', e => {
     e.preventDefault();
@@ -129,6 +131,14 @@ function mkPanel(i, t) {
     draw(p);
   });
   return p;
+}
+
+// Boundaries stay put when the frame changes: the shape usually needs only a nudge.
+function setFrame(p, t) {
+  p.t = t;
+  $(p.i ? 'tl' : 'tf').textContent = 't' + t;
+  $('r' + p.i).value = t;
+  p.img.src = `/projection?t=${t}&b=${meta.build || 0}`;   // retires projections cached from a previous server
 }
 
 // Screen -> image coordinates.  Vertices are stored in image space so zooming and panning
@@ -182,13 +192,18 @@ document.querySelectorAll('button[data-a]').forEach(b => {
     else if (a === 'clear') { p.pts = []; p.closed = false; }
     else if (a === 'fit') { fit(p); }
     draw(p);
-    $('count').textContent = '—';
+    resetCount();
   };
 });
 
+// Drawn before the pipeline ran there are no cells to count yet, only boundaries to save.
+const resetCount = () => $('count').innerHTML = meta.has_tracks ? '—'
+  : '<span style="color:#888">cells are selected after tracking</span>';
+
 // Only a closed shape is a boundary; an unfinished polyline contributes nothing.
 const roiOf = p => (p.closed && p.pts.length >= 3) ? p.pts : null;
-const body = () => ({roi_first: roiOf(panels[0]), roi_last: roiOf(panels[1])});
+const body = () => ({roi_first: roiOf(panels[0]), roi_last: roiOf(panels[1]),
+                     t_first: panels[0].t, t_last: panels[1].t});
 
 async function post(path, payload) {
   const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -220,7 +235,9 @@ $('save').onclick = async () => {
   }
   try {
     const d = await post('/roi/save', {...b, path: $('out').value});
-    $('count').innerHTML = `saved <b>${d.n_total}</b> cells → <span style="color:#888">${d.path}</span>`;
+    $('count').innerHTML = (d.n_total == null ? 'saved' : `saved <b>${d.n_total}</b> cells`) +
+      ` (frames ${b.t_first}–${b.t_last}) → <span style="color:#888">${d.path}</span>`;
+    if (meta.next_url) $('count').innerHTML += ` &nbsp;<a href="${meta.next_url}">continue →</a>`;
   } catch (e) { $('count').innerHTML = `<span class="warn">${e.message}</span>`; }
 };
 
@@ -228,10 +245,15 @@ addEventListener('resize', () => panels.forEach(fit));
 
 (async () => {
   meta = await (await fetch('/roi/meta')).json();
-  $('tf').textContent = 't' + meta.t_first;
-  $('tl').textContent = 't' + meta.t_last;
   $('out').value = meta.default_out;
+  $('back').hidden = !meta.has_image;
+  $('preview').hidden = !meta.has_tracks;
+  resetCount();
+  for (const i of [0, 1]) $('r' + i).max = meta.n_t - 1;
   panels = [mkPanel(0, meta.t_first), mkPanel(1, meta.t_last)];
+  // The window is start <= end; dragging one slider past the other is refused.
+  $('r0').oninput = () => { setFrame(panels[0], Math.min(+$('r0').value, panels[1].t)); resetCount(); };
+  $('r1').oninput = () => { setFrame(panels[1], Math.max(+$('r1').value, panels[0].t)); resetCount(); };
 })();
 </script>
 </body>

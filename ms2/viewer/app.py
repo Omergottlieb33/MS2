@@ -31,15 +31,18 @@ BUILD = str(int(time.time()))
 class Viewer:
     def __init__(self, image_path, masks_dir, channel, tracklets_path=None, ms2_path=None,
                  projection_path=None, peaks_path=None):
-        self.image = load_image(image_path, channel)
+        # No image: an ROI-only viewer on the projection, for drawing before the pipeline runs
+        self.image = load_image(image_path, channel) if image_path else None
         self.masks = MaskStore(masks_dir) if masks_dir else None
         self.tracks = TrackletStore(tracklets_path) if tracklets_path else None
         self.ms2 = Ms2Store(ms2_path) if ms2_path else None
         self.peaks = PeakStore(peaks_path) if peaks_path else None
         self.projection = load_projection(projection_path) if projection_path else None
         self.projection_path = projection_path
+        self.roi_out = None      # where /roi suggests saving; next to the tracklets if unset
         self.tracklets_path = tracklets_path
-        self.n_t, self.n_z, self.height, self.width = self.image.shape
+        if self.image is not None:
+            self.n_t, self.n_z, self.height, self.width = self.image.shape
         self._windows = {}
         self._proj_windows = {}
 
@@ -71,9 +74,14 @@ class Viewer:
         return composite(self.image[t, z], self.mask_slice(t, z), lo, hi, alpha, mode,
                          highlight=highlight, ms2=ms2, ms2_thr=ms2_thr, peaks=peaks)
 
-    def roi_frames(self):
-        """The two frames boundaries are drawn on: first and last of the projection."""
-        return 0, len(self.projection) - 1
+    def roi_frames(self, t_first=None, t_last=None):
+        """The two frames boundaries are drawn on; the whole projection unless a window is chosen."""
+        n = len(self.projection)
+        t_first = 0 if t_first is None else int(t_first)
+        t_last = n - 1 if t_last is None else int(t_last)
+        if not 0 <= t_first <= t_last < n:
+            raise ValueError(f'frames {t_first}..{t_last} are outside 0..{n - 1}, or reversed')
+        return t_first, t_last
 
     def projection_frame(self, t, lo_pct=1.0, hi_pct=99.5):
         t = max(0, min(len(self.projection) - 1, t))
@@ -83,8 +91,11 @@ class Viewer:
         lo, hi = self._proj_windows[key]
         return composite(self.projection[t], None, lo, hi)
 
-    def roi_select(self, roi_first, roi_last):
-        t_first, t_last = self.roi_frames()
+    def roi_select(self, roi_first, roi_last, t_first=None, t_last=None):
+        """Cell counts for a boundary pair, or None before tracking has produced any cells."""
+        if self.tracks is None or self.masks is None:
+            return None
+        t_first, t_last = self.roi_frames(t_first, t_last)
         first = select_tracklets(self.tracks, self.masks, roi_first, None, t_first, t_last)
         last = select_tracklets(self.tracks, self.masks, None, roi_last, t_first, t_last)
         total = sorted(set(first) | set(last))
@@ -142,15 +153,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}')
             if url.path == '/roi/preview':
-                out = v.roi_select(body.get('roi_first'), body.get('roi_last'))
-                out.pop('tids')          # the page only needs the counts
+                out = v.roi_select(body.get('roi_first'), body.get('roi_last'),
+                                   body.get('t_first'), body.get('t_last'))
+                if out is not None:
+                    out.pop('tids')      # the page only needs the counts
                 self._send(json.dumps(out).encode(), 'application/json')
             elif url.path == '/roi/save':
-                t_first, t_last = v.roi_frames()
+                t_first, t_last = v.roi_frames(body.get('t_first'), body.get('t_last'))
                 path = save_roi(body['path'], body.get('roi_first'), body.get('roi_last'),
                                 t_first, t_last, v.projection_path, v.tracklets_path)
-                sel = v.roi_select(body.get('roi_first'), body.get('roi_last'))
-                self._send(json.dumps({'path': path, 'n_total': sel['n_total']}).encode(),
+                sel = v.roi_select(body.get('roi_first'), body.get('roi_last'), t_first, t_last)
+                self._send(json.dumps({'path': path,
+                                       'n_total': sel['n_total'] if sel else None}).encode(),
                            'application/json')
             else:
                 self.send_error(404)
@@ -162,7 +176,11 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         v = self.viewer
         try:
-            if url.path == '/':
+            if url.path == '/' and v.image is None:
+                self.send_response(302)
+                self.send_header('Location', '/roi')
+                self.end_headers()
+            elif url.path == '/':
                 self._page('index.html')
             elif url.path == '/roi':
                 self._page('roi.html')
@@ -173,10 +191,12 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == '/roi/meta':
                 t_first, t_last = v.roi_frames()
                 self._send(json.dumps({
-                    't_first': t_first, 't_last': t_last,
+                    't_first': t_first, 't_last': t_last, 'n_t': len(v.projection),
                     'height': v.projection.shape[1], 'width': v.projection.shape[2],
+                    'has_tracks': v.tracks is not None and v.masks is not None,
+                    'has_image': v.image is not None,
                     'build': BUILD,
-                    'default_out': os.path.join(
+                    'default_out': v.roi_out or os.path.join(
                         os.path.dirname(v.tracklets_path or '.'), 'roi_selection.json'),
                 }).encode(), 'application/json')
             elif url.path == '/meta':
@@ -190,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
                     'build': BUILD,
                     'has_peaks': v.peaks is not None,
                     'n_peaks': v.peaks.n_peaks if v.peaks else 0,
-                    'has_roi': v.projection is not None and v.tracks is not None,
+                    'has_roi': v.projection is not None,
                 }).encode(), 'application/json')
             elif url.path == '/frame':
                 png = v.frame(
@@ -232,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--image', required=True, help='4D (T, Z, Y, X) tif, or a czi')
+    p.add_argument('--image', help='4D (T, Z, Y, X) tif, or a czi; leave out to only draw an ROI')
     p.add_argument('--masks-dir', help='directory of z_stack_t{N}_seg_masks.npz files')
     p.add_argument('--tracklets', help='tracklets json from create_tracklets()')
     p.add_argument('--ms2', help='MS2 channel tif, (T, Z, Y, X) or already-projected (T, Y, X)')
@@ -244,7 +264,10 @@ def parse_args():
     p.add_argument('--channel', type=int, default=CELL_CHANNEL,
                    help='cell channel index, used only for multi-channel input')
     p.add_argument('--port', type=int, default=5000)
-    return p.parse_args()
+    args = p.parse_args()
+    if not (args.image or args.projection):
+        p.error('give --image, --projection, or both')
+    return args
 
 
 def main():
@@ -252,7 +275,8 @@ def main():
     Handler.viewer = Viewer(args.image, args.masks_dir, args.channel, args.tracklets, args.ms2,
                             args.projection, args.peaks)
     v = Handler.viewer
-    print(f'image {args.image}  ->  {v.n_t} timepoints, {v.n_z} z, {v.height}x{v.width}')
+    if v.image is not None:
+        print(f'image {args.image}  ->  {v.n_t} timepoints, {v.n_z} z, {v.height}x{v.width}')
     print(f'masks {args.masks_dir or "(none)"}')
     if v.tracks:
         print(f'tracks {args.tracklets}  ->  {len(v.tracks.tracks)} tracklets, '
@@ -265,11 +289,10 @@ def main():
         print(f'peaks {args.peaks}  ->  {v.peaks.n_peaks} emitters over '
               f'{len(v.peaks.by_t)} timepoints')
     if v.projection is not None:
-        t0, tn = v.roi_frames()
-        print(f'proj  {args.projection}  ->  {len(v.projection)} frames, '
-              f'boundaries drawn at t={t0} and t={tn}')
+        print(f'proj  {args.projection}  ->  {len(v.projection)} frames; '
+              f'boundaries drawn on frames chosen in the page')
     print(f'serving on http://localhost:{args.port}')
-    if v.projection is not None and v.tracks is not None:
+    if v.projection is not None:
         print(f'  boundary selection at http://localhost:{args.port}/roi')
     ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
 

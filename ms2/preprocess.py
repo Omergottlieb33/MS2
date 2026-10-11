@@ -6,6 +6,8 @@ writes, into <dir>:
     C1-<rec>.tif             MS2 channel (czi channel 0), T x Z x Y x X, uint8
     C2-<rec>.tif             cell channel (czi channel 1)
     C1-<rec>_bg_removed.tif  C1 after ImageJ's Process > Subtract Background
+    SUM_C2-<rec>.tif         C2 summed over Z (Image > Stacks > Z Project, Sum Slices), T x Y x X,
+                             float32 -- what ROI boundaries are drawn on
 
 The background subtraction is a port of ImageJ's BackgroundSubtracter, sliding-paraboloid
 path, with ImageJ's defaults for everything else (dark background, smoothing and corner
@@ -269,6 +271,28 @@ def write_imagej(path, stack):
     tifffile.imwrite(path, stack, imagej=True, metadata={'axes': 'TZYX'})
 
 
+def sum_projection(stack):
+    """(T, Z, Y, X) -> (T, Y, X) summed over Z, as float32 like ImageJ's Sum Slices."""
+    return stack.sum(axis=1, dtype=np.float32)
+
+
+def write_projection(path, stack):
+    tifffile.imwrite(path, sum_projection(stack), imagej=True, metadata={'axes': 'TYX'})
+
+
+def projection_path(out_dir, rec):
+    return os.path.join(out_dir, f'SUM_C2-{rec}.tif')
+
+
+def make_projection(czi_path, out_dir, cell_channel=CELL_CHANNEL):
+    """Only the cell-channel projection, so boundaries can be drawn before preprocessing runs."""
+    rec = os.path.splitext(os.path.basename(czi_path))[0]
+    os.makedirs(out_dir, exist_ok=True)
+    path = projection_path(out_dir, rec)
+    write_projection(path, load_czi(czi_path)[:, cell_channel])
+    return path
+
+
 def preprocess(czi_path, out_dir, radius=BG_RADIUS, ms2_channel=MS2_CHANNEL,
                cell_channel=CELL_CHANNEL, workers=None):
     rec = os.path.splitext(os.path.basename(czi_path))[0]
@@ -279,9 +303,11 @@ def preprocess(czi_path, out_dir, radius=BG_RADIUS, ms2_channel=MS2_CHANNEL,
         'ms2': os.path.join(out_dir, f'C1-{rec}.tif'),
         'cells': os.path.join(out_dir, f'C2-{rec}.tif'),
         'ms2_bg_removed': os.path.join(out_dir, f'C1-{rec}_bg_removed.tif'),
+        'projection': projection_path(out_dir, rec),
     }
     write_imagej(paths['ms2'], ms2)
     write_imagej(paths['cells'], cells)
+    write_projection(paths['projection'], cells)
     write_imagej(paths['ms2_bg_removed'], subtract_background_stack(ms2, radius, workers))
     return paths
 
