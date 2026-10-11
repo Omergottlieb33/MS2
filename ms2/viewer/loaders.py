@@ -12,10 +12,8 @@ import os
 import numpy as np
 import tifffile
 
+from ms2.preprocess import CELL_CHANNEL
 from ms2.tracking import evaluate_tracklets, extract_time_number, get_masks_paths
-
-# Matches ms2/segment.py:25 -- image_data[ti, 1, :, :, :]
-CELL_CHANNEL = 1
 
 
 def _as_tzyx(arr, channel):

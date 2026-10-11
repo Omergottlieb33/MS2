@@ -3,9 +3,9 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from cellpose import models
+from ms2.preprocess import CELL_CHANNEL
 from ms2.utils.image_utils import load_czi_images
 
-CELL_CHANNEL = 1
 # Smallest object kept, in voxels.  Cellpose's default of 15 lets through a cloud of
 # sub-cell specks: they were 20% of all labels, median 92 voxels against a median cell of
 # ~1100, and they sit at the top and bottom of the stack where the signal fades.  Nothing
@@ -58,9 +58,3 @@ def segment_3d_cells(input, output_dir,device):
         # Save compressed numpy array
         np.savez_compressed(save_path, masks=masks, flows_xyz_coord=flows[1], flows_circular_coord=flows[0])
 
-
-if __name__ == "__main__":
-    czi_file_path = "/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-14/New-15-ST14-V1.czi"
-    output_dir = '/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-14/New-15-ST14-V1'
-    device = 'cuda:3'
-    segment_3d_cells(czi_file_path, output_dir, device)

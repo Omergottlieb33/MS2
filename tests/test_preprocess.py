@@ -17,7 +17,7 @@ from fixtures import passed
 
 from ms2.preprocess import load_czi, subtract_background, subtract_background_stack
 
-REFERENCE = '/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-14-v2'
+REFERENCE = os.environ.get('MS2_TEST_DATA', '/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-14-v2')
 
 
 def test_flat_background_goes_to_one_and_spot_survives():

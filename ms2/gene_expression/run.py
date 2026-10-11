@@ -18,7 +18,7 @@ from tqdm import tqdm
 from scipy import ndimage
 
 import matplotlib
-matplotlib.use('module://matplotlib_inline.backend_inline')
+matplotlib.use('Agg')
 
 
 class MS2GeneExpressionProcessor:

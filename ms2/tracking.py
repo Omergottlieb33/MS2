@@ -23,17 +23,6 @@ def get_masks_paths(masks_dir:str) -> list:
         raise ValueError(f'No masks found in {masks_dir} with expected naming convention.')
     return masks_paths
 
-def get_num_frames(masks_dir: str) -> int:
-    """Return number of frames in recording, validating that mask time indices are contiguous 0..T-1."""
-    masks_paths = get_masks_paths(masks_dir)
-    times = [extract_time_number(os.path.basename(p)) for p in masks_paths]
-    t = len(masks_paths)
-    if times != list(range(t)):
-        missing = sorted(set(range(max(times) + 1)) - set(times))
-        raise ValueError(f'Mask time indices in {masks_dir} are not contiguous 0..{t - 1}. '
-                         f'Found {t} masks, max t={max(times)}, missing t={missing}')
-    return t
-
 def match_over_time_cell_iou(masks: list, min_iou: float = 0.0,
                              max_centroid_distance: float = 15,
                              use_2d_distance: bool = False) -> list:
@@ -167,11 +156,3 @@ def evaluate_tracklets(tracklets: dict) -> pd.DataFrame:
     print(f"  Resurrected tracks    : {(df['n_resurrections'] > 0).sum()}")
     print(f"  Border exits          : {df['border_exit'].sum()}")
     return df
-
-
-if __name__ == "__main__":
-    masks_dir = "/zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626/STAGE-13/New-01-ST13-V/New-01-v/masks/"
-    t = get_num_frames(masks_dir)  # Number of time points to process, set to None to process all available masks
-    tracklets = cell_tracking(masks_dir, t=t)
-    print(f"Processed {t} frames, obtained {len(tracklets)} tracklets.")
-    

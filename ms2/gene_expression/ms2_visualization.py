@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib
 from scipy import ndimage
 from matplotlib.colors import LinearSegmentedColormap
-matplotlib.use('module://matplotlib_inline.backend_inline')
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
