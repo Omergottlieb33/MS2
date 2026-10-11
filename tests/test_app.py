@@ -11,6 +11,7 @@ import time
 from fixtures import passed
 
 from ms2.app import jobs
+from ms2.app.server import App, clean_paths
 from ms2.pipeline import Recording
 
 
@@ -83,6 +84,20 @@ def test_pipeline_command():
                        '--bg-radius', '5', '--plots'], cmd
     assert jobs.czi_of('/o/r', {'cmd': cmd}) == '/d/r.czi'
     passed('pipeline command and the CZI it names')
+
+
+def test_pasted_paths():
+    q = clean_paths({'czi': ' "/data/a b.czi" ', 'out': "'/out'", 'device': '"cuda:0"'})
+    assert q == {'czi': '/data/a b.czi', 'out': '/out', 'device': '"cuda:0"'}, q
+    app = App(['/data'], '/data')
+    app.check('/data/a b.czi')
+    for bad, err in (('data/a.czi', ValueError), ('/etc/passwd', PermissionError)):
+        try:
+            app.check(bad)
+        except err:
+            continue
+        raise AssertionError(f'{bad} accepted')
+    passed('quotes around pasted paths are dropped; relative and outside paths refused')
 
 
 def main():

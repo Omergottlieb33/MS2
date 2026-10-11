@@ -40,9 +40,20 @@ class App:
 
     def check(self, *paths):
         for p in paths:
+            if p and not os.path.isabs(p):
+                raise ValueError(f'{p} is not a full path; it should start with /')
             if not p or not self.allowed(p):
                 raise PermissionError(f'{p or "(empty path)"} is outside the data folders '
                                       f'{", ".join(self.data_roots)}')
+
+
+PATH_FIELDS = ('czi', 'out', 'dir', 'path', 'root')
+
+
+def clean_paths(fields):
+    """Paths as typed or pasted: Windows' "Copy as path" wraps them in quotes."""
+    return {k: v.strip().strip('"\'').strip() if k in PATH_FIELDS and isinstance(v, str) else v
+            for k, v in fields.items()}
 
 
 def gpus():
@@ -123,7 +134,7 @@ class Handler(viewer.Handler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        q = {k: v[0] for k, v in parse_qs(url.query).items()}
+        q = clean_paths({k: v[0] for k, v in parse_qs(url.query).items()})
         a = self.app
         try:
             if url.path == '/':
@@ -170,7 +181,7 @@ class Handler(viewer.Handler):
             return super().do_POST()            # /roi/preview, /roi/save
         a = self.app
         try:
-            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}')
+            body = clean_paths(json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}'))
             if url.path == '/api/roi/open':
                 # Draw the ROI before anything has run: only the projection is needed.
                 a.check(body['czi'], body['out'])

@@ -218,7 +218,9 @@ $('browseBtn').onclick = () => {
 $('czi').onchange = roiStatus;
 $('out').onchange = roiStatus;
 
-const form = () => ({czi: $('czi').value.trim(), out: $('out').value.trim(), device: $('device').value,
+// Pasted paths often come quoted (Windows' "Copy as path"); the quotes are not part of the name.
+const unquote = s => s.trim().replace(/^["']+|["']+$/g, '').trim();
+const form = () => ({czi: unquote($('czi').value), out: unquote($('out').value), device: $('device').value,
   prominence: +$('prominence').value, bg_radius: +$('bgRadius').value, plots: $('plots').checked});
 
 async function roiStatus() {
