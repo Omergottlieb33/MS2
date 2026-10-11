@@ -1,0 +1,407 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS2 pipeline</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --panel: #191919; --line: #2c2c2c; --text: #ddd;
+          --dim: #888; --accent: #6cf; --ok: #4caf50; --warn: #e0a030; --bad: #e05050; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px system-ui, -apple-system, sans-serif; }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+               padding: 6px 2px; margin-right: 16px; font-size: 14px; color: var(--dim); }
+  nav button.on { color: var(--text); border-color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  section[hidden] { display: none; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+          padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  .card h2 .n { display: inline-block; width: 20px; height: 20px; border-radius: 50%;
+                background: var(--accent); color: #000; text-align: center; line-height: 20px;
+                font-size: 12px; margin-right: 6px; }
+  .hint { color: var(--dim); font-size: 12px; margin: 4px 0 0; }
+  label { display: block; margin: 8px 0 4px; color: var(--dim); font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=text], input[type=number], select {
+    padding: 6px 8px; background: #111; color: var(--text); border: 1px solid #333;
+    border-radius: 4px; font: 13px ui-monospace, monospace; }
+  input[type=text] { flex: 1; min-width: 200px; }
+  input[type=number] { width: 90px; }
+  button { padding: 6px 12px; background: #2c2c2c; color: var(--text); border: 1px solid #3c3c3c;
+           border-radius: 4px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #383838; }
+  button.primary { background: #14435e; border-color: #1d5f85; color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  .browser { margin-top: 8px; border: 1px solid #333; border-radius: 4px; max-height: 300px;
+             overflow: auto; background: #111; }
+  .browser div { padding: 4px 10px; cursor: pointer; font: 13px ui-monospace, monospace; }
+  .browser div:hover { background: #222; }
+  .browser .cur { color: var(--dim); cursor: default; position: sticky; top: 0; background: #161616; }
+  .msg { margin-top: 8px; min-height: 18px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr.sel td { background: #1d2a33; }
+  tbody tr { cursor: pointer; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #2c2c2c; white-space: nowrap; }
+  .badge.running { background: #14435e; } .badge.done { background: #1e4620; }
+  .badge.failed { background: #5a1e1e; } .badge.stopped, .badge.paused { background: #4a3a10; }
+  .steps { display: flex; gap: 3px; }
+  .steps span { width: 14px; height: 8px; border-radius: 2px; background: #333; }
+  .steps span.d { background: var(--ok); } .steps span.r { background: var(--accent); }
+  pre { background: #0c0c0c; border: 1px solid #262626; border-radius: 4px; padding: 10px;
+        max-height: 320px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin: 8px 0 0; }
+  .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
+  .files a { color: var(--accent); font-size: 12px; word-break: break-all; text-decoration: none; }
+  .files img { width: 100%; display: block; background: #fff; border-radius: 3px; margin-bottom: 4px; }
+  details summary { cursor: pointer; color: var(--dim); margin-top: 10px; }
+  .busy::after { content: ' …'; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>MS2 pipeline</h1>
+  <nav>
+    <button data-tab="new" class="on">New analysis</button>
+    <button data-tab="runs">Runs &amp; results</button>
+    <button data-tab="compare">Compare recordings</button>
+  </nav>
+</header>
+
+<main>
+<!-- ───────────── New analysis ───────────── -->
+<section id="new">
+  <div class="card">
+    <h2><span class="n">1</span>Recording</h2>
+    <label>CZI file</label>
+    <div class="row"><input type="text" id="czi" spellcheck="false" placeholder="/path/to/embryo.czi">
+      <button id="browseBtn">Browse…</button></div>
+    <div class="browser" id="browser" hidden></div>
+    <label>Results folder (the recording gets its own sub-folder here)</label>
+    <div class="row"><input type="text" id="out" spellcheck="false"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">2</span>Region of interest <span class="hint">(optional)</span></h2>
+    <div class="row"><button id="roiBtn">Draw ROI</button><span id="roiStatus"></span></div>
+    <p class="hint">Pick the first and last frames of the stage you want, and outline the region on
+      each. A cell is analysed if it is inside either outline. Without an ROI, every cell tracked
+      for most of the recording is analysed.</p>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">3</span>Run</h2>
+    <label>Processor</label>
+    <select id="device"></select>
+    <details>
+      <summary>Advanced settings</summary>
+      <div class="row">
+        <div><label>MS2 spot prominence</label><input type="number" id="prominence" value="18" step="1"></div>
+        <div><label>Background radius (px)</label><input type="number" id="bgRadius" value="5" step="1"></div>
+        <div><label>&nbsp;</label><label style="color:var(--text)"><input type="checkbox" id="plots"> per-cell figures (slow)</label></div>
+      </div>
+    </details>
+    <div class="row" style="margin-top:12px"><button class="primary" id="runBtn">Start analysis</button></div>
+    <div class="msg" id="runMsg"></div>
+  </div>
+</section>
+
+<!-- ───────────── Runs ───────────── -->
+<section id="runs" hidden>
+  <div class="card">
+    <div class="row"><label style="margin:0">Results folder</label>
+      <input type="text" id="runsRoot" spellcheck="false"><button id="runsRefresh">Refresh</button></div>
+    <table>
+      <thead><tr><th>Recording</th><th>Status</th><th>Steps</th><th>ROI frames</th><th>Started</th></tr></thead>
+      <tbody id="runsBody"></tbody>
+    </table>
+    <div class="msg" id="runsMsg"></div>
+  </div>
+  <div class="card" id="detail" hidden>
+    <h2 id="dTitle"></h2>
+    <div class="row">
+      <button id="dView">Open viewer</button>
+      <button id="dRoi">Edit ROI</button>
+      <button id="dDash">Tracking dashboard</button>
+      <button id="dResume">Resume</button>
+      <button id="dStop">Stop</button>
+      <span id="dMsg"></span>
+    </div>
+    <p class="hint" id="dSteps"></p>
+    <details id="dLogWrap" open><summary>Log</summary><pre id="dLog"></pre></details>
+    <div class="files" id="dFiles"></div>
+  </div>
+</section>
+
+<!-- ───────────── Compare ───────────── -->
+<section id="compare" hidden>
+  <div class="card">
+    <h2>Recordings to compare</h2>
+    <p class="hint">From the results folder on the Runs page. Frames are the stage window
+      (both included); they start at each recording's ROI frames.</p>
+    <table>
+      <thead><tr><th></th><th>Recording</th><th>Start frame</th><th>End frame</th><th>Status</th></tr></thead>
+      <tbody id="cmpBody"></tbody>
+    </table>
+    <p class="hint">Results go to <code id="cmpOut"></code>/_comparison.</p>
+    <label>Activity levels</label>
+    <select id="ladder"><option value="joint">one scale for all recordings</option>
+      <option value="per_recording">a scale per recording</option></select>
+    <div class="row" style="margin-top:12px"><button class="primary" id="cmpBtn">Start comparison</button>
+      <span id="cmpMsg"></span></div>
+  </div>
+  <div class="card" id="cmpStatus" hidden>
+    <h2>Comparison <span class="badge" id="cmpState"></span></h2>
+    <details open><summary>Log</summary><pre id="cmpLog"></pre></details>
+    <div class="files" id="cmpFiles"></div>
+  </div>
+</section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const STEPS = ['preprocess', 'segment', 'track', 'unify', 'gene_expression', 'activity'];
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+const recName = czi => czi.split('/').pop().replace(/\.czi$/i, '');
+const join = (a, b) => a.replace(/\/+$/, '') + '/' + b;
+let config = {}, runs = [], selected = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json().catch(() => ({error: r.statusText}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+const say = (el, html, cls = '') => { $(el).innerHTML = `<span class="${cls}">${html}</span>`; };
+
+// ── tabs ──
+function tab(name) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('main section').forEach(s => s.hidden = s.id !== name);
+  if (name === 'runs') loadRuns();
+  if (name === 'compare') loadCompare();
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => tab(b.dataset.tab));
+
+// ── new analysis ──
+async function browse(path) {
+  const box = $('browser');
+  box.hidden = false;
+  try {
+    const d = await api('/api/ls?path=' + encodeURIComponent(path));
+    const up = config.data_roots.includes(d.path) ? '' : `<div data-p="${esc(d.parent)}" data-d="1">⬆ ..</div>`;
+    box.innerHTML = `<div class="cur">${esc(d.path)}</div>` + up + d.entries.map(e =>
+      `<div data-p="${esc(e.path)}" data-d="${e.dir ? 1 : ''}">${e.dir ? '📁' : '🎞'} ${esc(e.name)}</div>`).join('') +
+      (d.entries.length ? '' : '<div class="cur">no folders or .czi files here</div>');
+  } catch (e) { box.innerHTML = `<div class="cur bad">${esc(e.message)}</div>`; }
+}
+$('browser').onclick = e => {
+  const t = e.target.closest('[data-p]');
+  if (!t) return;
+  if (t.dataset.d) return browse(t.dataset.p);
+  $('czi').value = t.dataset.p;
+  $('browser').hidden = true;
+  roiStatus();
+};
+$('browseBtn').onclick = () => {
+  const cur = $('czi').value;
+  browse(cur ? cur.replace(/\/[^/]*\.czi$/i, '') || config.data_roots[0] : config.data_roots[0]);
+};
+$('czi').onchange = roiStatus;
+$('out').onchange = roiStatus;
+
+const form = () => ({czi: $('czi').value.trim(), out: $('out').value.trim(), device: $('device').value,
+  prominence: +$('prominence').value, bg_radius: +$('bgRadius').value, plots: $('plots').checked});
+
+async function roiStatus() {
+  const f = form();
+  if (!f.czi.toLowerCase().endsWith('.czi') || !f.out) { $('roiStatus').textContent = ''; return; }
+  try {
+    const d = await api('/api/run?dir=' + encodeURIComponent(join(f.out, recName(f.czi))));
+    if (d.roi) say('roiStatus', `✓ ROI saved, frames ${d.roi.t_first}–${d.roi.t_last}`, 'ok');
+    else $('roiStatus').innerHTML = '<span class="hint">no ROI yet</span>';
+    if (d.state === 'running') say('runMsg', `${esc(d.name)} is already running — see Runs`, 'warn');
+  } catch (e) { $('roiStatus').textContent = ''; }
+}
+
+$('roiBtn').onclick = async () => {
+  const f = form();
+  if (!f.czi || !f.out) return say('runMsg', 'choose a CZI file and a results folder first', 'warn');
+  $('roiBtn').disabled = true;
+  say('roiStatus', 'preparing the projection (a minute for a large file)', 'busy');
+  try { location.href = (await api('/api/roi/open', f)).url; }
+  catch (e) { say('roiStatus', esc(e.message), 'bad'); $('roiBtn').disabled = false; }
+};
+
+$('runBtn').onclick = async () => {
+  const f = form();
+  if (!f.czi || !f.out) return say('runMsg', 'choose a CZI file and a results folder first', 'warn');
+  $('runBtn').disabled = true;
+  try {
+    const d = await api('/api/run/start', f);
+    $('runsRoot').value = f.out;
+    selected = d.dir;
+    tab('runs');
+    say('runMsg', 'started', 'ok');
+  } catch (e) { say('runMsg', esc(e.message), 'bad'); }
+  $('runBtn').disabled = false;
+};
+
+// ── runs ──
+const stepDots = (done, state) => '<span class="steps">' + STEPS.map(s => {
+  const d = done.includes(s), r = !d && state === 'running' && STEPS.find(x => !done.includes(x)) === s;
+  return `<span class="${d ? 'd' : r ? 'r' : ''}" title="${s}"></span>`;
+}).join('') + '</span>';
+// Runs started outside the app have no job: their markers say how far they got.
+const runState = r => r.state !== 'none' || !r.steps_done.length ? r.state
+  : r.steps_done.length === STEPS.length ? 'done' : 'paused';
+const badge = s => `<span class="badge ${s}">${{none: 'not started', running: 'running', done: 'finished',
+  failed: 'failed', stopped: 'stopped', paused: 'paused'}[s] || s}</span>`;
+const when = iso => iso ? new Date(iso).toLocaleString() : '';
+
+async function loadRuns() {
+  const root = $('runsRoot').value.trim();
+  if (!root) return;
+  try {
+    const found = await api('/api/runs?root=' + encodeURIComponent(root));
+    if (root !== $('runsRoot').value.trim()) return;     // a reply for a folder no longer shown
+    runs = found;
+    $('runsBody').innerHTML = runs.map(r => `<tr data-d="${esc(r.dir)}" class="${r.dir === selected ? 'sel' : ''}">
+      <td>${esc(r.name)}</td><td>${badge(runState(r))}</td><td>${stepDots(r.steps_done, r.state)}</td>
+      <td>${r.roi ? r.roi.t_first + '–' + r.roi.t_last : '—'}</td><td>${when(r.started)}</td></tr>`).join('');
+    $('runsMsg').innerHTML = runs.length ? '' : '<span class="hint">no recordings in this folder yet</span>';
+    if (selected) loadDetail();
+  } catch (e) { say('runsMsg', esc(e.message), 'bad'); }
+}
+$('runsRefresh').onclick = loadRuns;
+$('runsRoot').onchange = loadRuns;
+$('runsBody').onclick = e => {
+  const tr = e.target.closest('tr');
+  if (!tr) return;
+  selected = tr.dataset.d;
+  document.querySelectorAll('#runsBody tr').forEach(r => r.classList.toggle('sel', r === tr));
+  loadDetail();
+};
+
+const fileTile = f => /\.(png|gif|jpe?g|svg)$/i.test(f.name)
+  ? `<a href="/file?path=${encodeURIComponent(f.path)}" target="_blank"><img loading="lazy" src="/file?path=${encodeURIComponent(f.path)}">${esc(f.name)}</a>`
+  : `<a href="/file?path=${encodeURIComponent(f.path)}" target="_blank" ${/\.html$/.test(f.name) ? '' : 'download'}>⬇ ${esc(f.name)}</a>`;
+
+async function loadDetail() {
+  try {
+    const d = await api('/api/run?dir=' + encodeURIComponent(selected));
+    $('detail').hidden = false;
+    $('dTitle').innerHTML = `${esc(d.name)} &nbsp;${badge(runState(d))}`;
+    $('dSteps').innerHTML = STEPS.map(s => d.steps_done.includes(s) ? `<span class="ok">✓ ${s}</span>` : s).join(' &nbsp;→&nbsp; ');
+    const atEnd = $('dLog').scrollTop + $('dLog').clientHeight >= $('dLog').scrollHeight - 5;
+    $('dLog').textContent = d.log || '(no log yet)';
+    if (atEnd) $('dLog').scrollTop = $('dLog').scrollHeight;
+    const unified = d.steps_done.includes('unify');
+    $('dStop').hidden = d.state !== 'running';
+    $('dResume').hidden = d.state === 'running' || d.steps_done.length === STEPS.length || !d.czi;
+    $('dView').disabled = !unified;
+    $('dDash').disabled = !unified || d.dashboard === 'running';
+    $('dDash').textContent = d.dashboard === 'running' ? 'Building dashboard…' : 'Tracking dashboard';
+    $('dRoi').disabled = d.state === 'running' || !d.czi;
+    $('dFiles').innerHTML = d.results.map(fileTile).join('');
+  } catch (e) { say('dMsg', esc(e.message), 'bad'); }
+}
+
+async function action(path, body, msg) {
+  try { const d = await api(path, body); if (msg) say('dMsg', msg, 'ok'); return d; }
+  catch (e) { say('dMsg', esc(e.message), 'bad'); }
+}
+$('dView').onclick = async () => { const d = await action('/api/view', {dir: selected}); if (d) location.href = d.url; };
+$('dRoi').onclick = async () => {
+  say('dMsg', 'preparing the projection', 'busy');
+  const d = await action('/api/roi/edit', {dir: selected}); if (d) location.href = d.url;
+};
+$('dStop').onclick = async () => { if (confirm('Stop this run? Finished steps are kept.')) { await action('/api/run/stop', {dir: selected}, 'stopped'); loadRuns(); } };
+$('dResume').onclick = async () => {
+  const r = runs.find(x => x.dir === selected);
+  const out = selected.replace(/\/[^/]+$/, '');
+  await action('/api/run/start', {...form(), czi: r.czi, out}, 'resumed — finished steps are skipped');
+  loadRuns();
+};
+$('dDash').onclick = async () => { await action('/api/dashboard', {dir: selected}, 'building the dashboard; it appears below when done'); loadDetail(); };
+
+// ── compare ──
+let cmpRuns = [];
+async function loadCompare() {
+  // The comparison lives in the recordings' own results folder: pointed anywhere else,
+  // the pipeline would process every recording again from the start.
+  const root = $('runsRoot').value.trim();
+  $('cmpOut').textContent = root;
+  try {
+    cmpRuns = (await api('/api/runs?root=' + encodeURIComponent(root))).filter(r => r.czi);
+    $('cmpBody').innerHTML = cmpRuns.map((r, i) => {
+      const ready = r.steps_done.includes('gene_expression');
+      return `<tr><td><input type="checkbox" data-i="${i}" ${ready ? 'checked' : ''}></td><td>${esc(r.name)}</td>
+        <td><input type="number" id="ts${i}" min="0" value="${r.roi ? r.roi.t_first : 0}"></td>
+        <td><input type="number" id="te${i}" min="0" value="${r.roi ? r.roi.t_last : ''}" placeholder="end"></td>
+        <td>${ready ? '<span class="ok">ready</span>' : '<span class="hint">runs first</span>'}</td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="hint">no recordings in the results folder on the Runs page</td></tr>';
+  } catch (e) { say('cmpMsg', esc(e.message), 'bad'); }
+  loadCompareStatus();
+}
+$('cmpBtn').onclick = async () => {
+  const recordings = {};
+  for (const cb of document.querySelectorAll('#cmpBody input[type=checkbox]:checked')) {
+    const i = +cb.dataset.i, r = cmpRuns[i];
+    const t_start = +$('ts' + i).value, te = $('te' + i).value;
+    if (te === '') return say('cmpMsg', `give the end frame for ${esc(r.name)}`, 'warn');
+    recordings[r.name] = {czi: r.czi, t_start, t_end: +te, ...(r.roi ? {roi: join(r.dir, 'roi_selection.json')} : {})};
+  }
+  if (Object.keys(recordings).length < 2) return say('cmpMsg', 'pick at least two recordings', 'warn');
+  try {
+    await api('/api/compare/start', {out: $('runsRoot').value.trim(), recordings,
+                                      device: $('device').value, ladder: $('ladder').value});
+    say('cmpMsg', 'started', 'ok');
+    loadCompareStatus();
+  } catch (e) { say('cmpMsg', esc(e.message), 'bad'); }
+};
+async function loadCompareStatus() {
+  const out = $('runsRoot').value.trim();
+  if (!out) return;
+  try {
+    const d = await api('/api/compare?out=' + encodeURIComponent(out));
+    $('cmpStatus').hidden = d.state === 'none';
+    $('cmpState').outerHTML = badge(d.state).replace('<span', '<span id="cmpState"');
+    $('cmpLog').textContent = d.log;
+    $('cmpFiles').innerHTML = d.files.filter(f => !/\.(json|log)$/.test(f.name)).map(fileTile).join('');
+  } catch (e) { /* folder not created yet */ }
+}
+
+// Running jobs update themselves; nothing is polled while the page is in the background.
+setInterval(() => {
+  if (document.hidden) return;
+  if (!$('runs').hidden) loadRuns();
+  if (!$('compare').hidden) loadCompareStatus();
+}, 5000);
+
+(async () => {
+  config = await api('/api/config');
+  $('device').innerHTML = config.gpus.map(g => `<option value="${esc(g.id)}">${esc(g.label)}</option>`).join('');
+  $('out').value = config.out_root;
+  $('runsRoot').value = config.out_root;
+  const f = config.form || {};
+  if (f.czi) {                       // back from drawing the ROI: restore what was filled in
+    $('czi').value = f.czi; $('out').value = f.out;
+    if (f.device) $('device').value = f.device;
+    if (f.prominence) $('prominence').value = f.prominence;
+    if (f.bg_radius) $('bgRadius').value = f.bg_radius;
+    $('plots').checked = !!f.plots;
+  }
+  roiStatus();
+})();
+</script>
+</body>
+</html>

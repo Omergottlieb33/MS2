@@ -40,6 +40,7 @@ class Viewer:
         self.projection = load_projection(projection_path) if projection_path else None
         self.projection_path = projection_path
         self.roi_out = None      # where /roi suggests saving; next to the tracklets if unset
+        self.next_url = None     # where /roi offers to go after saving (the app's home)
         self.tracklets_path = tracklets_path
         if self.image is not None:
             self.n_t, self.n_z, self.height, self.width = self.image.shape
@@ -176,11 +177,11 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         v = self.viewer
         try:
-            if url.path == '/' and v.image is None:
+            if url.path in ('/', '/view') and v.image is None:
                 self.send_response(302)
                 self.send_header('Location', '/roi')
                 self.end_headers()
-            elif url.path == '/':
+            elif url.path in ('/', '/view'):
                 self._page('index.html')
             elif url.path == '/roi':
                 self._page('roi.html')
@@ -195,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                     'height': v.projection.shape[1], 'width': v.projection.shape[2],
                     'has_tracks': v.tracks is not None and v.masks is not None,
                     'has_image': v.image is not None,
+                    'next_url': v.next_url,
                     'build': BUILD,
                     'default_out': v.roi_out or os.path.join(
                         os.path.dirname(v.tracklets_path or '.'), 'roi_selection.json'),

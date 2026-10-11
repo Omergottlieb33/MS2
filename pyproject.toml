@@ -19,4 +19,5 @@ include = ["ms2*"]
 
 [tool.setuptools.package-data]
 "ms2.viewer" = ["static/*"]
+"ms2.app" = ["static/*"]
 ms2 = ["tracking_dashboard_static/*"]

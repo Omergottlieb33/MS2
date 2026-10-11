@@ -1,5 +1,6 @@
 """ms2 <command> [options]
 
+    app        browser app: CZI, ROI, run, results          (ms2.app.server)
     run        one recording, CZI to per-cell activity      (ms2.pipeline)
     compare    several recordings, then their comparison    (ms2.pipeline_compare)
     view       masks / tracks / ROI viewer in the browser   (ms2.viewer.app)
@@ -11,6 +12,7 @@ import importlib
 import sys
 
 COMMANDS = {
+    'app': 'ms2.app.server',
     'run': 'ms2.pipeline',
     'compare': 'ms2.pipeline_compare',
     'view': 'ms2.viewer.app',
