@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from cellpose import models
-from src.utils.image_utils import load_czi_images
+from ms2.utils.image_utils import load_czi_images
 
 CELL_CHANNEL = 1
 # Smallest object kept, in voxels.  Cellpose's default of 15 lets through a cloud of

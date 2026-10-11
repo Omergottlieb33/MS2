@@ -1,6 +1,6 @@
 """Repair the tracklets, and the masks where the masks are what is broken.
 
-src/track_diagnostics.py measures why tracks fragment; this acts on the two causes it
+ms2/track_diagnostics.py measures why tracks fragment; this acts on the two causes it
 identifies.  Of the 760 mid-sequence deaths of full-size tracks in New-02-v3-ST11-12, 561
 end with the cell's successor label already owned by another track, and the successor's
 volume says those are two different accidents needing opposite repairs:
@@ -19,7 +19,7 @@ output tracklets index into that.  The originals are never touched.  Nothing is 
 silently: every split, absorption and stitch is recorded in the log with the numbers that
 justified it.
 
-    python -m src.track_unify --masks-dir .../masks --tracklets .../tracklets.json \
+    python -m ms2.track_unify --masks-dir .../masks --tracklets .../tracklets.json \
         --out-dir .../unified
 """
 import argparse
@@ -29,14 +29,14 @@ import os
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, find_objects
-from src.track import optional_assignment
+from ms2.track import optional_assignment
 from skimage.segmentation import watershed
 from tqdm import tqdm
 
-from cell_tracking import evaluate_tracklets
-from src.track_diagnostics import (cell_properties, load_masks, load_tracklets,
+from ms2.tracking import evaluate_tracklets
+from ms2.track_diagnostics import (cell_properties, load_masks, load_tracklets,
                                    mask_paths_by_t, median_volume, track_table)
-from src.viewer.loaders import GAP
+from ms2.viewer.loaders import GAP
 
 # A label at least this many median cells is a clump of more than one nucleus.
 CLUMP_FACTOR = 1.6
@@ -108,7 +108,7 @@ def _claim(repaired, births, tid, label, i, log, t):
     """Give a track a label at one frame, or refuse when another track holds it.
 
     Every assignment goes through here.  Two tracks naming one label breaks the assumption
-    ms2_gene_expression.py and TrackletStore both make, and the branches below each had
+    ms2/gene_expression/run.py and TrackletStore both make, and the branches below each had
     their own way of reaching that state.
 
     A holder that was *born* at this frame is not a competitor but the same cell under a
@@ -506,9 +506,9 @@ def flag_swaps(repaired, props, ts, log):
 def check(repaired, out_masks_dir, ts):
     """Refuse to ship a result that breaks the schema the consumers rely on.
 
-    ms2_gene_expression.py indexes a tracklet by frame and looks that label up in that
+    ms2/gene_expression/run.py indexes a tracklet by frame and looks that label up in that
     frame's mask (`:174`, `:232`), and TrackletStore assumes one track owns a label
-    (src/viewer/loaders.py:146).  Checked here rather than discovered downstream.
+    (ms2/viewer/loaders.py:146).  Checked here rather than discovered downstream.
     """
     lengths = {len(v) for v in repaired.values()}
     assert lengths == {len(ts)}, f'tracks of differing length: {lengths}'

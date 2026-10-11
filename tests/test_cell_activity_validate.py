@@ -1,4 +1,4 @@
-"""src/cell_activity_validate.py: a good config is clean, and each corruption is caught."""
+"""ms2/cell_activity_validate.py: a good config is clean, and each corruption is caught."""
 import copy
 import os
 import shutil
@@ -8,7 +8,7 @@ import numpy as np
 
 from fixtures import passed, report_checks, write_recording
 
-from src.cell_activity_validate import raise_on_errors, validate_config
+from ms2.cell_activity_validate import raise_on_errors, validate_config
 
 def make_signals(n_cells=12, n_frames=6, gap_every=0):
     """n_cells x n_frames of plausible ellipse sums.  Cell 2 is never tracked over the first

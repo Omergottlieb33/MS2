@@ -1,4 +1,4 @@
-"""src/preprocess.py: the background subtraction reproduces ImageJ's Subtract Background
+"""ms2/preprocess.py: the background subtraction reproduces ImageJ's Subtract Background
 (sliding paraboloid, radius 5) pixel for pixel.
 
     python tests/test_preprocess.py                 # quick checks
@@ -15,7 +15,7 @@ import tifffile
 
 from fixtures import passed
 
-from src.preprocess import load_czi, subtract_background, subtract_background_stack
+from ms2.preprocess import load_czi, subtract_background, subtract_background_stack
 
 REFERENCE = '/zjbd/zd1/shechtmanlab/omer/MS2/data/020626/STAGE-13/New-14-v2'
 

@@ -8,7 +8,7 @@ from matplotlib.colors import Normalize, LinearSegmentedColormap
 
 from cellpose.plot import mask_overlay
 from cellpose.utils import masks_to_outlines
-from src.utils.image_utils import enhance_cell_image_contrast
+from ms2.utils.image_utils import enhance_cell_image_contrast
 
 
 def draw_cell_outline_on_image(mask, image):

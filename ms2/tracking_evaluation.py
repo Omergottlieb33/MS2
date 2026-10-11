@@ -1,7 +1,7 @@
 """Reference-based, ground-truth-free tracking diagnostics.
 
 All scores are consistency proxies. Reference masks define a shared evaluation
-population, not biological ground truth. Run through src.tracking_dashboard.
+population, not biological ground truth. Run through ms2.tracking_dashboard.
 """
 import hashlib
 import json
@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 from scipy.ndimage import center_of_mass, find_objects
 
-from src.track import (create_tracklets, optional_assignment,
+from ms2.track import (create_tracklets, optional_assignment,
                        match_cells_by_iou_hungarian_local_optimized as match)
-from src.track_diagnostics import load_masks, mask_paths_by_t
+from ms2.track_diagnostics import load_masks, mask_paths_by_t
 
 DEFAULTS = dict(min_volume=600, xy_margin=5, z_margin=1,
                 voxel_size_um=[0.5, 0.198, 0.198],

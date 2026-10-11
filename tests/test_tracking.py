@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 import numpy as np
-from cell_tracking import cell_tracking, evaluate_tracklets
-from src.track import create_tracklets, get_border_labels, optional_assignment
-from src.track import match_cells_by_iou_hungarian_local_optimized as match
-from src.track_unify import stitch_gaps
+from ms2.tracking import cell_tracking, evaluate_tracklets
+from ms2.track import create_tracklets, get_border_labels, optional_assignment
+from ms2.track import match_cells_by_iou_hungarian_local_optimized as match
+from ms2.track_unify import stitch_gaps
 
 class TrackingTests(unittest.TestCase):
     def test_overlap_and_scaled_z(self):

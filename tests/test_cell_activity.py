@@ -1,4 +1,4 @@
-"""src/cell_activity.py: the onset measured against the cell's own life, the number of
+"""ms2/cell_activity.py: the onset measured against the cell's own life, the number of
 activity levels (three by default, or the data's by silhouette), and a blip threshold that may
 differ per recording."""
 import numpy as np
@@ -6,7 +6,7 @@ import pandas as pd
 
 from fixtures import passed
 
-from src.cell_activity import (NOISE_FLOOR, activity_descriptors, activity_levels,
+from ms2.cell_activity import (NOISE_FLOOR, activity_descriptors, activity_levels,
                                classify_cells)
 
 

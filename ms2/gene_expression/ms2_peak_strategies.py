@@ -5,13 +5,13 @@ from tqdm import tqdm
 from scipy.ndimage import binary_dilation
 from findmaxima2d import find_maxima, find_local_maxima
 
-from src.utils.cell_utils import (
+from ms2.utils.cell_utils import (
     get_3d_bounding_box_corners,
     estimate_emitter_2d_gaussian_with_fixed_offset,
     estimate_background_offset_annulus,
     filter_ransac_poly, calculate_center_of_mass_3d
 )
-from src.utils.emitter_utils import circular_z_score, get_indices_in_mask
+from ms2.utils.emitter_utils import circular_z_score, get_indices_in_mask
 
 PEAK_MATCH_COLUMNS = ['timepoint', 'cell_label',
                       'x_peak', 'y_peak', 'slice_score']

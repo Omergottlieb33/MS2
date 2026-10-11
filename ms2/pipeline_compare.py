@@ -1,6 +1,6 @@
 """Several recordings from their CZIs to the stage comparison.
 
-    python -m src.pipeline_compare experiment.json [--device cuda:0] [--workers N]
+    python -m ms2.pipeline_compare experiment.json [--device cuda:0] [--workers N]
 
 experiment.json names the results root and, per recording, its czi and the stage window
 (0-based frames, both included); roi, noise_floor, noise_peak and min_presence are optional:
@@ -12,23 +12,23 @@ experiment.json names the results root and, per recording, its czi and the stage
         "New-03-v1-ST11-12": {"czi": "/zjbd/.../New-03-v1-ST11-12.czi",
                               "t_start": 0, "t_end": 75}}}
 
-Every recording goes through src/pipeline.py into <out>/<czi name>/ (finished steps are
+Every recording goes through ms2/pipeline.py into <out>/<czi name>/ (finished steps are
 skipped, so recordings already processed cost nothing).  Then <out>/_comparison/ gets the
-generated recordings.json and everything src/cell_activity_compare.py writes: cells.csv,
+generated recordings.json and everything ms2/cell_activity_compare.py writes: cells.csv,
 timecourse.csv, metrics.csv, stats.csv and the figures.
 """
 import argparse
 import json
 import os
 
-from src import pipeline
-from src.cell_activity_compare import compare_recordings
+from ms2 import pipeline
+from ms2.cell_activity_compare import compare_recordings
 
 OPTIONAL_KEYS = ('noise_floor', 'noise_peak', 'min_presence')
 
 
 def activity_config(experiment):
-    """The {name: recording dict} src/cell_activity_compare.py reads, pointing into the
+    """The {name: recording dict} ms2/cell_activity_compare.py reads, pointing into the
     pipeline's layout."""
     config = {}
     for name, entry in experiment['recordings'].items():

@@ -1,6 +1,6 @@
 """One recording from its CZI to the per-cell activity table.
 
-    python -m src.pipeline <rec>.czi --out <root> [--device cuda:0] [--roi roi.json]
+    python -m ms2.pipeline <rec>.czi --out <root> [--device cuda:0] [--roi roi.json]
                            [--stop-after STEP]
 
 Steps, each writing into <root>/<rec>/ and marking itself done there, so a rerun resumes
@@ -8,13 +8,13 @@ where the last one stopped:
 
     preprocess        preprocess/C1-<rec>.tif, C2-<rec>.tif, C1-<rec>_bg_removed.tif
     segment           masks/z_stack_t{t}_seg_masks.npz               (Cellpose, GPU)
-    track             tracklets.json                                   (cell_tracking.py)
+    track             tracklets.json                                   (ms2/tracking.py)
     unify             unified/masks_split/, unified/tracklets_unified.json
     gene_expression   gene_expression/gene_expression_results.csv  (per-cell figures with --plots)
     activity          activity/clusters.csv and figures, over the whole recording
 
 To pick cells by ROI: run with --stop-after unify, draw the boundaries in the viewer
-(python -m src.viewer.app ... on unified/), then rerun with --roi <roi_selection.json>.
+(python -m ms2.viewer.app ... on unified/), then rerun with --roi <roi_selection.json>.
 Without --roi, gene expression keeps cells with fewer than 20 missing frames.
 """
 import argparse
@@ -50,25 +50,25 @@ class Recording:
 def run_step(rec, step, args):
     # Imported per step: segmentation pulls in torch/cellpose, which the other steps don't need.
     if step == 'preprocess':
-        from src.preprocess import preprocess
+        from ms2.preprocess import preprocess
         preprocess(rec.czi, rec.preprocess, radius=args.bg_radius, workers=args.workers)
     elif step == 'segment':
-        from cell_3d_segmentation import segment_3d_cells
+        from ms2.segment import segment_3d_cells
         segment_3d_cells(rec.czi, rec.root, args.device)
     elif step == 'track':
-        from cell_tracking import cell_tracking
+        from ms2.tracking import cell_tracking
         cell_tracking(rec.masks, output_path=rec.tracklets)
     elif step == 'unify':
-        from src.track_unify import unify
+        from ms2.track_unify import unify
         unify(rec.masks, rec.tracklets, rec.unified)
     elif step == 'gene_expression':
-        from ms2_gene_expression import run_gene_expression
+        from ms2.gene_expression.run import run_gene_expression
         run_gene_expression(rec.czi, rec.unified_masks, rec.unified_tracklets, rec.ms2_bg_removed,
                             rec.gene_expression, args.prominence, roi=args.roi, plots=args.plots,
                             workers=args.workers or os.cpu_count())
     elif step == 'activity':
         import pandas as pd
-        from src.cell_activity import analyze_recording
+        from ms2.cell_activity import analyze_recording
         n = len(pd.read_csv(rec.expression_csv))
         analyze_recording(rec.name, {'csv': rec.expression_csv, 'tracklets': rec.unified_tracklets,
                                      'masks_dir': rec.unified_masks, 't_start': 0, 't_end': n - 1},

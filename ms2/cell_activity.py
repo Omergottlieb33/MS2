@@ -2,7 +2,7 @@
 
 The module form of notebooks/gene_expression_analysis_v2.ipynb, restricted to the frames
 t_start..t_end (0-based, both included) so that embryos can be compared stage by stage --
-src/cell_activity_compare.py builds on the functions here.  A cell's activity is its MS2
+ms2/cell_activity_compare.py builds on the functions here.  A cell's activity is its MS2
 ellipse sum above the noise floor, and the levels form a ladder:
 
     0 silent                  never above the noise floor in the window
@@ -11,9 +11,9 @@ ellipse sum above the noise floor, and the levels form a ladder:
                               renumbered so the level rises with activity.  k is K_LEVELS = 3
                               (weakly, moderate, high active).  --silhouette chooses it between
                               2 and N_LEVELS instead, but that choice is unstable on real
-                              recordings -- see src/cell_activity_silhouette.py.
+                              recordings -- see research/cell_activity_silhouette.py.
 
-Recordings are described by a dict, the same one src/cell_activity_compare.py takes, stored
+Recordings are described by a dict, the same one ms2/cell_activity_compare.py takes, stored
 as json for the command line (noise_floor, noise_peak and min_presence are optional):
 
     {"New-02-ST11-12": {"csv": ".../gene_expression_results_fixed.csv",
@@ -21,9 +21,9 @@ as json for the command line (noise_floor, noise_peak and min_presence are optio
                         "masks_dir": ".../masks", "t_start": 0, "t_end": 60,
                         "noise_floor": 20, "noise_peak": 10, "min_presence": 0.5}}
 
-    python -m src.cell_activity --config recordings.json --out-dir .../stage_activity
+    python -m ms2.cell_activity --config recordings.json --out-dir .../stage_activity
 
-Point csv at gene_expression_results_fixed.csv (src/gene_expression/expression_matrix.py):
+Point csv at gene_expression_results_fixed.csv (ms2/gene_expression/expression_matrix.py):
 the original matrix holds most traces at the wrong timepoints, which a window then cuts wrongly.
 """
 import argparse
@@ -39,8 +39,8 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 
-from src.track_diagnostics import load_masks, mask_paths_by_t
-from src.utils.gif_utils import create_gif_from_figures
+from ms2.track_diagnostics import load_masks, mask_paths_by_t
+from ms2.utils.gif_utils import create_gif_from_figures
 
 # Raw ellipse-sum counts; a frame at or below this is background.  The per-cell smallest
 # non-zero value averages 22 in New-02.
@@ -49,7 +49,7 @@ NOISE_FLOOR = 20.0
 NOISE_PEAK = 10.0
 # Levels the KMeans splits the cells above the blips into: weakly, moderate, high active.
 # Fixed because the silhouette's pick flips between bootstrap resamples and ties to the third
-# decimal (src/cell_activity_silhouette.py); a Gaussian mixture on the pooled STAGE-12 cells
+# decimal (research/cell_activity_silhouette.py); a Gaussian mixture on the pooled STAGE-12 cells
 # also prefers 3.
 K_LEVELS = 3
 # Most levels the silhouette search may split the cells into, when k=None asks for it.
@@ -352,9 +352,9 @@ def parse_args():
 
 
 def main():
-    # Local: src.cell_activity_validate reads this module's defaults, so importing it at the
+    # Local: ms2.cell_activity_validate reads this module's defaults, so importing it at the
     # top would be a cycle.
-    from src.cell_activity_validate import raise_on_errors, validate_config
+    from ms2.cell_activity_validate import raise_on_errors, validate_config
 
     args = parse_args()
     with open(args.config) as f:

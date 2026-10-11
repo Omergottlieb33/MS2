@@ -1,4 +1,4 @@
-"""Check a src/cell_activity.py recording config before anything is measured.
+"""Check a ms2/cell_activity.py recording config before anything is measured.
 
 The analyses read the expression matrix, the tracklets json and the masks directory of every
 recording and assume the three agree.  When they don't the run dies deep inside itself -- after
@@ -14,9 +14,9 @@ thing wrong.  Rows are one of two levels:
               these are comparability traps, where each recording is fine on its own and the
               comparison between them is not
 
-    python -m src.cell_activity_validate --config recordings.json
+    python -m ms2.cell_activity_validate --config recordings.json
 
-recordings.json is the {name: recording dict} described in src/cell_activity.py.
+recordings.json is the {name: recording dict} described in ms2/cell_activity.py.
 """
 import argparse
 import json
@@ -24,9 +24,9 @@ import os
 
 import pandas as pd
 
-from src.cell_activity import MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK
-from src.gene_expression.expression_matrix import FIXED_NAME
-from src.track_diagnostics import mask_paths_by_t
+from ms2.cell_activity import MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK
+from ms2.gene_expression.expression_matrix import FIXED_NAME
+from ms2.track_diagnostics import mask_paths_by_t
 
 REQUIRED_KEYS = ('csv', 'tracklets', 'masks_dir', 't_start', 't_end')
 # Below this many cells a recording's medians and permutation tests say very little.
@@ -155,7 +155,7 @@ def check_across_recordings(recordings):
 
     A threshold that differs between recordings is only meaningful if the recordings are
     photometrically matched, which nothing verifies -- ellipse_sum is a raw AU sum.  Compare
-    src/cell_activity_calibration.py, which measures where each floor actually sits.
+    ms2/cell_activity_calibration.py, which measures where each floor actually sits.
     """
     rows = []
     for key, default, why in (

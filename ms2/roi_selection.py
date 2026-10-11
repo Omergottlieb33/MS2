@@ -12,7 +12,7 @@ import numpy as np
 import tifffile
 from matplotlib.path import Path
 
-from src.track import get_cell_centers
+from ms2.track import get_cell_centers
 
 
 def load_projection(path):
@@ -87,8 +87,8 @@ def load_roi(path):
 
 
 def select_from_roi_file(roi_path, tracklets_path, masks_dir):
-    """Tracklet ids for a saved ROI.  The entry point ms2_gene_expression.py uses."""
-    from src.viewer.loaders import MaskStore, TrackletStore
+    """Tracklet ids for a saved ROI.  The entry point ms2/gene_expression/run.py uses."""
+    from ms2.viewer.loaders import MaskStore, TrackletStore
     roi = load_roi(roi_path)
     tracks = TrackletStore(tracklets_path)
     t_last = roi.get('t_last')

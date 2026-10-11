@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
 
-from src.utils.plot_utils import plot_single_gaussian, plot_multiple_gaussians
+from ms2.utils.plot_utils import plot_single_gaussian, plot_multiple_gaussians
 
 
 class SpaitalClustering:

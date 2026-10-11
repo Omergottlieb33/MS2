@@ -8,11 +8,11 @@ matplotlib.use('module://matplotlib_inline.backend_inline')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
-from src.utils.plot_utils import (
+from ms2.utils.plot_utils import (
     show_3d_segmentation_overlay_with_unique_colors,
     plot_2d_gaussian_with_size
 )
-from src.utils.gif_utils import create_gif_from_figures, create_trajectory_gif
+from ms2.utils.gif_utils import create_gif_from_figures, create_trajectory_gif
 
 
 class MS2VisualizationManager:

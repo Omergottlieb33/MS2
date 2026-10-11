@@ -1,6 +1,6 @@
 """Is one recording an outlier of the comparison only because of its photometry?
 
-src/cell_activity_compare.py measures every recording against one absolute noise floor on the
+ms2/cell_activity_compare.py measures every recording against one absolute noise floor on the
 raw ellipse sums.  If one recording was imaged brighter, it looks more active for that reason
 alone.  This reruns the comparison under normalisations that remove more and more of the
 intensity difference, and scores the tested recording as an outlier under each:
@@ -28,7 +28,7 @@ tested recording per variant and metric:
     p_cells              cells, not embryos (see stats_readme.txt): Mann-Whitney of its active
                          cells against the others' pooled, Fisher's exact for frac_active
 
-    python -m src.cell_activity_normalize --config recordings.json --target New-17-ST12-V \\
+    python -m ms2.cell_activity_normalize --config recordings.json --target New-17-ST12-V \\
         --out-dir .../normalization_outlier
 """
 import argparse
@@ -42,8 +42,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import fisher_exact, mannwhitneyu, rankdata
 
-from src.cell_activity import K_LEVELS, NOISE_FLOOR, save_figure
-from src.cell_activity_compare import (INK, MUTED, compare_recordings, recording_colors,
+from ms2.cell_activity import K_LEVELS, NOISE_FLOOR, save_figure
+from ms2.cell_activity_compare import (INK, MUTED, compare_recordings, recording_colors,
                                        style_axes)
 
 FLOORS = (25, 30, 40, 50, 60, 80, 100)

@@ -1,8 +1,8 @@
 """Track cells in 3D with ultrack, writing the tracklet json the rest of this repo reads.
 
-The tracker in src/track.py matches one frame to the next and commits to that match, so a
+The tracker in ms2/track.py matches one frame to the next and commits to that match, so a
 segmentation mistake becomes a tracking mistake permanently -- which is what
-src/track_diagnostics.py measured and src/track_unify.py repairs after the fact.  ultrack
+ms2/track_diagnostics.py measured and ms2/track_unify.py repairs after the fact.  ultrack
 instead builds a hierarchy of candidate segments per frame and chooses, with one global
 integer program over the whole movie, the combination that tracks most consistently.  A
 clump this repo can only cut open after the tracker has already broken on it, ultrack can
@@ -13,7 +13,7 @@ Two ways in:
     --masks-dir given    existing masks are passed as `labels`; ultrack still explores
                          alternatives around them
     no --masks-dir       segment first, either with cellpose using the tuned parameters
-                         from cell_3d_segmentation.py (--mode labels, the default), or with
+                         from ms2/segment.py (--mode labels, the default), or with
                          ultrack's own foreground/contour detection (--mode contours),
                          which is where its hypothesis hierarchy is richest
 
@@ -21,8 +21,8 @@ ultrack picks its own segments, so its labels do not correspond to any input mas
 The output is therefore a new mask directory alongside the tracklets, in the same
 z_stack_t{N}_seg_masks.npz convention every other tool here expects:
 
-    python -m src.track_ultrack --masks-dir .../masks --out-dir .../ultrack
-    python -m src.track_ultrack --image cells.czi --mode contours --out-dir .../ultrack
+    python -m ms2.track_ultrack --masks-dir .../masks --out-dir .../ultrack
+    python -m ms2.track_ultrack --image cells.czi --mode contours --out-dir .../ultrack
 """
 import argparse
 import json
@@ -31,10 +31,10 @@ import os
 import numpy as np
 from tqdm import tqdm
 
-from cell_tracking import evaluate_tracklets
-from src.track import get_border_labels
-from src.track_diagnostics import load_masks, mask_paths_by_t
-from src.viewer.loaders import EXITED, GAP
+from ms2.tracking import evaluate_tracklets
+from ms2.track import get_border_labels
+from ms2.track_diagnostics import load_masks, mask_paths_by_t
+from ms2.viewer.loaders import EXITED, GAP
 
 # z 0.5 um against xy 0.198 um in both New-02 and New-03; ultrack scales node distances by
 # this, and a wrong ratio distorts every linking decision along z.
@@ -82,7 +82,7 @@ def load_label_stack(masks_dir):
 
 
 def segment_with_cellpose(image, device):
-    """Segment each timepoint with the parameters tuned in cell_3d_segmentation.py.
+    """Segment each timepoint with the parameters tuned in ms2/segment.py.
 
     Imported rather than restated so the two entry points cannot drift apart: an A/B over
     six configurations picked min_size and the fixed 3D normalisation window, and repeating
@@ -91,7 +91,7 @@ def segment_with_cellpose(image, device):
     import torch
     from cellpose import models
 
-    from cell_3d_segmentation import MIN_SIZE, intensity_bounds
+    from ms2.segment import MIN_SIZE, intensity_bounds
 
     # intensity_bounds indexes (T, C, Z, Y, X); the channel was already selected upstream,
     # so give it a single-channel axis and read channel 0.
@@ -143,7 +143,7 @@ def build_tracklets(tracks_df, n_timepoints, out_masks_dir, ts, border_margin=5)
 
     ultrack relabels its segments by track id, so a track's label is its own id wherever it
     exists.  The two sentinels still have to be reconstructed, because the schema
-    distinguishes them and both loaders.py and ms2_gene_expression.py act on that: -1 is a
+    distinguishes them and both loaders.py and ms2/gene_expression/run.py act on that: -1 is a
     frame the track is missing from, -2 is a departure through the field-of-view border,
     which is expected behaviour rather than a tracking failure.
     """
@@ -176,7 +176,7 @@ def check(tracklets, out_masks_dir, ts):
 
     Same three as track_unify.check(): fixed length, every named label really present in
     that frame's mask, and no label claimed by two tracks at once
-    (src/viewer/loaders.py:146 and ms2_gene_expression.py:174 both rely on it).
+    (ms2/viewer/loaders.py:146 and ms2/gene_expression/run.py:174 both rely on it).
     """
     lengths = {len(v) for v in tracklets.values()}
     assert lengths == {len(ts)}, f'tracks of differing length: {lengths}'
@@ -239,8 +239,8 @@ def main():
     else:
         if not args.image:
             raise SystemExit('--image is required when --masks-dir is not given')
-        from cell_3d_segmentation import CELL_CHANNEL
-        from src.viewer.loaders import load_image
+        from ms2.segment import CELL_CHANNEL
+        from ms2.viewer.loaders import load_image
 
         image = load_image(args.image,
                            CELL_CHANNEL if args.channel is None else args.channel)

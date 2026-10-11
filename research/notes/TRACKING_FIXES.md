@@ -27,7 +27,7 @@ Ten regression tests cover the fixes. The full 72-frame New-03 validation output
 
 Use `unified/tracklets_unified.json` with `unified/masks_split/` for the new unified result. Use `tracklets_default.json` with the original `masks/` for the corrected default result. Track IDs are newly generated and should not be compared numerically with old IDs.
 
-`comparison.md` and `comparison.json` compare the previous unified output with both new outputs. `run_manifest.json` and `source_snapshot/` record parameters, versions, input tracklet hashes, and the implementation used. `src/compare_tracking.py` performs the reproducible comparison and checks mask/track consistency.
+`comparison.md` and `comparison.json` compare the previous unified output with both new outputs. `run_manifest.json` and `source_snapshot/` record parameters, versions, input tracklet hashes, and the implementation used. `ms2/compare_tracking.py` performs the reproducible comparison and checks mask/track consistency.
 
 Preserving single-frame detections increases track counts. Compare larger-cell continuity, coverage, and candidate identity errors as well as track duration. Visual validation is still needed before judging biological identity accuracy.
 

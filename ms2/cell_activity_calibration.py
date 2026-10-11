@@ -1,10 +1,10 @@
 """Where each recording's noise floor actually sits in its own background.
 
 ellipse_sum is a raw, uncalibrated AU sum (sum_pixels_in_sigma_ellipse in
-ms2_gene_expression.py), so an absolute threshold like NOISE_FLOOR = 20 only means the same
+ms2/gene_expression/run.py), so an absolute threshold like NOISE_FLOOR = 20 only means the same
 thing in two recordings if the two were imaged under matched conditions -- laser power,
 exposure, detector gain, depth, bleaching.  Nothing in the pipeline verifies that, and
-src/cell_activity_compare.py puts recordings on one shared ladder regardless.
+ms2/cell_activity_compare.py puts recordings on one shared ladder regardless.
 
 This does not calibrate anything.  It measures each recording's background distribution and
 reports where its configured floor falls in it, so the assumption is visible before the
@@ -15,15 +15,15 @@ comparison is believed:
                         constant meaning two different things, and every number downstream --
                         level composition, rate, duty, onset -- inherits the difference.
     median_min_nonzero  the median over cells of each cell's smallest nonzero value, the
-                        heuristic quoted in src/cell_activity.py's NOISE_FLOOR comment ("the
+                        heuristic quoted in ms2/cell_activity.py's NOISE_FLOOR comment ("the
                         per-cell smallest non-zero value averages 22 in New-02"), computed per
                         recording rather than remembered from one.
 
 Reads the matrix only, so it is cheap -- no masks are touched.
 
-    python -m src.cell_activity_calibration --config recordings.json --out-dir .../calibration
+    python -m ms2.cell_activity_calibration --config recordings.json --out-dir .../calibration
 
-recordings.json is the {name: recording dict} described in src/cell_activity.py.
+recordings.json is the {name: recording dict} described in ms2/cell_activity.py.
 """
 import argparse
 import itertools
@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src.cell_activity import MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK, load_window, save_figure
+from ms2.cell_activity import MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK, load_window, save_figure
 
 PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
 

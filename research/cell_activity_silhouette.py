@@ -1,9 +1,9 @@
 """Why activity_levels picks the k it picks, and how much that choice can be trusted.
 
-activity_levels (src/cell_activity.py) fits KMeans on log1p(score) for k = 2..N_LEVELS and keeps
+activity_levels (ms2/cell_activity.py) fits KMeans on log1p(score) for k = 2..N_LEVELS and keeps
 the k with the best silhouette.  This rebuilds every fit a run makes -- one ladder per recording
-on total, as src/cell_activity.py does, and the pooled ladder on rate, as
-src/cell_activity_compare.py does -- and asks of each:
+on total, as ms2/cell_activity.py does, and the pooled ladder on rate, as
+ms2/cell_activity_compare.py does -- and asks of each:
 
     margin          best silhouette minus the runner-up.  A few thousandths is a coin flip that
                     max() settles by taking the smaller k.
@@ -16,7 +16,7 @@ src/cell_activity_compare.py does -- and asks of each:
                     ladders are clustered on different transforms.  silhouette_log redoes the
                     search on log(score) for comparison.
 
-    python -m src.cell_activity_silhouette --config recordings.json --out-dir .../silhouette_debug
+    python -m ms2.cell_activity_silhouette --config recordings.json --out-dir .../silhouette_debug
 
 Writes summary.csv, silhouette_by_k.csv and bootstrap.csv plus one figure per fit.
 """
@@ -31,7 +31,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_samples, silhouette_score
 from sklearn.mixture import GaussianMixture
 
-from src.cell_activity import (MIN_PRESENCE, N_LEVELS, NOISE_FLOOR, NOISE_PEAK,
+from ms2.cell_activity import (MIN_PRESENCE, N_LEVELS, NOISE_FLOOR, NOISE_PEAK,
                                activity_descriptors, load_window, save_figure)
 
 K_MAX = 6

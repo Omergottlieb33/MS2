@@ -12,7 +12,7 @@ analyses answer five separate questions:
 
 Run against the dataset the tracklets came from:
 
-    python -m src.track_diagnostics --masks-dir .../masks --tracklets .../tracklets.json \
+    python -m ms2.track_diagnostics --masks-dir .../masks --tracklets .../tracklets.json \
         --out-dir diagnostics --projection SUM_C2-....tif --pair 697 199
 """
 import argparse
@@ -25,8 +25,8 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import binary_dilation, center_of_mass
 
-from cell_tracking import evaluate_tracklets, extract_time_number, get_masks_paths
-from src.viewer.loaders import EXITED
+from ms2.tracking import evaluate_tracklets, extract_time_number, get_masks_paths
+from ms2.viewer.loaders import EXITED
 
 # A label smaller than this fraction of the frame's median is a segmentation fragment
 # rather than a cell; 96% of labels that vanish between frames fall under it.
@@ -48,7 +48,7 @@ def cell_properties(masks_dir, cache_path=None):
 
     One pass over the npz files, which is the expensive part of every analysis below --
     109 frames of 11x1024x1024 takes a couple of minutes -- so the result is pickled and
-    reused.  Centroid and volume are computed the same way src/track.py already does it,
+    reused.  Centroid and volume are computed the same way ms2/track.py already does it,
     with one center_of_mass call and one bincount per frame rather than per label.
     """
     if cache_path and os.path.exists(cache_path):
@@ -498,7 +498,7 @@ def main():
         print(f'\n=== Pair {args.pair[0]} vs {args.pair[1]} ===')
         print(pair_rows.to_string(index=False))
         if args.projection:
-            from src.roi_selection import load_projection
+            from ms2.roi_selection import load_projection
             figure = pair_overlay(
                 args.pair, tracklets, props, args.masks_dir, ts,
                 load_projection(args.projection),

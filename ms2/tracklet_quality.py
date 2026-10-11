@@ -7,8 +7,8 @@ import numpy as np
 from scipy.ndimage import center_of_mass
 from scipy.spatial import cKDTree
 
-from src.track_diagnostics import load_masks, mask_paths_by_t
-from src.tracking_evaluation import load_rows
+from ms2.track_diagnostics import load_masks, mask_paths_by_t
+from ms2.tracking_evaluation import load_rows
 
 DEFAULTS = dict(voxel_size_um=[0.5, 0.198, 0.198], max_step_um=3.0,
                 neighbor_radius_um=10.0, neighbor_k=5)

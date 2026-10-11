@@ -1,4 +1,4 @@
-"""src/pipeline.py: steps run in order, finished steps are skipped on a rerun, and
+"""ms2/pipeline.py: steps run in order, finished steps are skipped on a rerun, and
 --stop-after stops there (the ROI pause).  The steps themselves are stubbed out.
 
     python tests/test_pipeline.py
@@ -9,7 +9,7 @@ import tempfile
 
 from fixtures import passed
 
-import src.pipeline as pipeline
+import ms2.pipeline as pipeline
 
 
 def run_stubbed(root, argv):

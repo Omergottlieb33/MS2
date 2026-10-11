@@ -1,7 +1,7 @@
 """Open a single-page dashboard for one tracklet JSON and its masks.
 
-python -m src.tracking_dashboard --tracklets TRACKLETS.json --masks-dir MASKS
-python -m src.tracking_dashboard --report outputs/tracklet_dashboard/evaluation.json
+python -m ms2.tracking_dashboard --tracklets TRACKLETS.json --masks-dir MASKS
+python -m ms2.tracking_dashboard --report outputs/tracklet_dashboard/evaluation.json
 """
 import argparse
 import json
@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from src.tracklet_quality import evaluate, fingerprint, infer_masks, settings_checked
+from ms2.tracklet_quality import evaluate, fingerprint, infer_masks, settings_checked
 
 ASSETS = Path(__file__).with_name('tracking_dashboard_static')
 

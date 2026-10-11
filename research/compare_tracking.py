@@ -1,6 +1,6 @@
 """Compare saved tracking outputs and verify mask/track consistency.
 
-Usage: python -m src.compare_tracking --root RECORDING_ROOT --run RUN_DIRECTORY
+Usage: python -m ms2.compare_tracking --root RECORDING_ROOT --run RUN_DIRECTORY
 """
 import argparse
 import collections
@@ -9,8 +9,8 @@ import json
 from pathlib import Path
 
 import numpy as np
-from src.track import get_border_labels
-from src.track_diagnostics import cell_properties, load_masks, mask_paths_by_t
+from ms2.track import get_border_labels
+from ms2.track_diagnostics import cell_properties, load_masks, mask_paths_by_t
 
 def summarize(track_path, masks_dir, cache_path):
     tracks = json.loads(Path(track_path).read_text())

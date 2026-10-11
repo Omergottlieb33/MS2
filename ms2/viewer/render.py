@@ -4,7 +4,7 @@ import io
 import numpy as np
 from PIL import Image
 
-from src.utils.plot_utils import blend, generate_random_colors
+from ms2.utils.plot_utils import blend, generate_random_colors
 
 # Colours are looked up by label value, not by position in the frame's label list,
 # so a cell keeps its colour across timepoints.  Index 0 is reserved for background,

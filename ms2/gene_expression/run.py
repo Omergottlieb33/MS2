@@ -1,12 +1,12 @@
 import gc
 import multiprocessing
-from src.gene_expression.ms2_visualization import MS2VisualizationManager
-from src.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
-from src.gene_expression.expression_matrix import amplitudes_by_timepoint, expression_series, final_csv_path
-from src.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d
-from src.utils.plot_utils import plot_gmm_clustering
-from src.utils.cluster_utils import SpaitalClustering
-from cell_tracking import get_masks_paths
+from ms2.gene_expression.ms2_visualization import MS2VisualizationManager
+from ms2.gene_expression.ms2_peak_strategies import GlobalPeakStrategy
+from ms2.gene_expression.expression_matrix import amplitudes_by_timepoint, expression_series, final_csv_path
+from ms2.utils.cell_utils import get_3d_bounding_box_corners, calculate_center_of_mass_3d
+from ms2.utils.plot_utils import plot_gmm_clustering
+from ms2.utils.cluster_utils import SpaitalClustering
+from ms2.tracking import get_masks_paths
 
 import os
 import json
@@ -261,7 +261,7 @@ class MS2GeneExpressionProcessor:
             if bbox is None:
                 # A tracklet label that no voxel carries means the tracklets were built
                 # against a different segmentation than the one loaded here.  Splitting
-                # (src/track_unify.py) mints labels that exist only in its masks_split
+                # (ms2/track_unify.py) mints labels that exist only in its masks_split
                 # directory, so tracklets_unified.json must be paired with those masks.
                 raise ValueError(
                     f"cell {self.cell_id}: label {cell_label} is absent from "
@@ -710,7 +710,7 @@ def run_gene_expression(czi_file_path, seg_maps_dir, tracklets_path, ms2_backgro
     if roi:
         # Spatial selection: a cell is analysed if it sits inside the boundary drawn on the
         # first frame or the one drawn on the last.  Replaces the gap filter entirely.
-        from src.roi_selection import select_from_roi_file
+        from ms2.roi_selection import select_from_roi_file
         selected = select_from_roi_file(roi, tracklets_path, seg_maps_dir)
         valid_ids = [str(tid) for tid in selected]
         print(f"ROI {roi}: {len(valid_ids)} cells selected")

@@ -1,4 +1,4 @@
-"""Plot one tracklet's cell over time; moved from cell_tracking.py (used by notebooks/3d_cell_tracking)."""
+"""Plot one tracklet's cell over time; moved from ms2/tracking.py (used by notebooks/3d_cell_tracking)."""
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec

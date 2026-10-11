@@ -1,7 +1,7 @@
 """Data loading for the segmentation viewer.
 
 The cell channel arrives either as a 4D (T, Z, Y, X) tif, or as the raw czi that
-cell_3d_segmentation.py segments.  Masks are the per-timepoint npz files that
+ms2/segment.py segments.  Masks are the per-timepoint npz files that
 same script writes.  Tracklets are the json create_tracklets() produces.
 """
 import csv
@@ -12,9 +12,9 @@ import os
 import numpy as np
 import tifffile
 
-from cell_tracking import evaluate_tracklets, extract_time_number, get_masks_paths
+from ms2.tracking import evaluate_tracklets, extract_time_number, get_masks_paths
 
-# Matches cell_3d_segmentation.py:25 -- image_data[ti, 1, :, :, :]
+# Matches ms2/segment.py:25 -- image_data[ti, 1, :, :, :]
 CELL_CHANNEL = 1
 
 
@@ -38,7 +38,7 @@ def load_image(path, channel=CELL_CHANNEL):
         except (ValueError, MemoryError):
             arr = tifffile.imread(path)   # compressed tifs cannot be memory-mapped
     elif ext == '.czi':
-        from src.utils.image_utils import load_czi_images
+        from ms2.utils.image_utils import load_czi_images
         arr = load_czi_images(path)
         if arr is None:
             raise ValueError(f'could not read czi: {path}')
@@ -139,7 +139,7 @@ def locate(volume, label):
     is stable, and still follows real z motion.
 
     Computed from marginal sums rather than voxel coordinates.  The obvious route --
-    src.utils.cell_utils.calculate_center_of_mass_3d, which is what this used to call -- spends
+    ms2.utils.cell_utils.calculate_center_of_mass_3d, which is what this used to call -- spends
     most of its time in np.where extracting ~2000 coordinates out of 11.5M voxels, and that
     single call was half the latency of selecting a cell.  Summing along each axis gives an
     identical answer (verified over 40 labels) in a third of the time.
@@ -154,7 +154,7 @@ def locate(volume, label):
     return int(round(z)), cy, cx
 
 
-# Sentinels written by create_tracklets(); see src/track.py:191.
+# Sentinels written by create_tracklets(); see ms2/track.py:191.
 GAP, EXITED = -1, -2
 
 

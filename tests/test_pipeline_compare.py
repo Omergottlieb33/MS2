@@ -1,4 +1,4 @@
-"""src/pipeline_compare.py: every recording goes through the pipeline with its own ROI, and
+"""ms2/pipeline_compare.py: every recording goes through the pipeline with its own ROI, and
 the comparison config points into the pipeline's layout with each recording's window.  The
 pipeline and the comparison are stubbed out.
 
@@ -10,7 +10,7 @@ import tempfile
 
 from fixtures import passed
 
-import src.pipeline_compare as pc
+import ms2.pipeline_compare as pc
 
 
 def test_runs_each_recording_and_writes_the_comparison_config():

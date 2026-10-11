@@ -1,12 +1,12 @@
 """Compare stage-window cell activity across any number of recordings.
 
 Every recording is cut to its own developmental-stage window and measured with the
-definitions of src/cell_activity.py, then the recordings are set side by side.  Two choices
+definitions of ms2/cell_activity.py, then the recordings are set side by side.  Two choices
 make the numbers comparable between embryos:
 
   levels   weak / moderate / high come from ONE KMeans ladder fitted on the pooled cells of
            all recordings, on activity per tracked frame (rate) so windows of different length
-           compare.  src/cell_activity.py fits a ladder per recording, where "high" in one
+           compare.  ms2/cell_activity.py fits a ladder per recording, where "high" in one
            embryo is a different threshold than in the next.  Silent and short burst / noise
            use the same absolute thresholds in both.  Active = weakly active or above.
            --ladder per_recording fits one ladder per recording instead, to see how much of a
@@ -17,9 +17,9 @@ make the numbers comparable between embryos:
            spatial measure is orientation-free and relative to the imaged tissue -- the cells
            tracked in the window -- not to the whole embryo.
 
-    python -m src.cell_activity_compare --config recordings.json --out-dir .../compare
+    python -m ms2.cell_activity_compare --config recordings.json --out-dir .../compare
 
-recordings.json is the {name: recording dict} described in src/cell_activity.py.  An optional
+recordings.json is the {name: recording dict} described in ms2/cell_activity.py.  An optional
 max_volume_cv in a recording dict also drops the cells whose segmented volume varies more than
 that (std / mean) over their tracked window frames -- unstable segmentation or a mislinked
 tracklet.
@@ -40,8 +40,8 @@ Per recording (metrics.csv):
     hull_coverage                                        convex hull of active cells / of all cells
 
 The config is checked before anything is measured and a background diagnostic is written to
-out_dir/calibration first -- see src/cell_activity_validate.py and
-src/cell_activity_calibration.py.  --skip-validate skips the first for a known-good config.
+out_dir/calibration first -- see ms2/cell_activity_validate.py and
+ms2/cell_activity_calibration.py.  --skip-validate skips the first for a known-good config.
 """
 import argparse
 import itertools
@@ -54,11 +54,11 @@ import pandas as pd
 from scipy.spatial import ConvexHull, cKDTree
 from scipy.stats import chi2_contingency, false_discovery_control, kruskal, mannwhitneyu
 
-from src.cell_activity import (K_LEVELS, LEVEL_NAMES, MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK,
+from ms2.cell_activity import (K_LEVELS, LEVEL_NAMES, MIN_PRESENCE, NOISE_FLOOR, NOISE_PEAK,
                                activity_descriptors, classify_cells, load_window, save_figure)
-from src.cell_activity_calibration import run_calibration
-from src.cell_activity_validate import raise_on_errors, validate_config
-from src.track_diagnostics import cell_properties
+from ms2.cell_activity_calibration import run_calibration
+from ms2.cell_activity_validate import raise_on_errors, validate_config
+from ms2.track_diagnostics import cell_properties
 
 # Weakly active and above; below are silent cells and 1-2 frame blips.
 ACTIVE_LEVEL = 2

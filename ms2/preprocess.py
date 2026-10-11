@@ -1,6 +1,6 @@
 """CZI -> the per-channel tifs the pipeline reads, replacing the manual ImageJ steps.
 
-    python -m src.preprocess <rec>.czi --out <dir>
+    python -m ms2.preprocess <rec>.czi --out <dir>
 
 writes, into <dir>:
     C1-<rec>.tif             MS2 channel (czi channel 0), T x Z x Y x X, uint8

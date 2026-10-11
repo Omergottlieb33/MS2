@@ -7,11 +7,11 @@ later than it happened, and the tail was dropped.  In New-02-v3-ST11-12 that rep
 881 columns of gene_expression_results.csv, and 148 of the 151 cells with an emitter carry a
 shifted trace.
 
-Both paths of ms2_gene_expression.py (fresh fit and resume) now go through expression_series.
+Both paths of ms2/gene_expression/run.py (fresh fit and resume) now go through expression_series.
 rebuild_results re-derives an existing matrix from the per-cell *_final.csv files, so old
 outputs can be corrected without refitting:
 
-    python -m src.gene_expression.expression_matrix \
+    python -m ms2.gene_expression.expression_matrix \
         --results-dir .../gene_expression_roi_selection --tracklets .../masks/tracklets.json
 """
 import argparse

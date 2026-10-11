@@ -4,7 +4,7 @@ Renders one composited PNG per (t, z) server-side; the browser handles zoom and 
 Run on the machine holding the data and reach it over an ssh port-forward:
 
     ssh -L 5000:localhost:5000 <server>
-    python -m src.viewer.app --image cells.tif --masks-dir .../masks
+    python -m ms2.viewer.app --image cells.tif --masks-dir .../masks
 """
 import argparse
 import json
@@ -15,10 +15,10 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from src.roi_selection import load_projection, save_roi, select_tracklets
-from src.viewer.loaders import (CELL_CHANNEL, MaskStore, Ms2Store, PeakStore,
+from ms2.roi_selection import load_projection, save_roi, select_tracklets
+from ms2.viewer.loaders import (CELL_CHANNEL, MaskStore, Ms2Store, PeakStore,
                                 TrackletStore, load_image, locate)
-from src.viewer.render import composite, intensity_window
+from ms2.viewer.render import composite, intensity_window
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 

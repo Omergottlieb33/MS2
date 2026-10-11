@@ -1,4 +1,4 @@
-"""src/cell_activity_compare.py: both tails of the spatial test, and the chi-square fallback
+"""ms2/cell_activity_compare.py: both tails of the spatial test, and the chi-square fallback
 when the asymptotic approximation does not hold."""
 import os
 import tempfile
@@ -8,8 +8,8 @@ import pandas as pd
 
 from fixtures import passed, write_recording
 
-from src.cell_activity import NOISE_FLOOR
-from src.cell_activity_compare import (N_PERMUTATIONS, compare_recordings, composition_test,
+from ms2.cell_activity import NOISE_FLOOR
+from ms2.cell_activity_compare import (N_PERMUTATIONS, compare_recordings, composition_test,
                                        nn_clustering)
 
 ALPHA = 0.05

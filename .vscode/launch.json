@@ -8,7 +8,7 @@
             "name": "cell_tracking",
             "type": "python",
             "request": "launch",
-            "program": "/home/dafei/git/MS2/cell_tracking.py",
+            "program": "/home/dafei/git/MS2/ms2/tracking.py",
             "console": "integratedTerminal",
             "cwd": "/home/dafei/git/MS2",
             "env": {
@@ -19,7 +19,7 @@
             "name": "gene_expression",
             "type": "python",
             "request": "launch",
-            "program": "/home/dafei/git/MS2/ms2_gene_expression.py",
+            "program": "/home/dafei/git/MS2/ms2/gene_expression/run.py",
             "console": "integratedTerminal",
             "cwd": "/home/dafei/git/MS2",
             "env": {
