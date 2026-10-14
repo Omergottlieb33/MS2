@@ -21,6 +21,9 @@ Everything runs from a browser app on the lab's GPU server:
 - Start the run.
 - Follow its progress and open the results.
 
+It can also run as one always-on page for the whole lab, where people upload CZIs and
+download results with nothing installed ([setup](docs/REFERENCE.md#the-lab-page-one-app-for-everyone)).
+
 Lab members: see the [user guide](docs/USER_GUIDE.md). Command line and details:
 [docs/REFERENCE.md](docs/REFERENCE.md).
 

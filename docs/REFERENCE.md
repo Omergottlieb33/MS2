@@ -22,6 +22,48 @@ ms2 dashboard --tracklets ... --masks-dir ...   # tracking-quality dashboard
 
 `ms2 <command> -h` lists each command's options.
 
+### The lab page: one app for everyone
+
+`ms2 app --workspace` runs a single app that the whole lab opens at `http://golgi:<port>`,
+with no repository, launcher or SSH key on their side. People log in with their name as the
+user name and a shared lab password. They upload a CZI from their own computer, draw the
+ROI, start the run, and download a zip of the logs, ROI and result tables (no masks or
+TIFFs). Each name gets `<workspace>/<name>/uploads/` and `<workspace>/<name>/runs/`, and
+can't open anything outside that folder. Every job runs under the account that started
+the app.
+
+```bash
+echo 'the-lab-password' > ~/.ms2_password && chmod 600 ~/.ms2_password
+ms2 app --host 0.0.0.0 --port 8765 \
+    --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file ~/.ms2_password
+```
+
+The password travels as plain http, so this is for the lab network and VPN only.
+
+To keep it running, use a `systemd --user` service. It restarts after a crash or a reboot,
+and needs `loginctl enable-linger <you>` once, from an admin. Save the following as
+`~/.config/systemd/user/ms2-app.service`:
+
+```ini
+[Unit]
+Description=MS2 lab page
+
+[Service]
+ExecStart=/zjbd/zd1/shechtmanlab/conda_envs/ms2/bin/ms2 app --host 0.0.0.0 --port 8765 --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file %h/.ms2_password
+Restart=on-failure
+KillMode=process
+
+[Install]
+WantedBy=default.target
+```
+
+Then run `systemctl --user enable --now ms2-app`. `KillMode=process` stops only the app on a
+restart: runs are detached and keep going either way. Without linger, start the same command
+in a `tmux` session; you have to start it again after a reboot.
+
+Not handled: there is no GPU queue, so two runs on one GPU can run out of memory (the GPU
+list shows free memory). Uploads and runs are never deleted automatically.
+
 ### What a run does
 
 `ms2 run` (`ms2/pipeline.py`) takes one recording through six steps, each into

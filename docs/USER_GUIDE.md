@@ -4,7 +4,16 @@ The MS2 app turns a live-imaging recording (a Zeiss `.czi` file) into a table of
 each cell transcribes over time. Everything runs on the lab's GPU server (`golgi`). Your
 computer only shows the app in a web browser.
 
-You need: a user account on golgi, and the `launchers` folder from the MS2 repository.
+**The quick way, if the lab page is running:** open `http://golgi:8765` (ask for the address
+and the lab password). Log in with your name as the user name and the lab password. Then,
+under **CZI file**, pick the CZI from your computer and carry on from
+[Draw the region of interest](#2-draw-the-region-of-interest-optional-recommended). When the
+run has finished, **Download results** on the Runs page gives you a zip of the logs and result
+tables to save wherever you like. You need nothing else on your computer. The rest of this
+section, and the setup below, are for running your own copy of the app.
+
+To run your own copy you need: a user account on golgi, and the `launchers` folder from the
+MS2 repository.
 
 ---
 

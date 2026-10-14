@@ -159,6 +159,13 @@ class Handler(BaseHTTPRequestHandler):
     def check_path(self, path):
         """Refuse a folder the page may not open; anything goes when the viewer runs alone."""
 
+    def get_viewer(self):
+        return type(self).viewer
+
+    def set_viewer(self, v):
+        """One viewer for the whole server; the app keeps one per user instead."""
+        type(self).viewer = v
+
     def _send(self, body, content_type, cache=False, status=200):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -174,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urlparse(self.path)
-        v = self.viewer
+        v = self.get_viewer()
         try:
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}')
             if url.path == '/roi/preview':
@@ -184,6 +191,7 @@ class Handler(BaseHTTPRequestHandler):
                     out.pop('tids')      # the page only needs the counts
                 self._send(json.dumps(out).encode(), 'application/json')
             elif url.path == '/roi/save':
+                self.check_path(body['path'])
                 t_first, t_last = v.roi_frames(body.get('t_first'), body.get('t_last'))
                 path = save_roi(body['path'], body.get('roi_first'), body.get('roi_last'),
                                 t_first, t_last, v.projection_path, v.tracklets_path)
@@ -196,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = body.get('dir', '').strip().strip('"\'').strip()
                 try:
                     self.check_path(path)
-                    type(self).viewer = open_results(path)
+                    self.set_viewer(open_results(path))
                 except (OSError, ValueError, KeyError) as exc:
                     self._send(json.dumps({'error': str(exc)}).encode(), 'application/json',
                                status=400)
@@ -210,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
-        v = self.viewer
+        v = self.get_viewer()
         try:
             if url.path in ('/', '/view') and v.image is None:
                 self.send_response(302)

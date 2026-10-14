@@ -73,6 +73,7 @@
     <button data-tab="runs">Runs &amp; results</button>
     <button data-tab="compare">Compare recordings</button>
   </nav>
+  <span class="hint" id="who"></span>
 </header>
 
 <main>
@@ -81,6 +82,8 @@
   <div class="card">
     <h2><span class="n">1</span>Recording</h2>
     <label>CZI file</label>
+    <div class="row" id="uploadRow" hidden><input type="file" id="cziFile" accept=".czi">
+      <span id="uploadMsg"></span></div>
     <div class="row"><input type="text" id="czi" spellcheck="false" placeholder="/path/to/embryo.czi">
       <button id="browseBtn">Browse…</button></div>
     <div class="browser" id="browser" hidden></div>
@@ -132,6 +135,7 @@
       <button id="dDash">Tracking dashboard</button>
       <button id="dResume">Resume</button>
       <button id="dStop">Stop</button>
+      <button id="dZip">Download results</button>
       <span id="dMsg"></span>
     </div>
     <p class="hint" id="dSteps"></p>
@@ -216,6 +220,26 @@ $('browseBtn').onclick = () => {
   browse(cur ? cur.replace(/\/[^/]*\.czi$/i, '') || config.data_roots[0] : config.data_roots[0]);
 };
 $('czi').onchange = roiStatus;
+
+// Lab mode: the CZI comes from the user's computer.  XMLHttpRequest, not fetch, for the progress.
+$('cziFile').onchange = () => {
+  const file = $('cziFile').files[0];
+  if (!file) return;
+  const xhr = new XMLHttpRequest();
+  xhr.open('PUT', '/api/upload?name=' + encodeURIComponent(file.name));
+  xhr.upload.onprogress = e => say('uploadMsg', `uploading ${Math.floor(100 * e.loaded / e.total)}%`, 'busy');
+  xhr.onload = () => {
+    let d = {};
+    try { d = JSON.parse(xhr.responseText); } catch (e) { d = {error: xhr.statusText}; }
+    if (xhr.status !== 200) return say('uploadMsg', esc(d.error || xhr.statusText), 'bad');
+    say('uploadMsg', '✓ uploaded', 'ok');
+    $('czi').value = d.path;
+    roiStatus();
+  };
+  xhr.onerror = () => say('uploadMsg', 'the upload broke off; try again', 'bad');
+  say('uploadMsg', 'uploading 0%', 'busy');
+  xhr.send(file);
+};
 $('out').onchange = roiStatus;
 
 // Pasted paths often come quoted (Windows' "Copy as path"); the quotes are not part of the name.
@@ -313,6 +337,8 @@ async function loadDetail() {
     $('dDash').disabled = !unified || d.dashboard === 'running';
     $('dDash').textContent = d.dashboard === 'running' ? 'Building dashboard…' : 'Tracking dashboard';
     $('dRoi').disabled = d.state === 'running' || !d.czi;
+    $('dZip').hidden = !config.lab;
+    $('dZip').disabled = !d.results.length;
     $('dFiles').innerHTML = d.results.map(fileTile).join('');
   } catch (e) { say('dMsg', esc(e.message), 'bad'); }
 }
@@ -333,6 +359,7 @@ $('dResume').onclick = async () => {
   await action('/api/run/start', {...form(), czi: r.czi, out}, 'resumed — finished steps are skipped');
   loadRuns();
 };
+$('dZip').onclick = () => { location.href = '/api/download?dir=' + encodeURIComponent(selected); };
 $('dDash').onclick = async () => { await action('/api/dashboard', {dir: selected}, 'building the dashboard; it appears below when done'); loadDetail(); };
 
 // ── compare ──
@@ -394,6 +421,13 @@ setInterval(() => {
   $('device').innerHTML = config.gpus.map(g => `<option value="${esc(g.id)}">${esc(g.label)}</option>`).join('');
   $('out').value = config.out_root;
   $('runsRoot').value = config.out_root;
+  if (config.lab) {                  // everything lives in the user's own folder on the server
+    $('who').textContent = 'logged in as ' + config.user;
+    $('uploadRow').hidden = false;
+    $('browseBtn').hidden = true;
+    for (const id of ['czi', 'out', 'runsRoot']) $(id).readOnly = true;
+    $('czi').placeholder = 'choose a CZI file above';
+  }
   const f = config.form || {};
   if (f.czi) {                       // back from drawing the ROI: restore what was filled in
     $('czi').value = f.czi; $('out').value = f.out;
