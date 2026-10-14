@@ -35,12 +35,18 @@
                 border: 1px solid #3c3c3c; border-radius: 4px; padding: 5px 7px;
                 font: inherit; font-variant-numeric: tabular-nums; }
   .goto button { width: auto; margin-top: 0; padding: 5px 12px; }
-  #gotomsg { color: #777; font-size: 11px; margin-top: 4px; min-height: 14px; }
-  #gotomsg.err { color: #e57373; }
+  #gotomsg, #resmsg { color: #777; font-size: 11px; margin-top: 4px; min-height: 14px;
+                      overflow-wrap: anywhere; }
+  #gotomsg.err, #resmsg.err { color: #e57373; }
 
   /* track list */
-  #tracklist { max-height: 260px; overflow-y: auto; margin-top: 6px;
-               border: 1px solid #2c2c2c; border-radius: 4px; }
+  #tracklist, #famlist { max-height: 260px; overflow-y: auto; margin-top: 6px;
+                         border: 1px solid #2c2c2c; border-radius: 4px; }
+
+  /* the selected cell's MS2 trace */
+  #trace { width: 100%; height: 80px; margin-top: 8px; background: #151515;
+           border-radius: 3px; cursor: pointer; display: block; }
+  #traceinfo { color: #999; font-size: 11px; margin-top: 4px; line-height: 1.5; }
   .trow { display: flex; justify-content: space-between; padding: 4px 7px;
           cursor: pointer; font-variant-numeric: tabular-nums; font-size: 12px;
           border-bottom: 1px solid #222; }
@@ -64,6 +70,13 @@
 <body>
 
 <div id="panel">
+  <label>Results folder</label>
+  <div class="goto">
+    <input type="text" id="resdir" placeholder="/…/outputs/…/New-03-V">
+    <button id="resbtn">open</button>
+  </div>
+  <div id="resmsg"></div>
+
   <label>Time <span class="val" id="tval">0</span></label>
   <input type="range" id="t" min="0" max="0" value="0">
 
@@ -96,6 +109,16 @@
     <input type="range" id="peakscore" min="0" max="99" step="1" value="0">
   </div>
 
+  <div id="fambox" style="display:none">
+    <hr>
+    <label>Cell family <span class="val" id="famwin"></span></label>
+    <select id="family"></select>
+    <button id="famshow">outline family: on</button>
+    <div id="famlist"></div>
+    <canvas id="trace"></canvas>
+    <div id="traceinfo"></div>
+  </div>
+
   <div id="tracks" style="display:none">
     <hr>
     <label>Go to track id</label>
@@ -125,6 +148,7 @@
     <kbd>↑</kbd><kbd>↓</kbd> z slice<br>
     <kbd>space</kbd> toggle overlay<br>
     <kbd>m</kbd> toggle MS2 layer<br>
+    <kbd>n</kbd><kbd>b</kbd> next / previous cell in family<br>
     <kbd>r</kbd> reset view<br>
     <kbd>enter</kbd> in id box — go to track<br>
     wheel zoom · drag pan · click a cell
@@ -145,6 +169,9 @@ let selected = null, follow = true, timeline = [], seq = 0, showMs2 = false, sho
 // Follow snaps z and re-centres only on arrival at a new timepoint.  Doing it on every
 // render would undo the z slider and any panning the moment you touched them.
 let lastFollowT = null;
+// Cell families: the level shown, its cells (brightest first), whether they are outlined in the
+// image, and the selected cell's family and trace.
+let famLevel = null, famRows = [], famOutline = true, activity = null;
 
 function params(t, z) {
   return new URLSearchParams({
@@ -158,7 +185,8 @@ function params(t, z) {
     ms2_thr: $('ms2thr').value,
     peaks: showPeaks ? 1 : 0,
     peak_score: $('peakscore').value,
-    b: meta.build || 0,          // retires frames cached from a previous server build
+    family: famOutline && famLevel !== null ? famLevel : '',
+    b: meta.build || 0,         // retires frames cached from a previous server build
   }).toString();
 }
 
@@ -225,6 +253,7 @@ async function render() {
       `/track?tid=${selected}&t=${t}` + (wantTimeline ? '&timeline=1' : ''))).json();
     if (my !== seq) return;
     if (wantTimeline && d.timeline) buildTimeline(d.timeline);
+    if (wantTimeline) activity = d.activity;
     if (d.state === 'active' && willFollow) {
       $('z').value = d.z;                 // set before the frame url is built
       centreOn(d.cx, d.cy);
@@ -234,6 +263,7 @@ async function render() {
     markNow(t);
     if (willFollow) paint(t);
   }
+  drawTrace(t);
 }
 
 // Keep neighbouring timepoints warm so scrubbing does not stall on npz decompression.
@@ -324,8 +354,107 @@ function markNow(t) {
   for (let i = 0; i < segs.length; i++) segs[i].classList.toggle('now', i === t);
 }
 
+// --- cell families ----------------------------------------------------------
+async function openResults() {
+  const msg = $('resmsg');
+  msg.className = ''; msg.textContent = 'loading…';
+  const r = await fetch('/results/open', {method: 'POST', body: JSON.stringify({dir: $('resdir').value})});
+  const d = await r.json().catch(() => ({error: `server error ${r.status}`}));
+  if (d.error) { msg.className = 'err'; msg.textContent = d.error; return; }
+  location.reload();             // every slider range and layer depends on the new recording
+}
+$('resbtn').onclick = openResults;
+$('resdir').addEventListener('keydown', e => { if (e.key === 'Enter') openResults(); });
+
+async function loadFamily() {
+  famLevel = +$('family').value;
+  famRows = await (await fetch(`/family?level=${famLevel}`)).json();
+  $('famlist').innerHTML = '';
+  famRows.forEach((r, i) => {
+    const el = document.createElement('div');
+    el.className = 'trow' + (r.tid === selected ? ' sel' : '');
+    el.dataset.tid = r.tid;
+    el.title = `brightest at t ${r.peak_t}; ${r.frames} frame(s) above the noise floor`;
+    el.innerHTML = `<span>#${r.tid}</span>` +
+      `<span class="dim">max ${r.max.toFixed(1)}</span>` +
+      `<span class="dim">${r.frames}f</span>` +
+      `<span class="dim">t${r.peak_t}</span>`;
+    el.onclick = () => pickFamilyCell(i);
+    $('famlist').appendChild(el);
+  });
+  render();
+}
+
+// Each cell opens on its brightest frame: for a short burst that is the burst itself, for a
+// silent cell the frame it came closest to the floor.
+function pickFamilyCell(i) {
+  if (!famRows.length) return;
+  i = Math.max(0, Math.min(famRows.length - 1, i));
+  $('t').value = famRows[i].peak_t;
+  selectTrack(famRows[i].tid, true);
+  $('famlist').children[i].scrollIntoView({block: 'nearest'});
+}
+
+function stepFamily(delta) {
+  const i = famRows.findIndex(r => r.tid === selected);
+  pickFamilyCell(i < 0 ? 0 : i + delta);
+}
+
+// The selected cell's MS2 trace over the whole recording: the noise floor dashed red, frames
+// above it in yellow, the classification window lighter, the current frame in blue.
+function drawTrace(t) {
+  const c = $('trace');
+  if (!meta.families) return;
+  const dpr = devicePixelRatio || 1;
+  const w = c.width = c.clientWidth * dpr, h = c.height = c.clientHeight * dpr;
+  const ctx = c.getContext('2d');
+  const fam = meta.families, floor = fam.noise_floor;
+  if (!activity) {
+    $('traceinfo').textContent = selected === null ? 'pick a cell to see its MS2 trace'
+      : `track ${selected} is not classified: tracked in under half of the window`;
+    return;
+  }
+  const tr = activity.trace, n = tr.length;
+  const top = Math.max(floor * 1.5, ...tr.filter(v => v !== null)) * 1.08;
+  const X = i => (i + 0.5) * w / n, Y = v => h - v / top * h;
+
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(fam.window[0] * w / n, 0, (fam.window[1] - fam.window[0] + 1) * w / n, h);
+  ctx.strokeStyle = '#e57373'; ctx.lineWidth = dpr; ctx.setLineDash([4 * dpr, 3 * dpr]);
+  ctx.beginPath(); ctx.moveTo(0, Y(floor)); ctx.lineTo(w, Y(floor)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = '#bbb'; ctx.beginPath();
+  let pen = false;                         // untracked frames break the line
+  tr.forEach((v, i) => {
+    if (v === null) { pen = false; return; }
+    pen ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v));
+    pen = true;
+  });
+  ctx.stroke();
+  ctx.fillStyle = '#ff0';
+  tr.forEach((v, i) => {
+    if (v !== null && v > floor) { ctx.beginPath(); ctx.arc(X(i), Y(v), 2.2 * dpr, 0, 7); ctx.fill(); }
+  });
+  ctx.strokeStyle = '#6cf'; ctx.lineWidth = 1.5 * dpr;
+  ctx.beginPath(); ctx.moveTo(X(t), 0); ctx.lineTo(X(t), h); ctx.stroke();
+
+  const now = tr[t] === null || tr[t] === undefined ? 'untracked' : tr[t].toFixed(1);
+  $('traceinfo').innerHTML =
+    `track ${selected} · <span class="val">${activity.name}</span><br>` +
+    `peak +${activity.peak.toFixed(1)} above floor ${floor} · ${activity.frames} frame(s) above<br>` +
+    `max ${activity.max.toFixed(1)} at t ${activity.peak_t} · now ${now}`;
+}
+$('trace').onclick = e => {
+  if (!activity) return;
+  const n = activity.trace.length;
+  $('t').value = Math.max(0, Math.min(n - 1, Math.floor(e.offsetX / $('trace').clientWidth * n)));
+  render();
+};
+
 function clearSelection() {
   selected = null;
+  activity = null;
   timeline = [];
   $('timeline').innerHTML = '';
   for (const el of document.querySelectorAll('.trow')) el.classList.remove('sel');
@@ -378,6 +507,12 @@ addEventListener('mouseup', async e => {
 // --- controls ---------------------------------------------------------------
 for (const id of ['t', 'z', 'alpha', 'lo', 'hi', 'ms2thr', 'peakscore']) $(id).addEventListener('input', render);
 $('sort').addEventListener('change', loadTrackList);
+$('family').addEventListener('change', loadFamily);
+$('famshow').onclick = () => {
+  famOutline = !famOutline;
+  $('famshow').textContent = 'outline family: ' + (famOutline ? 'on' : 'off');
+  render();
+};
 
 $('mode').onclick = () => {
   mode = mode === 'outline' ? 'fill' : 'outline';
@@ -406,7 +541,8 @@ $('follow').onclick = () => {
 };
 
 addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' && e.key !== ' ') return;
+  // a typed folder path can hold spaces, which must not toggle the overlay
+  if (e.target.tagName === 'INPUT' && (e.key !== ' ' || e.target.type === 'text')) return;
   const k = e.key;
   if (k === 'ArrowRight') step('t', 1);
   else if (k === 'ArrowLeft') step('t', -1);
@@ -415,6 +551,8 @@ addEventListener('keydown', e => {
   else if (k === 'r' || k === 'R') resetView();
   else if ((k === 'm' || k === 'M') && meta.has_ms2) toggleMs2();
   else if ((k === 'p' || k === 'P') && meta.has_peaks) togglePeaks();
+  else if ((k === 'n' || k === 'N') && meta.families) stepFamily(1);
+  else if ((k === 'b' || k === 'B') && meta.families) stepFamily(-1);
   else if (k === 'Escape') clearSelection();
   else if (k === ' ') {
     overlay = !overlay;
@@ -435,8 +573,21 @@ addEventListener('resize', resetView);
   if (meta.has_tracklets) { $('tracks').style.display = 'block'; loadTrackList(); }
   if (meta.has_ms2) { $('ms2box').style.display = 'block'; $('ms2thr').max = meta.ms2_max; }
   if (meta.has_peaks) $('peakbox').style.display = 'block';
+  if (meta.results_dir) $('resdir').value = meta.results_dir;
   img.onload = () => { img.onload = null; resetView(); };   // fit once, on the first frame
-  render();
+  if (meta.families) {
+    // judging a burst means seeing the emitter channel, so it starts on
+    if (meta.has_ms2) { showMs2 = true; $('ms2').textContent = 'MS2 layer: on'; }
+    $('fambox').style.display = 'block';
+    const f = meta.families;
+    $('famwin').textContent = `t ${f.window[0]}–${f.window[1]}`;
+    for (const l of f.levels) $('family').add(new Option(`${l.name} (${l.n})`, l.level));
+    // short bursts first: they are the family whose reality is in question
+    if (f.levels.some(l => l.level === 1)) $('family').value = 1;
+    loadFamily();                          // renders
+  } else {
+    render();
+  }
 })();
 </script>
 </body>

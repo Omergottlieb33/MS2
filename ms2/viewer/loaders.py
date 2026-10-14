@@ -6,12 +6,15 @@ same script writes.  Tracklets are the json create_tracklets() produces.
 """
 import csv
 import functools
+import glob
 import json
 import os
 
 import numpy as np
+import pandas as pd
 import tifffile
 
+from ms2.gene_expression.expression_matrix import FIXED_NAME, RESULTS_NAME
 from ms2.preprocess import CELL_CHANNEL
 from ms2.tracking import evaluate_tracklets, extract_time_number, get_masks_paths
 
@@ -214,3 +217,100 @@ class TrackletStore:
                  'n_resurrections': int(r.n_resurrections),
                  'border_exit': bool(r.border_exit)}
                 for tid, r in top.iterrows()]
+
+
+class FamilyStore:
+    """Every cell's activity family -- the ms2/cell_activity.py levels, silent, short burst /
+    noise, weakly .. high active -- with its MS2 trace, keyed by tracklet id.
+
+    Computed here with that module's defaults over the activity step's window, rather than read
+    from activity/clusters.csv: recordings run before the pipeline have none, and recomputing
+    reproduces a saved file exactly (all 427 cells of New-03-V).  Cells tracked through less
+    than MIN_PRESENCE of the window are not classified, as there.
+    """
+
+    def __init__(self, csv_path, roi_path=None):
+        # Local: cell_activity imports track_diagnostics, which imports this module.
+        from ms2.cell_activity import (LEVEL_NAMES, NOISE_FLOOR, activity_descriptors,
+                                       classify_cells, load_window)
+        from ms2.pipeline import activity_window
+
+        matrix = pd.read_csv(csv_path).set_index('timepoint').sort_index()
+        t_start, t_end = activity_window(roi_path, len(matrix))
+        signals, present, cells, timepoints = load_window(csv_path, t_start, t_end)
+        desc = activity_descriptors(signals, present)
+        levels = classify_cells(desc)
+
+        self.noise_floor = NOISE_FLOOR
+        self.window = (int(timepoints[0]), int(timepoints[-1]))
+        self.names = LEVEL_NAMES
+        # position = timepoint, so the page can index a trace by t directly
+        matrix = matrix.reindex(range(int(matrix.index.max()) + 1))
+        self.cells = {}
+        for i, (cell, level) in enumerate(zip(cells, levels)):
+            trace = matrix[cell].to_numpy()
+            self.cells[int(cell[len('cell_'):])] = {
+                'level': int(level), 'name': LEVEL_NAMES[level],
+                'peak': float(desc['peak'][i]), 'frames': int(desc['frames'][i]),
+                'total': float(desc['total'][i]),
+                # raw, not above the floor, so a silent cell still has a brightest frame:
+                # how close it came is the point of comparing it with the short bursts
+                'max': float(signals[i].max()),
+                'peak_t': int(timepoints[signals[i].argmax()]),
+                'trace': [None if np.isnan(v) else round(float(v), 2) for v in trace]}
+
+    def summary(self):
+        counts = pd.Series([c['level'] for c in self.cells.values()]).value_counts()
+        return {'window': self.window, 'noise_floor': self.noise_floor,
+                'levels': [{'level': int(l), 'name': self.names[l], 'n': int(counts[l])}
+                           for l in sorted(counts.index)]}
+
+    def tids(self, level):
+        return [tid for tid, c in self.cells.items() if c['level'] == level]
+
+    def members(self, level):
+        """A family's cells, brightest first, without their traces."""
+        rows = [{'tid': tid, **{k: v for k, v in c.items() if k != 'trace'}}
+                for tid, c in self.cells.items() if c['level'] == level]
+        return sorted(rows, key=lambda r: (-r['max'], r['tid']))
+
+
+def find_results(rec_dir):
+    """The viewer's inputs inside one recording's results folder, None where missing.
+
+    Takes the layout ms2/pipeline.py writes (preprocess/, unified/, gene_expression/) and the
+    older hand-run one (unify/, gene_expression_roi_selection/, the tifs left beside the ROI's
+    projection instead of in preprocess/).  The MS2 channel is the background-subtracted one
+    gene expression measures.
+    """
+    rec_dir = os.path.abspath(rec_dir)
+    name = os.path.basename(rec_dir.rstrip(os.sep))
+
+    def first(folder, *patterns):
+        for pat in patterns:
+            hits = sorted(glob.glob(os.path.join(glob.escape(folder), pat)))
+            if hits:
+                return hits[-1]
+        return None
+
+    tracklets = first(rec_dir, 'unified/tracklets_unified.json', 'unify/tracklets_unified.json')
+    roi = first(rec_dir, 'roi_selection.json', 'unified/roi_selection.json',
+                'unify/roi_selection.json')
+    image_dirs = [os.path.join(rec_dir, 'preprocess')]
+    if roi:
+        with open(roi) as f:
+            projection = json.load(f).get('projection')
+        if projection:
+            image_dirs.append(os.path.dirname(projection))
+    found = {
+        'tracklets': tracklets,
+        'masks': first(os.path.dirname(tracklets), 'masks_split') if tracklets else None,
+        'roi': roi,
+        # the fixed matrix when there is one; the original holds traces at the wrong timepoints
+        'csv': first(rec_dir, f'gene_expression*/{FIXED_NAME}', f'gene_expression*/{RESULTS_NAME}'),
+        'peaks': first(rec_dir, 'gene_expression*/peak_to_cell_matching_prominence_*.csv'),
+        'image': None, 'ms2': None}
+    for d in image_dirs:
+        found['image'] = found['image'] or first(d, f'C2-{name}.tif')
+        found['ms2'] = found['ms2'] or first(d, f'C1-{name}_bg_remov*.tif')
+    return found

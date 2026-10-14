@@ -120,6 +120,9 @@ class Handler(viewer.Handler):
     """The viewer's handler plus the app's own pages and /api; one port for everything."""
     app = None
 
+    def check_path(self, path):
+        self.app.check(path)        # the viewer's results-folder box stays inside the data roots
+
     def _json(self, obj):
         self._send(json.dumps(obj).encode(), 'application/json')
 

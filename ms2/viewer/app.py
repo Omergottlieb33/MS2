@@ -16,8 +16,8 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from ms2.roi_selection import load_projection, save_roi, select_tracklets
-from ms2.viewer.loaders import (CELL_CHANNEL, MaskStore, Ms2Store, PeakStore,
-                                TrackletStore, load_image, locate)
+from ms2.viewer.loaders import (CELL_CHANNEL, FamilyStore, MaskStore, Ms2Store, PeakStore,
+                                TrackletStore, find_results, load_image, locate)
 from ms2.viewer.render import composite, intensity_window
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
@@ -42,6 +42,8 @@ class Viewer:
         self.roi_out = None      # where /roi suggests saving; next to the tracklets if unset
         self.next_url = None     # where /roi offers to go after saving (the app's home)
         self.tracklets_path = tracklets_path
+        self.families = None     # FamilyStore, when opened on a results folder
+        self.results_dir = None
         if self.image is not None:
             self.n_t, self.n_z, self.height, self.width = self.image.shape
         self._windows = {}
@@ -60,7 +62,7 @@ class Viewer:
         return None if volume is None or z >= volume.shape[0] else volume[z]
 
     def frame(self, t, z, alpha, mode, lo_pct, hi_pct, tid=None, show_ms2=False, ms2_thr=18.0,
-              show_peaks=False, peak_score=0.0):
+              show_peaks=False, peak_score=0.0, family=None):
         t = max(0, min(self.n_t - 1, t))
         z = max(0, min(self.n_z - 1, z))
         lo, hi = self.window(t, lo_pct, hi_pct)
@@ -68,12 +70,17 @@ class Viewer:
         if tid is not None and self.tracks is not None:
             label, state = self.tracks.state_at(tid, t)
             highlight = label if state == 'active' else 0   # 0 -> dim everything, pick out nothing
+        group = None
+        if family is not None and self.families is not None and self.tracks is not None:
+            group = [label for label in (self.tracks.state_at(f, t)[0]
+                                         for f in self.families.tids(family)) if label > 0]
         # get() returns None past the end of a shorter MS2 file, which reads as no signal
         ms2 = self.ms2.get(t) if (show_ms2 and self.ms2 is not None) else None
         peaks = (self.peaks.get(t, peak_score)
                  if (show_peaks and self.peaks is not None) else None)
         return composite(self.image[t, z], self.mask_slice(t, z), lo, hi, alpha, mode,
-                         highlight=highlight, ms2=ms2, ms2_thr=ms2_thr, peaks=peaks)
+                         highlight=highlight, ms2=ms2, ms2_thr=ms2_thr, peaks=peaks,
+                         group=group)
 
     def roi_frames(self, t_first=None, t_last=None):
         """The two frames boundaries are drawn on; the whole projection unless a window is chosen."""
@@ -132,11 +139,28 @@ class Viewer:
         return out
 
 
+def open_results(rec_dir):
+    """A viewer on one recording's results folder (see find_results), with its cell families."""
+    found = find_results(rec_dir)
+    missing = [k for k in ('image', 'tracklets', 'masks') if not found[k]]
+    if missing:
+        raise FileNotFoundError(f'no {", ".join(missing)} found for {rec_dir}')
+    v = Viewer(found['image'], found['masks'], CELL_CHANNEL, found['tracklets'], found['ms2'],
+               peaks_path=found['peaks'])
+    if found['csv']:
+        v.families = FamilyStore(found['csv'], found['roi'])
+    v.results_dir = os.path.abspath(rec_dir)
+    return v
+
+
 class Handler(BaseHTTPRequestHandler):
     viewer = None
 
-    def _send(self, body, content_type, cache=False):
-        self.send_response(200)
+    def check_path(self, path):
+        """Refuse a folder the page may not open; anything goes when the viewer runs alone."""
+
+    def _send(self, body, content_type, cache=False, status=200):
+        self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
         if cache:
@@ -167,6 +191,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({'path': path,
                                        'n_total': sel['n_total'] if sel else None}).encode(),
                            'application/json')
+            elif url.path == '/results/open':
+                # Windows' "Copy as path" wraps a path in quotes
+                path = body.get('dir', '').strip().strip('"\'').strip()
+                try:
+                    self.check_path(path)
+                    type(self).viewer = open_results(path)
+                except (OSError, ValueError, KeyError) as exc:
+                    self._send(json.dumps({'error': str(exc)}).encode(), 'application/json',
+                               status=400)
+                    return
+                self._send(json.dumps({'ok': True}).encode(), 'application/json')
             else:
                 self.send_error(404)
         except Exception as exc:
@@ -213,7 +248,12 @@ class Handler(BaseHTTPRequestHandler):
                     'has_peaks': v.peaks is not None,
                     'n_peaks': v.peaks.n_peaks if v.peaks else 0,
                     'has_roi': v.projection is not None,
+                    'results_dir': v.results_dir,
+                    'families': v.families.summary() if v.families else None,
                 }).encode(), 'application/json')
+            elif url.path == '/family':
+                self._send(json.dumps(v.families.members(int(q['level']))).encode(),
+                           'application/json')
             elif url.path == '/frame':
                 png = v.frame(
                     t=int(q['t']), z=int(q['z']),
@@ -226,6 +266,7 @@ class Handler(BaseHTTPRequestHandler):
                     ms2_thr=float(q.get('ms2_thr', 18.0)),
                     show_peaks=q.get('peaks') == '1',
                     peak_score=float(q.get('peak_score', 0.0)),
+                    family=int(q['family']) if q.get('family', '') != '' else None,
                 )
                 self._send(png, 'image/png', cache=True)
             elif url.path == '/label':
@@ -241,6 +282,9 @@ class Handler(BaseHTTPRequestHandler):
                 tid = int(q['tid'])
                 out = v.track_at(tid, int(q['t']))
                 out['timeline'] = v.tracks.timeline(tid) if q.get('timeline') else None
+                # family and trace ride along with the timeline: both are fetched once per pick
+                out['activity'] = (v.families.cells.get(tid)
+                                   if q.get('timeline') and v.families else None)
                 self._send(json.dumps(out).encode(), 'application/json')
             else:
                 self.send_error(404)
@@ -254,6 +298,9 @@ class Handler(BaseHTTPRequestHandler):
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--results', help="a recording's results folder: finds the image, MS2 "
+                                     'channel, masks, tracks and peaks in it and sorts the '
+                                     'cells into activity families; replaces the options below')
     p.add_argument('--image', help='4D (T, Z, Y, X) tif, or a czi; leave out to only draw an ROI')
     p.add_argument('--masks-dir', help='directory of z_stack_t{N}_seg_masks.npz files')
     p.add_argument('--tracklets', help='tracklets json from create_tracklets()')
@@ -267,15 +314,21 @@ def parse_args():
                    help='cell channel index, used only for multi-channel input')
     p.add_argument('--port', type=int, default=5000)
     args = p.parse_args()
-    if not (args.image or args.projection):
-        p.error('give --image, --projection, or both')
+    if not (args.results or args.image or args.projection):
+        p.error('give --results, or --image, --projection or both')
     return args
 
 
 def main():
     args = parse_args()
-    Handler.viewer = Viewer(args.image, args.masks_dir, args.channel, args.tracklets, args.ms2,
-                            args.projection, args.peaks)
+    if args.results:
+        Handler.viewer = open_results(args.results)
+        found = find_results(args.results)
+        args.image, args.masks_dir, args.tracklets, args.ms2, args.peaks = (
+            found['image'], found['masks'], found['tracklets'], found['ms2'], found['peaks'])
+    else:
+        Handler.viewer = Viewer(args.image, args.masks_dir, args.channel, args.tracklets,
+                                args.ms2, args.projection, args.peaks)
     v = Handler.viewer
     if v.image is not None:
         print(f'image {args.image}  ->  {v.n_t} timepoints, {v.n_z} z, {v.height}x{v.width}')
@@ -290,6 +343,12 @@ def main():
     if v.peaks:
         print(f'peaks {args.peaks}  ->  {v.peaks.n_peaks} emitters over '
               f'{len(v.peaks.by_t)} timepoints')
+    if v.families:
+        s = v.families.summary()
+        print(f'families over t={s["window"][0]}..{s["window"][1]}: ' +
+              ', '.join(f'{f["name"]} {f["n"]}' for f in s['levels']))
+    elif args.results:
+        print('families: no gene_expression_results.csv in the results folder')
     if v.projection is not None:
         print(f'proj  {args.projection}  ->  {len(v.projection)} frames; '
               f'boundaries drawn on frames chosen in the page')

@@ -17,6 +17,9 @@ _LUT[1:] = np.array(generate_random_colors(255), dtype=np.uint8)
 # are following change colour as you scrub -- exactly the wrong signal.  generate_random_colors
 # never emits a channel below 50, so pure red cannot collide with a neighbour.
 HIGHLIGHT = np.array([255, 0, 0], dtype=np.uint8)
+# The cells of one activity family, outlined together.  Cyan for the same reason: no zero
+# channel in the LUT, and it stays apart from the yellow MS2 layer drawn over it.
+GROUP = np.array([0, 255, 255], dtype=np.uint8)
 
 
 def _dilate(edge):
@@ -70,14 +73,17 @@ def _draw_all(rgb, mask_2d, colors, alpha, mode):
         rgb[sel] = blend(rgb[sel], colors[sel], alpha).astype(np.uint8)
 
 
-def _draw_highlight(rgb, mask_2d, colors, highlight):
+def _draw_highlight(rgb, mask_2d, colors, highlight, group=()):
     """One cell picked out of the crowd: everything else drops to a faint outline so
-    the neighbours that explain a bad match stay visible."""
+    the neighbours that explain a bad match stay visible.  The labels in group, a family's
+    cells, keep a full outline of their own."""
     others = np.where((mask_2d > 0) & (mask_2d != highlight), mask_2d, 0)
     faint = _outlines(others)
     # Dimmed colour at fairly high alpha, not full colour at low alpha: cell interiors
     # are near-white, so a low-alpha blend washes out to nothing and the context is lost.
     rgb[faint] = blend(rgb[faint], colors[faint] * 0.7, 0.6).astype(np.uint8)
+    if len(group):
+        rgb[_outlines(np.where(np.isin(others, group), others, 0))] = GROUP
 
     if highlight <= 0:
         return          # track is in a gap or gone; nothing to pick out.  Must come before
@@ -146,22 +152,24 @@ def _draw_peaks(rgb, peaks):
 
 
 def composite(img_2d, mask_2d, lo, hi, alpha=0.4, mode='outline', highlight=None,
-              ms2=None, ms2_thr=18.0, peaks=None):
+              ms2=None, ms2_thr=18.0, peaks=None, group=None):
     """Contrast-stretched greyscale slice with the mask drawn over it, as PNG bytes.
 
     highlight: a label id to pick out, or None to draw every cell equally.
     ms2:       2D MS2 map to lay over in yellow, or None.
     peaks:     detected emitters [(x, y, label, score)] to ring, or None.
+    group:     labels to outline together (one family's cells), or None.
     """
     scaled = (img_2d.astype(np.float32) - lo) * (255.0 / (hi - lo))
     rgb = np.repeat(np.clip(scaled, 0, 255).astype(np.uint8)[:, :, None], 3, axis=2)
 
     if mask_2d is not None and alpha > 0:
         colors = _LUT[(mask_2d % 255 + 1).astype(np.uint8)]
-        if highlight is None:
+        if highlight is None and group is None:
             _draw_all(rgb, mask_2d, colors, alpha, mode)
         else:
-            _draw_highlight(rgb, mask_2d, colors, highlight)
+            # a family alone dims the rest just as a selection does; 0 picks out no cell
+            _draw_highlight(rgb, mask_2d, colors, highlight or 0, group if group else ())
 
     if ms2 is not None:
         # last, on top of the masks.  An emitter is often a single pixel, so anything drawn
