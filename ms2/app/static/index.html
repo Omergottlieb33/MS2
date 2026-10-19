@@ -60,20 +60,39 @@
   .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
   .files a { color: var(--accent); font-size: 12px; word-break: break-all; text-decoration: none; }
   .files img { width: 100%; display: block; background: #fff; border-radius: 3px; margin-bottom: 4px; }
+  .about { line-height: 1.55; }
+  .about img { width: 100%; display: block; border-radius: 4px; margin: 10px 0; }
+  .about ol { padding-left: 20px; } .about li { margin: 4px 0; }
+  .about code { font-size: 12px; color: var(--dim); }
+  a { color: var(--accent); }
   details summary { cursor: pointer; color: var(--dim); margin-top: 10px; }
+  .align { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 10px; }
+  .align .frame { position: relative; aspect-ratio: 1; overflow: hidden; background: #000; border-radius: 3px; }
+  .align img { width: 100%; height: 100%; display: block; transition: transform .15s; }
+  /* a centre cross to line the embryos' axes up against */
+  .align .frame::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(to right, transparent calc(50% - .5px), #fff6 50%, transparent calc(50% + .5px)),
+                linear-gradient(to bottom, transparent calc(50% - .5px), #fff6 50%, transparent calc(50% + .5px)); }
+  .align .row { margin-top: 6px; gap: 4px; }
+  .align button { padding: 3px 8px; }
+  .align input[type=range] { flex: 1; }
+  .align input[type=number] { width: 64px; }
+  #alnMap img { width: 100%; background: #fff; border-radius: 3px; margin-top: 10px; }
   .busy::after { content: ' …'; animation: blink 1s infinite; }
   @keyframes blink { 50% { opacity: .3; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>MS2 pipeline</h1>
+  <h1>MS2 pipeline <span class="hint" id="ver"></span></h1>
   <nav>
     <button data-tab="new" class="on">New analysis</button>
     <button data-tab="runs">Runs &amp; results</button>
     <button data-tab="compare">Compare recordings</button>
+    <button data-tab="about">About</button>
   </nav>
   <span class="hint" id="who"></span>
+  <button id="logout" hidden>Log out</button>
 </header>
 
 <main>
@@ -127,6 +146,12 @@
     </table>
     <div class="msg" id="runsMsg"></div>
   </div>
+  <div class="card">
+    <h2>Open a file on the server</h2>
+    <div class="row"><input type="text" id="openPath" spellcheck="false"
+        placeholder="/zjbd/zd1/shechtmanlab/.../dashboard.html"><button id="openBtn">Open</button></div>
+    <p class="hint" id="openHint">Paste the full path of a page, picture or PDF; it opens in a new tab.</p>
+  </div>
   <div class="card" id="detail" hidden>
     <h2 id="dTitle"></h2>
     <div class="row">
@@ -154,6 +179,11 @@
       <thead><tr><th></th><th>Recording</th><th>Start frame</th><th>End frame</th><th>Status</th></tr></thead>
       <tbody id="cmpBody"></tbody>
     </table>
+    <label>Add a run from another folder</label>
+    <div class="row"><input type="text" id="cmpAdd" spellcheck="false"
+        placeholder="/zjbd/.../outputs/STAGE-11/New-02-v3-ST11-12"><button id="cmpAddBtn">Add</button></div>
+    <p class="hint">The recording's own results folder, as the pipeline made it. Finished steps are
+      not run again.</p>
     <p class="hint">Results go to <code id="cmpOut"></code>/_comparison.</p>
     <label>Activity levels</label>
     <select id="ladder"><option value="joint">one scale for all recordings</option>
@@ -165,6 +195,51 @@
     <h2>Comparison <span class="badge" id="cmpState"></span></h2>
     <details open><summary>Log</summary><pre id="cmpLog"></pre></details>
     <div class="files" id="cmpFiles"></div>
+  </div>
+  <div class="card">
+    <h2>Align the recordings</h2>
+    <p class="hint">Each recording's first stage frame (cell channel). Turn and mirror them until
+      the embryos face the same way, then save: the spatial map is redrawn in that orientation
+      (spatial_maps_aligned.png), and again on every rerun of the comparison. The numbers do
+      not change; none depends on orientation.</p>
+    <label>Comparison folder</label>
+    <div class="row"><input type="text" id="alnDir" spellcheck="false"><button id="alnOpen">Open</button></div>
+    <div class="align" id="alnTiles"></div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="alnSave" disabled>Save alignment</button>
+      <span id="alnMsg"></span></div>
+    <div id="alnMap"></div>
+  </div>
+</section>
+
+<!-- ───────────── About ───────────── -->
+<section id="about" hidden>
+  <div class="card about">
+    <h2>What this does</h2>
+    <p>MS2 turns a live-imaging recording of an embryo (a Zeiss <code>.czi</code> with an MS2 channel
+      and a cell channel) into how strongly each cell transcribes over time. Everything runs on the
+      lab's GPU server; your browser only shows the page.</p>
+    <img src="/static/explainer.webp?v=2" alt="The pipeline step by step on one recording">
+    <p class="hint">One of the lab's recordings through time, every step side by side: the raw cells,
+      the segmentation, the tracks, the MS2 spots, and the cells grouped by activity.</p>
+    <h2>The steps</h2>
+    <ol>
+      <li><b>Preprocess</b>: splits the two channels and removes the MS2 background.</li>
+      <li><b>Segment</b>: finds every nucleus in 3D with Cellpose, frame by frame (the slow step, on the GPU).</li>
+      <li><b>Track</b>: follows each cell from frame to frame.</li>
+      <li><b>Unify</b>: splits cells that were merged and drops fragments, so each cell is one track.</li>
+      <li><b>Gene expression</b>: finds the MS2 transcription spots and measures them in their cell over time.</li>
+      <li><b>Activity</b>: groups the cells from silent to highly active.</li>
+    </ol>
+    <p>A finished step is kept: a stopped run picks up where it left off.</p>
+    <h2>Using this page</h2>
+    <ol>
+      <li><b>New analysis</b>: choose a CZI, draw the region of interest on the first and last frames
+        of the stage, and start.</li>
+      <li><b>Runs &amp; results</b>: follow the steps and the log, open the viewer, and download the results.</li>
+      <li><b>Compare recordings</b>: put several finished recordings on one activity scale.</li>
+    </ol>
+    <h2>Version</h2>
+    <p id="verInfo"></p>
   </div>
 </section>
 </main>
@@ -180,6 +255,7 @@ let config = {}, runs = [], selected = null;
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} :
     {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (r.status === 401) location.href = '/login';       // logged out, or the password changed
   const d = await r.json().catch(() => ({error: r.statusText}));
   if (!r.ok) throw new Error(d.error || r.statusText);
   return d;
@@ -231,6 +307,7 @@ $('cziFile').onchange = () => {
   xhr.onload = () => {
     let d = {};
     try { d = JSON.parse(xhr.responseText); } catch (e) { d = {error: xhr.statusText}; }
+    if (xhr.status === 401) { location.href = '/login'; return; }
     if (xhr.status !== 200) return say('uploadMsg', esc(d.error || xhr.statusText), 'bad');
     say('uploadMsg', '✓ uploaded', 'ok');
     $('czi').value = d.path;
@@ -359,35 +436,76 @@ $('dResume').onclick = async () => {
   await action('/api/run/start', {...form(), czi: r.czi, out}, 'resumed — finished steps are skipped');
   loadRuns();
 };
+$('openBtn').onclick = () => {
+  const p = unquote($('openPath').value);
+  if (!p.startsWith('/')) return say('openHint', 'give the full path, starting with /', 'warn');
+  window.open('/open' + p.split('/').map(encodeURIComponent).join('/'), '_blank');
+};
+$('openPath').onkeydown = e => { if (e.key === 'Enter') $('openBtn').onclick(); };
 $('dZip').onclick = () => { location.href = '/api/download?dir=' + encodeURIComponent(selected); };
 $('dDash').onclick = async () => { await action('/api/dashboard', {dir: selected}, 'building the dashboard; it appears below when done'); loadDetail(); };
 
 // ── compare ──
-let cmpRuns = [];
+// The runs in the Runs page's folder, then the ones added by their path from anywhere else.
+// Each recording is processed in its own folder, so finished steps are never run again.
+let cmpRuns = [], cmpFound = [], cmpAdded = [];
+function renderCompare() {
+  // keep what was ticked and typed, keyed by folder, across a redraw
+  const kept = {};
+  document.querySelectorAll('#cmpBody tr[data-d]').forEach(tr => kept[tr.dataset.d] = {
+    on: tr.querySelector('input[type=checkbox]').checked,
+    ts: tr.querySelector('.ts').value, te: tr.querySelector('.te').value});
+  const seen = new Set(cmpFound.map(r => r.dir));
+  cmpRuns = [...cmpFound, ...cmpAdded.filter(r => !seen.has(r.dir))];
+  $('cmpBody').innerHTML = cmpRuns.map((r, i) => {
+    const ready = r.steps_done.includes('gene_expression'), k = kept[r.dir];
+    const added = cmpAdded.includes(r);
+    return `<tr data-d="${esc(r.dir)}"><td><input type="checkbox" data-i="${i}" ${(k ? k.on : ready) ? 'checked' : ''}></td>
+      <td>${esc(r.name)}${added ? ` <button class="rm" data-i="${i}" title="remove from this list">✕</button><br><span class="hint">${esc(r.dir)}</span>` : ''}</td>
+      <td><input type="number" class="ts" id="ts${i}" min="0" value="${k ? k.ts : r.roi ? r.roi.t_first : 0}"></td>
+      <td><input type="number" class="te" id="te${i}" min="0" value="${k ? k.te : r.roi ? r.roi.t_last : ''}" placeholder="end"></td>
+      <td>${ready ? '<span class="ok">ready</span>' : '<span class="hint">runs first</span>'}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="hint">no recordings in the results folder on the Runs page; add one by its path below</td></tr>';
+}
 async function loadCompare() {
-  // The comparison lives in the recordings' own results folder: pointed anywhere else,
-  // the pipeline would process every recording again from the start.
   const root = $('runsRoot').value.trim();
   $('cmpOut').textContent = root;
+  if (!$('alnDir').value && root) $('alnDir').value = join(root, '_comparison');
   try {
-    cmpRuns = (await api('/api/runs?root=' + encodeURIComponent(root))).filter(r => r.czi);
-    $('cmpBody').innerHTML = cmpRuns.map((r, i) => {
-      const ready = r.steps_done.includes('gene_expression');
-      return `<tr><td><input type="checkbox" data-i="${i}" ${ready ? 'checked' : ''}></td><td>${esc(r.name)}</td>
-        <td><input type="number" id="ts${i}" min="0" value="${r.roi ? r.roi.t_first : 0}"></td>
-        <td><input type="number" id="te${i}" min="0" value="${r.roi ? r.roi.t_last : ''}" placeholder="end"></td>
-        <td>${ready ? '<span class="ok">ready</span>' : '<span class="hint">runs first</span>'}</td></tr>`;
-    }).join('') || '<tr><td colspan="5" class="hint">no recordings in the results folder on the Runs page</td></tr>';
-  } catch (e) { say('cmpMsg', esc(e.message), 'bad'); }
+    cmpFound = (await api('/api/runs?root=' + encodeURIComponent(root))).filter(r => r.czi);
+  } catch (e) { cmpFound = []; say('cmpMsg', esc(e.message), 'bad'); }
+  renderCompare();
   loadCompareStatus();
 }
+$('cmpAddBtn').onclick = async () => {
+  const dir = unquote($('cmpAdd').value).replace(/\/+$/, '');
+  if (!dir.startsWith('/')) return say('cmpMsg', 'give the full path of the run folder, starting with /', 'warn');
+  try {
+    const r = await api('/api/run?dir=' + encodeURIComponent(dir));
+    if (!r.czi) return say('cmpMsg', `${esc(dir)} is not a run of the pipeline: no CZI is recorded in it`, 'bad');
+    if (cmpRuns.some(x => x.dir === r.dir)) return say('cmpMsg', `${esc(r.name)} is already in the list`, 'warn');
+    cmpAdded.push(r);
+    renderCompare();
+    $('cmpAdd').value = '';
+    say('cmpMsg', `added ${esc(r.name)}`, 'ok');
+  } catch (e) { say('cmpMsg', esc(e.message), 'bad'); }
+};
+$('cmpAdd').onkeydown = e => { if (e.key === 'Enter') $('cmpAddBtn').onclick(); };
+$('cmpBody').onclick = e => {
+  const b = e.target.closest('button.rm');
+  if (!b) return;
+  cmpAdded = cmpAdded.filter(r => r !== cmpRuns[+b.dataset.i]);
+  renderCompare();
+};
 $('cmpBtn').onclick = async () => {
   const recordings = {};
   for (const cb of document.querySelectorAll('#cmpBody input[type=checkbox]:checked')) {
     const i = +cb.dataset.i, r = cmpRuns[i];
     const t_start = +$('ts' + i).value, te = $('te' + i).value;
     if (te === '') return say('cmpMsg', `give the end frame for ${esc(r.name)}`, 'warn');
-    recordings[r.name] = {czi: r.czi, t_start, t_end: +te, ...(r.roi ? {roi: join(r.dir, 'roi_selection.json')} : {})};
+    if (recordings[r.name]) return say('cmpMsg', `two recordings are named ${esc(r.name)}; compare one of them`, 'warn');
+    recordings[r.name] = {czi: r.czi, out: r.dir.replace(/\/[^/]+$/, ''), t_start, t_end: +te,
+                          ...(r.roi ? {roi: join(r.dir, 'roi_selection.json')} : {})};
   }
   if (Object.keys(recordings).length < 2) return say('cmpMsg', 'pick at least two recordings', 'warn');
   try {
@@ -409,6 +527,70 @@ async function loadCompareStatus() {
   } catch (e) { /* folder not created yet */ }
 }
 
+// ── align ──
+// A turn is: mirror left-right if flip, then rotate clockwise -- CSS applies scaleX first.
+// The flip buttons act on the picture as it now looks, so they are rewritten into that form.
+let aln = {dir: '', recs: []};
+const norm = a => ((a + 180) % 360 + 360) % 360 - 180;
+const showMap = path => { $('alnMap').innerHTML = path ? `<a href="/file?path=${encodeURIComponent(path)}" target="_blank">` +
+  `<img src="/file?path=${encodeURIComponent(path)}&v=${Date.now()}"></a>` : ''; };
+function drawTile(i) {
+  const r = aln.recs[i];
+  if (r.error) return;
+  $('alnImg' + i).style.transform = `rotate(${r.rotate}deg) scaleX(${r.flip ? -1 : 1})`;
+  $('alnAng' + i).value = $('alnNum' + i).value = Math.round(r.rotate * 10) / 10;
+}
+async function openAlign() {
+  const dir = unquote($('alnDir').value);
+  try {
+    const d = await api('/api/align?dir=' + encodeURIComponent(dir));
+    aln = {dir, recs: d.recordings};
+    $('alnTiles').innerHTML = aln.recs.map((r, i) => `<div><b>${esc(r.name)}</b> <span class="hint">frame ${r.t}</span>` +
+      (r.error ? `<p class="bad">${esc(r.error)}</p>` :
+      `<div class="frame"><img id="alnImg${i}" src="/api/align/frame?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(r.name)}&t=${r.t}"></div>
+      <div class="row" data-i="${i}"><button data-a="ccw" title="rotate 90° anticlockwise">⟲ 90°</button>
+        <button data-a="cw" title="rotate 90° clockwise">⟳ 90°</button>
+        <button data-a="h" title="mirror left-right">⇋ flip</button><button data-a="v" title="mirror top-bottom">⇵ flip</button>
+        <button data-a="reset">reset</button></div>
+      <div class="row" data-i="${i}"><input type="range" id="alnAng${i}" min="-180" max="180" step="1">
+        <input type="number" id="alnNum${i}" step="1">°</div>`) + '</div>').join('');
+    aln.recs.forEach((r, i) => drawTile(i));
+    $('alnSave').disabled = aln.recs.some(r => r.error);
+    say('alnMsg', d.recordings.some(r => r.error) ? 'a recording has no frame to align; see its tile' : '', 'warn');
+    showMap(d.map);
+  } catch (e) { $('alnTiles').innerHTML = ''; $('alnSave').disabled = true; showMap(null); say('alnMsg', esc(e.message), 'bad'); }
+}
+$('alnOpen').onclick = openAlign;
+$('alnDir').onkeydown = e => { if (e.key === 'Enter') openAlign(); };
+$('alnTiles').onclick = e => {
+  const b = e.target.closest('button[data-a]');
+  if (!b) return;
+  const i = +b.closest('[data-i]').dataset.i, r = aln.recs[i];
+  ({cw: () => { r.rotate = norm(r.rotate + 90); }, ccw: () => { r.rotate = norm(r.rotate - 90); },
+    h: () => { r.flip = !r.flip; r.rotate = norm(-r.rotate); },
+    v: () => { r.flip = !r.flip; r.rotate = norm(180 - r.rotate); },
+    reset: () => { r.flip = false; r.rotate = 0; }})[b.dataset.a]();
+  drawTile(i);
+};
+$('alnTiles').oninput = e => {
+  const row = e.target.closest('[data-i]');
+  if (!row || e.target.value === '') return;
+  const i = +row.dataset.i;
+  aln.recs[i].rotate = norm(+e.target.value);
+  drawTile(i);
+};
+$('alnSave').onclick = async () => {
+  $('alnSave').disabled = true;
+  say('alnMsg', 'drawing the aligned spatial map', 'busy');
+  try {
+    const d = await api('/api/align/save', {dir: aln.dir,
+      alignment: Object.fromEntries(aln.recs.map(r => [r.name, {flip: r.flip, rotate: r.rotate}]))});
+    say('alnMsg', '✓ saved alignment.json', 'ok');
+    showMap(d.map);
+  } catch (e) { say('alnMsg', esc(e.message), 'bad'); }
+  $('alnSave').disabled = false;
+};
+
 // Running jobs update themselves; nothing is polled while the page is in the background.
 setInterval(() => {
   if (document.hidden) return;
@@ -418,11 +600,21 @@ setInterval(() => {
 
 (async () => {
   config = await api('/api/config');
+  const v = config.version || {};
+  if (v.commit) {
+    $('ver').textContent = 'commit ' + v.commit + (v.modified ? ' · modified' : '');
+    $('ver').title = v.full;
+    $('verInfo').innerHTML = `Commit <a href="https://github.com/Omergottlieb33/MS2/commit/${esc(v.full)}" target="_blank">${esc(v.full)}</a>
+      on branch <b>${esc(v.branch)}</b>, ${esc(new Date(v.date).toLocaleString())}` +
+      (v.modified ? '<br><span class="warn">The server runs this commit plus changes not yet committed.</span>' : '');
+  } else $('verInfo').textContent = 'Not from a git checkout: version unknown.';
   $('device').innerHTML = config.gpus.map(g => `<option value="${esc(g.id)}">${esc(g.label)}</option>`).join('');
   $('out').value = config.out_root;
   $('runsRoot').value = config.out_root;
   if (config.lab) {                  // everything lives in the user's own folder on the server
     $('who').textContent = 'logged in as ' + config.user;
+    $('logout').hidden = false;
+    $('logout').onclick = async () => { await api('/api/logout', {}); location.href = '/login'; };
     $('uploadRow').hidden = false;
     $('browseBtn').hidden = true;
     for (const id of ['czi', 'out', 'runsRoot']) $(id).readOnly = true;
@@ -437,6 +629,9 @@ setInterval(() => {
     $('plots').checked = !!f.plots;
   }
   roiStatus();
+  // /?align=<comparison folder> opens straight on its alignment
+  const alignDir = new URLSearchParams(location.search).get('align');
+  if (alignDir) { tab('compare'); $('alnDir').value = alignDir; openAlign(); }
 })();
 </script>
 </body>

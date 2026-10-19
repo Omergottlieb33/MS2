@@ -3,7 +3,6 @@ the Runs page finds recordings and their progress from the pipeline's markers.
 
     python tests/test_app.py
 """
-import base64
 import io
 import json
 import os
@@ -19,7 +18,7 @@ from http.server import ThreadingHTTPServer
 from fixtures import passed
 
 from ms2.app import jobs
-from ms2.app.server import App, Handler, clean_paths, save_upload, zip_results
+from ms2.app.server import App, Handler, clean_paths, code_version, save_upload, zip_results
 from ms2.pipeline import Recording
 
 
@@ -108,17 +107,18 @@ def test_pasted_paths():
     passed('quotes around pasted paths are dropped; relative and outside paths refused')
 
 
-def basic(name, password):
-    return 'Basic ' + base64.b64encode(f'{name}:{password}'.encode()).decode()
-
-
 def test_lab_login_and_folders():
     with tempfile.TemporaryDirectory() as ws:
         app = App([ws], ws, workspace=ws, password='s3cret')
-        assert app.login(basic('Omer', 's3cret')) == 'omer'
-        for bad in (basic('omer', 'wrong'), basic('../x', 's3cret'), basic('', 's3cret'),
-                    'Bearer x', None):
-            assert app.login(bad) is None, bad
+        assert app.login(' Omer ', 's3cret') == 'omer'
+        for name, pw in (('omer', 'wrong'), ('../x', 's3cret'), ('', 's3cret'), (None, None)):
+            assert app.login(name, pw) is None, (name, pw)
+        good = f'ms2login={app.cookie("omer")}'
+        assert app.user_of(good) == 'omer'
+        for bad in (None, '', 'ms2login=omer:00', 'ms2login=dana:' + app.cookie('omer').split(':')[1],
+                    f'other={app.cookie("omer")}'):
+            assert app.user_of(bad) is None, bad
+        assert App([ws], ws, workspace=ws, password='new').user_of(good) is None
         app.check(os.path.join(ws, 'omer', 'runs', 'r'), user='omer')
         try:
             app.check(os.path.join(ws, 'dana', 'runs', 'r'), user='omer')
@@ -176,43 +176,144 @@ def test_zip_results():
 def test_lab_server():
     """The real server over http: login, upload, config and the results zip."""
     with tempfile.TemporaryDirectory() as ws:
-        Handler.app = App([ws], ws, workspace=ws, password='pw')
+        shared = os.path.join(ws, 'shared')
+        os.makedirs(shared)
+        with open(os.path.join(shared, 'report.html'), 'w') as f:
+            f.write('<p>hi</p>')
+        Handler.app = App([ws], ws, workspace=os.path.join(ws, 'users'), password='pw',
+                          read_roots=[shared])
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = f'http://127.0.0.1:{server.server_address[1]}'
 
-        def get(path, auth=basic('dana', 'pw'), method='GET', data=None):
+        def request(path, cookie=None, method='GET', data=None):
             req = urllib.request.Request(base + path, data=data, method=method)
-            if auth:
-                req.add_header('Authorization', auth)
-            with urllib.request.urlopen(req) as r:
+            if cookie:
+                req.add_header('Cookie', cookie)
+            return urllib.request.urlopen(req)
+
+        def login(name, password):
+            r = request('/api/login', method='POST',
+                        data=json.dumps({'name': name, 'password': password}).encode())
+            return r.headers['Set-Cookie'].split(';')[0]
+
+        def refused(code, path, cookie=None, method='GET', data=None):
+            try:
+                request(path, cookie, method, data)
+            except urllib.error.HTTPError as e:
+                assert e.code == code, (path, e.code)
+            else:
+                raise AssertionError(f'{path} not refused')
+
+        dana = login('dana', 'pw')
+        def get(path, cookie=dana, method='GET', data=None):
+            with request(path, cookie, method, data) as r:
                 return r.read()
         try:
-            for auth in (None, basic('dana', 'nope')):
-                try:
-                    get('/api/config', auth)
-                except urllib.error.HTTPError as e:
-                    assert e.code == 401 and 'Basic' in e.headers['WWW-Authenticate']
-                else:
-                    raise AssertionError('let in without the password')
+            refused(401, '/api/config')
+            refused(401, '/api/config', 'ms2login=dana:forged')
+            refused(401, '/api/upload?name=e.czi', None, 'PUT', b'abc')
+            refused(403, '/api/login', None, 'POST', json.dumps({'name': 'dana', 'password': 'no'}).encode())
+            with request('/') as r:                     # a page, not refused: sent to the form
+                assert r.url.endswith('/login') and b'Lab password' in r.read()
             cfg = json.loads(get('/api/config'))
             assert cfg['lab'] and cfg['user'] == 'dana', cfg
-            assert cfg['out_root'] == os.path.join(os.path.realpath(ws), 'dana', 'runs'), cfg
+            assert cfg['out_root'] == os.path.join(os.path.realpath(ws), 'users', 'dana', 'runs'), cfg
             up = json.loads(get('/api/upload?name=e.czi', method='PUT', data=b'abc'))
             assert open(up['path'], 'rb').read() == b'abc'
+            assert cfg['version'] == code_version(), cfg['version']
+            assert get('/static/explainer.webp')[:4] == b'RIFF'
+            for bad in ('/static/../server.py', '/static/nothing.png'):
+                try:
+                    get(bad)
+                except urllib.error.HTTPError as e:
+                    assert e.code == 404, bad
+                else:
+                    raise AssertionError(f'{bad} served')
+            assert get('/open' + shared + '/report.html') == b'<p>hi</p>'
+            refused(403, '/open' + os.path.join(ws, 'users', 'x.html'), dana)   # someone else's folder
+            refused(403, '/open/etc/hostname', dana)
+            # a run added from another folder is processed there: that root must be the user's too
+            elsewhere = {'out': cfg['out_root'], 'recordings': {'r': {
+                'czi': os.path.join(cfg['out_root'], 'r.czi'), 'out': '/tmp', 't_start': 0, 't_end': 1}}}
+            refused(403, '/api/compare/start', dana, 'POST', json.dumps(elsewhere).encode())
             rec = fake_results(cfg['out_root'])
             z = zipfile.ZipFile(io.BytesIO(get('/api/download?dir=' + rec.dir)))
             assert 'rec-1/activity/summary.csv' in z.namelist()
-            try:
-                get('/api/download?dir=' + rec.dir, basic('omer', 'pw'))
-            except urllib.error.HTTPError as e:
-                assert e.code == 403
-            else:
-                raise AssertionError("one user downloaded another's results")
+            refused(403, '/api/download?dir=' + rec.dir, login('omer', 'pw'))
+            with request('/api/logout', dana, 'POST', b'{}') as r:
+                assert 'Max-Age=0' in r.headers['Set-Cookie']
         finally:
             server.shutdown()
             server.server_close()
-    passed('lab server: password asked, upload stored, results zipped for their owner only')
+    passed('lab server: login form, upload, server files opened read-only, results zipped '
+           'for their owner only, logout')
+
+
+def test_align_endpoints():
+    """The Compare page's alignment: each recording's first window frame, saved turns read
+    back, a mismatched set of names refused, and the aligned map drawn."""
+    import numpy as np
+    import tifffile
+    from fixtures import write_recording
+    from ms2.cell_activity_compare import compare_recordings
+
+    with tempfile.TemporaryDirectory() as root:
+        recordings = {}
+        for name in ('a', 'b'):
+            signals = np.zeros((12, 4))
+            signals[[0, 1, 4, 5], 1] = 100.0
+            rec = write_recording(os.path.join(root, name), signals)
+            rec['projection'] = os.path.join(root, f'SUM_C2-{name}.tif')
+            tifffile.imwrite(rec['projection'], np.random.default_rng(0).random((4, 16, 16), dtype=np.float32))
+            rec['t_start'] = 1
+            recordings[name] = rec
+        cmp_dir = os.path.join(root, '_comparison')
+        compare_recordings(recordings, cmp_dir)
+        with open(os.path.join(cmp_dir, 'recordings.json'), 'w') as f:
+            json.dump(recordings, f)
+
+        Handler.app = App([root], root)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+
+        def call(path, body=None):
+            data = None if body is None else json.dumps(body).encode()
+            with urllib.request.urlopen(urllib.request.Request(base + path, data=data)) as r:
+                return r.read()
+        try:
+            state = json.loads(call('/api/align?dir=' + cmp_dir))
+            assert [(r['name'], r['t'], r['flip'], r['rotate']) for r in state['recordings']] == \
+                [('a', 1, False, 0), ('b', 1, False, 0)], state
+            assert state['map'] is None
+            assert call(f'/api/align/frame?dir={cmp_dir}&name=a')[:8] == b'\x89PNG\r\n\x1a\n'
+            try:
+                call('/api/align/save', {'dir': cmp_dir, 'alignment': {'a': {}}})
+            except urllib.error.HTTPError as e:
+                assert e.code == 400 and b'comparison' in e.read()
+            else:
+                raise AssertionError('an alignment missing a recording was saved')
+            saved = json.loads(call('/api/align/save', {'dir': cmp_dir, 'alignment': {
+                'a': {'flip': True, 'rotate': 90}, 'b': {'flip': False, 'rotate': -45}}}))
+            assert saved['map'] == os.path.join(cmp_dir, 'spatial_maps_aligned.png')
+            assert os.path.exists(saved['map'])
+            state = json.loads(call('/api/align?dir=' + cmp_dir))
+            assert [(r['flip'], r['rotate']) for r in state['recordings']] == [(True, 90), (False, -45)]
+            assert state['map'] == saved['map']
+        finally:
+            server.shutdown()
+            server.server_close()
+    passed('alignment: first frames served, turns saved and read back, aligned map drawn')
+
+
+def test_code_version():
+    v = code_version()
+    assert v['commit'] and len(v['full']) == 40 and v['full'].startswith(v['commit']), v
+    assert isinstance(v['modified'], bool) and v['branch'], v
+    with tempfile.TemporaryDirectory() as d:
+        assert code_version(d) == {'commit': None}
+    passed('the version is the checkout\'s commit, and unknown outside git')
 
 
 def main():

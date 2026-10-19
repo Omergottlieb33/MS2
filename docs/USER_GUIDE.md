@@ -5,11 +5,12 @@ each cell transcribes over time. Everything runs on the lab's GPU server (`golgi
 computer only shows the app in a web browser.
 
 **The quick way, if the lab page is running:** open `http://golgi:8765` (ask for the address
-and the lab password). Log in with your name as the user name and the lab password. Then,
+and the lab password). Log in with your name and the lab password (**Log out** is at the top). Then,
 under **CZI file**, pick the CZI from your computer and carry on from
 [Draw the region of interest](#2-draw-the-region-of-interest-optional-recommended). When the
 run has finished, **Download results** on the Runs page gives you a zip of the logs and result
-tables to save wherever you like. You need nothing else on your computer. The rest of this
+tables to save wherever you like. To view a page, picture or PDF that is on the server, paste
+its full path into **Open a file on the server** on the Runs page. You need nothing else on your computer. The rest of this
 section, and the setup below, are for running your own copy of the app.
 
 To run your own copy you need: a user account on golgi, and the `launchers` folder from the
@@ -167,8 +168,24 @@ and run each one first. Then open **Compare recordings**:
    ROI you must type the end frame.
 3. Click **Start comparison**. Results appear below and in the `_comparison` folder.
 
+A run in another folder can join too. Paste its folder (for example
+`.../outputs/STAGE-11/New-02-v3-ST11-12`) under **Add a run from another folder** and click
+**Add**. It stays in its own folder, and its finished steps are not run again. It must be a
+run of the pipeline: a folder analysed by hand, with no CZI recorded in it, is refused.
+
 The p-values compare **cells**, not embryos. A small p-value means the two recordings differ, not
 that the two stages or conditions differ. To claim that, you need several embryos per group.
+
+### Aligning the embryos
+
+Embryos are mounted at different angles, so their spatial maps don't line up. Under **Align the
+recordings**, open the comparison folder (any folder with `recordings.json` and `cells.csv`). Each
+recording shows the first frame of its stage window. Turn it with ⟲/⟳ or the angle slider and
+mirror it with ⇋/⇵ until all embryos face the same way, then click **Save alignment**. This saves
+`alignment.json` and draws `spatial_maps_aligned.png`. It shows only the analysed cells, in the
+style of the spatial map, with each embryo turned as you set it. A rerun of the comparison
+draws it again. The numbers don't change, because none of them depends
+on orientation.
 
 ---
 

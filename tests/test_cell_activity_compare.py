@@ -9,7 +9,12 @@ import pandas as pd
 from fixtures import passed, write_recording
 
 from ms2.cell_activity import NOISE_FLOOR
-from ms2.cell_activity_compare import (N_PERMUTATIONS, compare_recordings, composition_test,
+import json
+
+import tifffile
+
+from ms2.cell_activity_compare import (N_PERMUTATIONS, alignment_matrix, cell_positions,
+                                       cell_projection, compare_recordings, composition_test,
                                        nn_clustering)
 
 ALPHA = 0.05
@@ -113,8 +118,10 @@ def test_a_ladder_per_recording_is_relative_to_its_own_recording():
         cells = {}
         for ladder in ('joint', 'per_recording'):
             out = os.path.join(tmp, ladder)
-            compare_recordings(recordings, out, ladder=ladder)
+            compare_recordings(recordings, out, ladder=ladder, flip_rotate=True)
             cells[ladder] = pd.read_csv(os.path.join(out, 'cells.csv'))
+            for stem in ('heatmap_active_pooled', 'heatmap_active_dim', 'heatmap_active_bright'):
+                assert os.path.exists(os.path.join(out, stem + '.png')), stem
 
     levels = {(ladder, name): set(c.loc[c['recording'] == name, 'level'])
               for ladder, c in cells.items() for name in recordings}
@@ -124,11 +131,64 @@ def test_a_ladder_per_recording_is_relative_to_its_own_recording():
     passed('per-recording ladders span each recording; the active set is the same')
 
 
+def test_alignment_turns_like_the_page():
+    """Image x right, y down.  Clockwise on screen takes right to down; flip + 90 is the old
+    --flip-rotate, image (x, y) at (-y, -x) in y-down coordinates."""
+    assert np.allclose(alignment_matrix(rotate=90) @ [1, 0], [0, 1])
+    assert np.allclose(alignment_matrix(flip=True) @ [1, 2], [-1, 2])
+    assert np.allclose(alignment_matrix(flip=True, rotate=90) @ [3, 5], [-5, -3])
+    # the page's vertical flip is flip with 180 - angle: the same as mirroring y on screen
+    for f, a in ((False, 30), (True, -70)):
+        assert np.allclose(np.diag([1, -1]) @ alignment_matrix(f, a), alignment_matrix(not f, 180 - a))
+        assert np.allclose(np.diag([-1, 1]) @ alignment_matrix(f, a), alignment_matrix(not f, -a))
+    passed('an alignment turns the cells as the page turns the picture')
+
+
+def test_projection_found_from_the_roi_and_aligned_map_drawn():
+    """Hand-run layout: no preprocess/, the projection named by the ROI in masks/.  A saved
+    alignment.json makes the comparison draw the aligned map."""
+    with tempfile.TemporaryDirectory() as tmp:
+        recordings = {}
+        for name in ('a', 'b'):
+            signals = np.zeros((12, 4))
+            signals[[0, 1, 4, 5], 1] = NOISE_FLOOR + 50   # two rows: a hull with area
+            rec = write_recording(os.path.join(tmp, name, 'unify'), signals)
+            rec['masks_dir'] = os.path.join(tmp, name, 'unify', 'masks_split')
+            os.rename(os.path.join(tmp, name, 'unify', 'masks'), rec['masks_dir'])
+            projection = os.path.join(tmp, f'SUM_C2-{name}.tif')
+            tifffile.imwrite(projection, np.random.default_rng(0).random((4, 16, 16), dtype=np.float32))
+            os.makedirs(os.path.join(tmp, name, 'masks'))
+            with open(os.path.join(tmp, name, 'masks', 'roi_selection.json'), 'w') as f:
+                json.dump({'projection': projection}, f)
+            assert cell_projection(rec) == projection
+            recordings[name] = rec
+        out = os.path.join(tmp, 'compare')
+        os.makedirs(out)
+        with open(os.path.join(out, 'alignment.json'), 'w') as f:
+            json.dump({'a': {'flip': True, 'rotate': 90}, 'b': {'flip': False, 'rotate': 33}}, f)
+        compare_recordings(recordings, out)
+        assert os.path.exists(os.path.join(out, 'spatial_maps_aligned.png'))
+    passed('the projection is found through the ROI; a saved alignment draws the aligned map')
+
+
 def main():
     for name, test in sorted(globals().items()):
         if name.startswith('test_'):
             test()
     print('cell_activity_compare: all tests passed')
+
+
+def test_unstable_frac_counts_frames_off_the_median_volume():
+    """One frame at a third of the volume is 1/5 of a 5-frame window and 1/50 of a 50-frame one,
+    and a 1.4x wobble is never unstable."""
+    def frac(volumes):
+        props = {t: {1: (0.0, 0.0, 0.0, v)} for t, v in enumerate(volumes)}
+        return cell_positions(props, {'1': [1] * len(volumes)}, ['cell_1'], range(len(volumes)))[1][0]
+
+    assert frac([300, 900, 900, 900, 900]) == 0.2
+    assert frac([300] + [900] * 49) == 0.02
+    assert frac([900, 1260, 900, 643, 900]) == 0.0
+    passed('unstable_frac is the share of frames more than 1.5x off the median volume')
 
 
 if __name__ == '__main__':

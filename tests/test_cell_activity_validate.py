@@ -76,6 +76,22 @@ def test_out_of_range_min_presence(tmp):
     passed('min_presence outside 0..1 is an error')
 
 
+def test_out_of_range_max_unstable_frac(tmp):
+    rec = write_recording(os.path.join(tmp, 'unstable'), SIGNALS)
+    rec['max_unstable_frac'] = 20
+    report = validate_config({'A': rec})
+    assert ('thresholds', 'A') in report_checks(report, 'error'), report.to_string()
+    passed('max_unstable_frac outside 0..1 is an error')
+
+
+def test_retired_max_volume_cv(tmp):
+    rec = write_recording(os.path.join(tmp, 'volume_cv'), SIGNALS)
+    rec['max_volume_cv'] = 0.3
+    report = validate_config({'A': rec})
+    assert ('thresholds', 'A') in report_checks(report, 'error'), report.to_string()
+    passed('the replaced max_volume_cv is an error, not silently ignored')
+
+
 def test_no_cell_survives_min_presence(tmp):
     # every cell loses a frame, so min_presence 1.0 leaves nothing to measure
     rec = write_recording(os.path.join(tmp, 'nocells'), make_signals(gap_every=1))

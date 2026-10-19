@@ -20,9 +20,12 @@ make the numbers comparable between embryos:
     python -m ms2.cell_activity_compare --config recordings.json --out-dir .../compare
 
 recordings.json is the {name: recording dict} described in ms2/cell_activity.py.  An optional
-max_volume_cv in a recording dict also drops the cells whose segmented volume varies more than
-that (std / mean) over their tracked window frames -- unstable segmentation or a mislinked
-tracklet.
+max_unstable_frac in a recording dict also drops the cells with more than that share of their
+tracked window frames unstable -- segmented volume more than VOLUME_JUMP times off the cell's
+own median, from unstable segmentation or a mislinked tracklet.  0.2 keeps the cells whose
+segmentation is stable in at least 80% of their frames.  Counting frames rather than taking
+the volume's CV keeps one bad frame from weighing more in a short window than in a long one.
+The tracklets of the cells kept are written to out_dir/tracklets/<name>_tracklets_kept.json.
 
 Per recording (metrics.csv):
     n_<level>, frac_<level>, n_active, frac_active      composition on the shared ladder
@@ -42,14 +45,25 @@ Per recording (metrics.csv):
 The config is checked before anything is measured and a background diagnostic is written to
 out_dir/calibration first -- see ms2/cell_activity_validate.py and
 ms2/cell_activity_calibration.py.  --skip-validate skips the first for a known-good config.
+
+Embryos are mounted at any rotation, so the spatial maps of two recordings do not line up.
+out_dir/alignment.json, {name: {"flip": bool, "rotate": degrees}} as the app's Compare page
+saves it, turns each one about its tissue centre: mirrored left-right if flip, then rotated
+clockwise.  It draws spatial_maps_aligned; the numbers do not change, as none depends on
+orientation.  The page sets the turn on the recording's first window frame, from the
+cell-channel projection: the recording's "projection" entry or else found beside its results
+(cell_projection).
 """
 import argparse
+import glob
 import itertools
 import json
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm, to_rgb
+from matplotlib.patches import Patch
 import pandas as pd
 from scipy.spatial import ConvexHull, cKDTree
 from scipy.stats import chi2_contingency, false_discovery_control, kruskal, mannwhitneyu
@@ -58,6 +72,7 @@ from ms2.cell_activity import (K_LEVELS, LEVEL_NAMES, MIN_PRESENCE, NOISE_FLOOR,
                                activity_descriptors, classify_cells, load_window, save_figure)
 from ms2.cell_activity_calibration import run_calibration
 from ms2.cell_activity_validate import raise_on_errors, validate_config
+from ms2.roi_selection import load_projection
 from ms2.track_diagnostics import cell_properties
 
 # Weakly active and above; below are silent cells and 1-2 frame blips.
@@ -68,7 +83,10 @@ LEVEL_KEYS = {0: 'silent', 1: 'noise', 2: 'weak', 3: 'moderate', 4: 'high', 5: '
 RADIUS_PERCENTILE = 95
 SHELLS = ('inner', 'middle', 'outer')
 N_PERMUTATIONS = 1000
+# A frame is unstable when the cell's volume is this many times above or below its median.
+VOLUME_JUMP = 1.5
 PER_CELL_METRICS = ('rate', 'peak', 'duty', 'onset', 'r_norm')
+ALIGNMENT_NAME = 'alignment.json'
 
 # Recordings take categorical slots in fixed order; levels are neutral greys below
 # ACTIVE_LEVEL and one blue ramp, light to dark, above it.
@@ -81,15 +99,15 @@ INK, MUTED = '#0b0b0b', '#52514e'
 
 
 def cell_positions(props, tracklets, cells, timepoints):
-    """Mean (y, x) and volume CV (std / mean) of each cell over the window frames where its
-    tracklet has a label."""
-    positions, volume_cv = np.empty((len(cells), 2)), np.empty(len(cells))
+    """Mean (y, x) of each cell over the window frames where its tracklet has a label, and the
+    share of those frames whose volume is more than VOLUME_JUMP times off the cell's median."""
+    positions, unstable_frac = np.empty((len(cells), 2)), np.empty(len(cells))
     for i, cell in enumerate(cells):
         track = tracklets[cell[len('cell_'):]]
         p = np.array([props[t][track[t]] for t in timepoints if track[t] > 0])
         positions[i] = p[:, 1:3].mean(axis=0)
-        volume_cv[i] = p[:, 3].std() / p[:, 3].mean()
-    return positions, volume_cv
+        unstable_frac[i] = (np.abs(np.log(p[:, 3] / np.median(p[:, 3]))) > np.log(VOLUME_JUMP)).mean()
+    return positions, unstable_frac
 
 
 def radial_position(positions):
@@ -132,19 +150,20 @@ def hull_coverage(positions, active):
 
 def measure_recording(name, rec, cache_dir):
     """Per-cell table (descriptors, position, r_norm, shell) and per-frame firing of one
-    recording, plus the tissue centre and radius."""
+    recording, the tissue centre and radius, and (timepoints, traces) with the traces raised
+    to the noise floor, rows in the order of the table."""
     noise_floor = rec.get('noise_floor', NOISE_FLOOR)
     signals, present, cells, timepoints = load_window(
         rec['csv'], rec['t_start'], rec['t_end'], rec.get('min_presence', MIN_PRESENCE))
     with open(rec['tracklets']) as f:
         tracklets = json.load(f)
     props = cell_properties(rec['masks_dir'], os.path.join(cache_dir, f'{name}_cell_properties.pkl'))
-    positions, volume_cv = cell_positions(props, tracklets, cells, timepoints)
-    if rec.get('max_volume_cv') is not None:
-        keep = volume_cv <= rec['max_volume_cv']
-        print(f'{name}: max_volume_cv {rec["max_volume_cv"]} keeps {keep.sum()}/{len(keep)} cells')
-        signals, present, positions, volume_cv = (signals[keep], present[keep], positions[keep],
-                                                  volume_cv[keep])
+    positions, unstable_frac = cell_positions(props, tracklets, cells, timepoints)
+    if rec.get('max_unstable_frac') is not None:
+        keep = unstable_frac <= rec['max_unstable_frac']
+        print(f'{name}: max_unstable_frac {rec["max_unstable_frac"]} keeps {keep.sum()}/{len(keep)} cells')
+        signals, present, positions, unstable_frac = (signals[keep], present[keep], positions[keep],
+                                                      unstable_frac[keep])
         cells = [c for c, k in zip(cells, keep) if k]
     r_norm, center, radius = radial_position(positions)
 
@@ -155,14 +174,14 @@ def measure_recording(name, rec, cache_dir):
     # blip threshold has to travel with the row rather than be passed as one number
     table['noise_peak'] = rec.get('noise_peak', NOISE_PEAK)
     table['y'], table['x'], table['r_norm'] = positions[:, 0], positions[:, 1], r_norm
-    table['volume_cv'] = volume_cv
+    table['unstable_frac'] = unstable_frac
     table['shell'] = pd.qcut(r_norm, len(SHELLS), labels=SHELLS).astype(str)
 
     timecourse = pd.DataFrame({
         'recording': name, 't': timepoints,
         't_rel': (timepoints - timepoints[0]) / max(len(timepoints) - 1, 1),
         'frac_firing': (signals > noise_floor).sum(axis=0) / present.sum(axis=0)})
-    return table, timecourse, (center, radius)
+    return table, timecourse, (center, radius), (timepoints, np.maximum(signals, noise_floor))
 
 
 def recording_metrics(cells, timecourse):
@@ -262,6 +281,8 @@ def plot_level_composition(metrics, path_stem, ladder='shared ladder', prefix=No
     x = np.arange(len(metrics))
     bottom = np.zeros(len(metrics))
     for level, key in LEVEL_KEYS.items():
+        if not metrics[f'n_{key}'].any():   # a level no recording reached stays off the legend
+            continue
         frac = metrics[f'frac_{key}'].to_numpy()
         ax.bar(x, frac, 0.6, bottom=bottom, color=LEVEL_PLOT_COLORS[level],
                edgecolor='white', linewidth=1.5, label=LEVEL_NAMES[level])
@@ -328,25 +349,32 @@ def plot_radial_profile(metrics, colors, path_stem, prefix=None):
     save_figure(fig, path_stem)
 
 
-def plot_spatial_maps(cells, geometry, path_stem, prefix=None):
+def plot_spatial_maps(cells, geometry, path_stem, prefix=None, flip_rotate=False, ncols=4):
     """One panel per recording, in the original image orientation (plot x = x, plot y = y with
-    the axis pointing down)."""
+    the axis pointing down).  flip_rotate mirrors the image left-right and then rotates it 90
+    degrees clockwise: image (x, y) lands at plot (-y, x) with the y axis pointing up."""
+    def plot_xy(x, y):
+        return (-y, x) if flip_rotate else (x, y)
+
     names = list(geometry)
-    ncols = min(len(names), 4)
+    ncols = min(len(names), ncols)
     nrows = int(np.ceil(len(names) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4.3 * nrows), squeeze=False)
     for ax, name in zip(axes.ravel(), names):
         c = cells[cells['recording'] == name]
-        for level in sorted(LEVEL_KEYS):
+        # only the levels some recording reached, so the shared legend lists no empty level
+        for level in sorted(set(cells['level'])):
             m = c['level'] == level
-            ax.scatter(c.loc[m, 'x'], c.loc[m, 'y'], s=14 if level >= ACTIVE_LEVEL else 8,
+            ax.scatter(*plot_xy(c.loc[m, 'x'], c.loc[m, 'y']), s=14 if level >= ACTIVE_LEVEL else 8,
                        color=LEVEL_PLOT_COLORS[level], edgecolors='white', linewidths=0.3,
                        label=LEVEL_NAMES[level], zorder=2 + level)
         (cy, cx), radius = geometry[name]
+        cx, cy = plot_xy(cx, cy)
         ax.add_patch(plt.Circle((cx, cy), radius, fill=False, ls='--', color=MUTED, lw=1))
         ax.plot(cx, cy, marker='+', color=INK, markersize=10)
         ax.set_aspect('equal')
-        ax.invert_yaxis()
+        if not flip_rotate:
+            ax.invert_yaxis()
         ax.axis('off')
         ax.set_title(f'{name}\nactive {int(c["active"].sum())}/{len(c)}', fontsize=9)
     for ax in axes.ravel()[len(names):]:
@@ -357,6 +385,154 @@ def plot_spatial_maps(cells, geometry, path_stem, prefix=None):
                         f'{RADIUS_PERCENTILE}th-percentile radius of the imaged tissue',
                         'Spatial map', prefix), fontsize=10)
     fig.tight_layout(rect=(0, 0.05, 1, 0.95))
+    save_figure(fig, path_stem)
+
+
+def cell_projection(rec):
+    """The (T, Y, X) cell-channel projection of a recording: its "projection" entry, else the
+    pipeline's preprocess/SUM_C2-*.tif in the recording's folder, else the projection its ROI
+    was drawn on (the ROI beside its results, or the one its run_manifest names)."""
+    if rec.get('projection'):
+        return rec['projection']
+    # masks_dir is <recording>/unified/masks_split, or unify/ in the older hand-run layout
+    rec_dir = os.path.dirname(os.path.dirname(os.path.abspath(rec['masks_dir'])))
+    hits = sorted(glob.glob(os.path.join(glob.escape(rec_dir), 'preprocess', 'SUM_C2-*.tif')))
+    if hits:
+        return hits[-1]
+    rois = [os.path.join(rec_dir, *sub, 'roi_selection.json')
+            for sub in ((), ('unified',), ('unify',), ('masks',))]
+    manifest = os.path.join(rec_dir, 'run_manifest.json')
+    if os.path.exists(manifest):
+        with open(manifest) as f:
+            rois.append(json.load(f).get('params', {}).get('roi') or '')
+    for roi in rois:
+        if os.path.isfile(roi):
+            with open(roi) as f:
+                path = json.load(f).get('projection')
+            if path and os.path.exists(path):
+                return path
+    raise FileNotFoundError(f'no cell-channel projection found for the recording in {rec_dir}; '
+                            'give its SUM_C2 tif as "projection" in recordings.json')
+
+
+def stage_frame(rec):
+    """The cell-channel projection at the window's first frame, t_start."""
+    return np.asarray(load_projection(cell_projection(rec))[rec['t_start']], dtype=float)
+
+
+def alignment_matrix(flip=False, rotate=0.0):
+    """Image (dx, dy) about the frame centre, y down, mirrored left-right if flip and then
+    turned rotate degrees clockwise on screen -- what the page's CSS rotate() scaleX() shows."""
+    a = np.radians(rotate)
+    turn = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    return turn @ np.diag([-1.0 if flip else 1.0, 1.0])
+
+
+def plot_aligned_maps(cells, names, alignment, path_stem, prefix=None):
+    """The spatial map of every recording turned as alignment says, about its tissue centre:
+    the cells of the analysis only, drawn as plot_spatial_maps draws them, all on one scale."""
+    xy = {}
+    for name in names:
+        c = cells[cells['recording'] == name]
+        _, (cy, cx), _ = radial_position(c[['y', 'x']].to_numpy())
+        xy[name] = (c[['x', 'y']].to_numpy() - [cx, cy]) @ alignment_matrix(**alignment.get(name, {})).T
+    # one scale for every panel, so the embryos compare in size too
+    half = np.max([np.abs(p).max(axis=0) for p in xy.values()], axis=0) * 1.05
+    fig, axes = plt.subplots(1, len(names), squeeze=False,
+                             figsize=(4 * len(names), 4 * half[1] / half[0] + 1.4))
+    for ax, name in zip(axes[0], names):
+        c, p = cells[cells['recording'] == name], xy[name]
+        # only the levels some recording reached, so the shared legend lists no empty level
+        for level in sorted(set(cells['level'])):
+            sel = (c['level'] == level).to_numpy()
+            ax.scatter(p[sel, 0], p[sel, 1], s=14 if level >= ACTIVE_LEVEL else 8,
+                       color=LEVEL_PLOT_COLORS[level], edgecolors='white', linewidths=0.3,
+                       label=LEVEL_NAMES[level], zorder=2 + level)
+        ax.plot(0, 0, marker='+', color=INK, markersize=10)
+        ax.set(xlim=(-half[0], half[0]), ylim=(half[1], -half[1]))   # y down, as in the image
+        ax.set_aspect('equal')
+        ax.axis('off')
+        a = alignment.get(name, {})
+        turn = f'{"mirrored, " if a.get("flip") else ""}rotated {a.get("rotate", 0):g}°'
+        ax.set_title(f'{name}\nactive {int(c["active"].sum())}/{len(c)} · {turn}', fontsize=9)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', ncol=len(labels), frameon=False, fontsize=8)
+    fig.suptitle(titled('Cells by shared activity level, recordings aligned; + = centre of the '
+                        'imaged tissue', 'Aligned spatial map', prefix), fontsize=10)
+    fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+    save_figure(fig, path_stem)
+
+
+def align_comparison(out_dir, recordings=None, cells=None, prefix=None):
+    """Draw out_dir/spatial_maps_aligned from out_dir/alignment.json.  recordings and cells
+    default to the recordings.json and cells.csv in out_dir.  Returns the png's path."""
+    if recordings is None:
+        with open(os.path.join(out_dir, 'recordings.json')) as f:
+            recordings = json.load(f)
+    if cells is None:
+        cells = pd.read_csv(os.path.join(out_dir, 'cells.csv'))
+    with open(os.path.join(out_dir, ALIGNMENT_NAME)) as f:
+        alignment = json.load(f)
+    stem = os.path.join(out_dir, 'spatial_maps_aligned')
+    plot_aligned_maps(cells, list(recordings), alignment, stem, prefix)
+    return stem + '.png'
+
+
+def plot_activity_heatmap(cells, traces, colors, path_stem, title):
+    """The cells above silent, grouped by shared level (highest on top, red lines between),
+    then by recording in config order, then by rate, highest first.  One recording is drawn on
+    its own timepoints; several are aligned on frames from their window start, the frames past
+    a shorter window grey, with each row's recording in the strip on the left."""
+    # row = the cell's row in its recording's traces, which follow the recording's cells
+    shown = cells.assign(row=cells.groupby('recording', sort=False).cumcount(),
+                         order=cells['recording'].map({name: i for i, name in enumerate(traces)}))
+    shown = shown[shown['level'] > 0]
+    shown = shown.sort_values(['level', 'order', 'rate'], ascending=[False, True, False],
+                              kind='stable')
+    names = [name for name in traces if (shown['recording'] == name).any()]
+    if not names:
+        return
+    width = max(traces[name][1].shape[1] for name in names)
+    matrix = np.full((len(shown), width), np.nan)
+    for i, (name, row) in enumerate(zip(shown['recording'], shown['row'])):
+        trace = traces[name][1][row]
+        matrix[i, :len(trace)] = trace
+
+    pooled = len(traces) > 1
+    fig, (strip, ax) = plt.subplots(1, 2, figsize=(12, min(4 + 0.04 * len(shown), 30)),
+                                    gridspec_kw={'width_ratios': (1, 30), 'wspace': 0.02})
+    if pooled:
+        strip.imshow(np.array([[to_rgb(colors[n])] for n in shown['recording']]),
+                     aspect='auto', interpolation='none', extent=(0, 1, len(shown), 0))
+        strip.set_xticks([])
+        strip.set_yticks([])
+        strip.set_ylabel('cells')
+    else:
+        strip.axis('off')
+    timepoints = traces[names[0]][0]
+    x0 = timepoints[0] if not pooled else 0
+    cmap = plt.get_cmap('viridis').copy()
+    cmap.set_bad('#e6e5e1')
+    # 'none' keeps the eps at one pixel per cell and frame.  Log colours: a few bright cells
+    # would otherwise flatten every weak trace to the floor colour.
+    im = ax.imshow(matrix, aspect='auto', cmap=cmap, interpolation='none', norm=LogNorm(),
+                   extent=(x0 - 0.5, x0 + width - 0.5, len(shown), 0))
+    levels = shown['level'].to_numpy()
+    starts = np.r_[0, np.flatnonzero(np.diff(levels)) + 1]
+    for start, end in zip(starts, np.r_[starts[1:], len(levels)]):
+        if start:
+            ax.axhline(start, color='red', lw=1.5)
+            if pooled:
+                strip.axhline(start, color='red', lw=1.5)
+        # axes fractions run bottom-up, rows top-down
+        ax.text(1.01, 1 - (start + end) / 2 / len(levels), f'{LEVEL_NAMES[levels[start]]}\n'
+                f'n={end - start}', transform=ax.transAxes, va='center', fontsize=8)
+    ax.set_yticks([])
+    ax.set(title=title, xlabel='frame from window start' if pooled else 'timepoint')
+    fig.colorbar(im, ax=ax, label="expression, log scale (floor and below = floor)", pad=0.12)
+    if pooled:
+        fig.legend([Patch(color=colors[n]) for n in names], names, loc='lower center',
+                   ncol=len(names), frameon=False, fontsize=8)
     save_figure(fig, path_stem)
 
 
@@ -375,7 +551,7 @@ with each embryo's summary (the rows of metrics.csv) as one sample.
 
 
 def compare_recordings(recordings, out_dir, skip_validate=False, k=K_LEVELS, ladder='joint',
-                       title=None):
+                       title=None, flip_rotate=False):
     """Measure every recording of {name: recording dict} in its window, put all on the shared
     ladder, and write the tables and figures into out_dir.  Returns the metrics table.  k is
     the number of ladder levels above the blips, None to choose it by silhouette.
@@ -387,15 +563,16 @@ def compare_recordings(recordings, out_dir, skip_validate=False, k=K_LEVELS, lad
     split of the active cells into levels changes: which cells are active, and every per-cell
     metric, are the same in all modes.
 
-    title, e.g. 'Stage 12', heads every figure as '<title> - <figure name>'."""
+    title, e.g. 'Stage 12', heads every figure as '<title> - <figure name>'.  flip_rotate
+    mirrors the spatial maps left-right, then rotates them 90 degrees clockwise."""
     cache_dir = os.path.join(out_dir, 'cache')
     os.makedirs(cache_dir, exist_ok=True)
     if not skip_validate:
         raise_on_errors(validate_config(recordings, cache_dir))
     run_calibration(recordings, os.path.join(out_dir, 'calibration'), title)
-    tables, timecourses, geometry = [], [], {}
+    tables, timecourses, geometry, traces = [], [], {}, {}
     for name, rec in recordings.items():
-        table, timecourse, geometry[name] = measure_recording(name, rec, cache_dir)
+        table, timecourse, geometry[name], traces[name] = measure_recording(name, rec, cache_dir)
         tables.append(table)
         timecourses.append(timecourse)
     cells = pd.concat(tables, ignore_index=True)
@@ -421,6 +598,13 @@ def compare_recordings(recordings, out_dir, skip_validate=False, k=K_LEVELS, lad
                             for name in recordings])
 
     cells.to_csv(os.path.join(out_dir, 'cells.csv'), index=False)
+    os.makedirs(os.path.join(out_dir, 'tracklets'), exist_ok=True)
+    for name, rec in recordings.items():
+        with open(rec['tracklets']) as f:
+            tracklets = json.load(f)
+        kept = cells.loc[cells['recording'] == name, 'cell'].str[len('cell_'):]
+        with open(os.path.join(out_dir, 'tracklets', f'{name}_tracklets_kept.json'), 'w') as f:
+            json.dump({tid: tracklets[tid] for tid in kept}, f)
     timecourse.to_csv(os.path.join(out_dir, 'timecourse.csv'), index=False)
     metrics.to_csv(os.path.join(out_dir, 'metrics.csv'), index=False)
     comparison_stats(cells).to_csv(os.path.join(out_dir, 'stats.csv'), index=False)
@@ -435,7 +619,17 @@ def compare_recordings(recordings, out_dir, skip_validate=False, k=K_LEVELS, lad
     plot_per_cell_metrics(cells, colors, os.path.join(out_dir, 'per_cell_metrics'), title)
     plot_timecourse(timecourse, colors, os.path.join(out_dir, 'timecourse'), title)
     plot_radial_profile(metrics, colors, os.path.join(out_dir, 'radial_profile'), title)
-    plot_spatial_maps(cells, geometry, os.path.join(out_dir, 'spatial_maps'), title)
+    plot_spatial_maps(cells, geometry, os.path.join(out_dir, 'spatial_maps'), title, flip_rotate,
+                      ncols=len(geometry))
+    for name in recordings:
+        plot_activity_heatmap(cells[cells['recording'] == name], {name: traces[name]}, colors,
+                              os.path.join(out_dir, f'heatmap_active_{name}'),
+                              titled(f'{name}: cells by shared activity level', 'Heatmap', title))
+    plot_activity_heatmap(cells, traces, colors, os.path.join(out_dir, 'heatmap_active_pooled'),
+                          titled('All recordings: cells by shared activity level, then recording',
+                                 'Pooled heatmap', title))
+    if os.path.exists(os.path.join(out_dir, ALIGNMENT_NAME)):     # saved from the app earlier
+        align_comparison(out_dir, recordings, cells, title)
     return metrics
 
 
@@ -455,6 +649,8 @@ def parse_args():
                         'recording weighted equally, or one ladder per recording')
     p.add_argument('--title', help="heads every figure as '<title> - <figure name>', "
                                    "e.g. 'Stage 12'")
+    p.add_argument('--flip-rotate', action='store_true',
+                   help='spatial maps mirrored left-right, then rotated 90 degrees clockwise')
     return p.parse_args()
 
 
@@ -463,7 +659,8 @@ def main():
     with open(args.config) as f:
         recordings = json.load(f)
     metrics = compare_recordings(recordings, args.out_dir, args.skip_validate,
-                                 None if args.silhouette else args.k, args.ladder, args.title)
+                                 None if args.silhouette else args.k, args.ladder, args.title,
+                                 args.flip_rotate)
     print(metrics.set_index('recording').T.to_string())
 
 

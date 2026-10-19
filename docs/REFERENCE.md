@@ -25,20 +25,27 @@ ms2 dashboard --tracklets ... --masks-dir ...   # tracking-quality dashboard
 ### The lab page: one app for everyone
 
 `ms2 app --workspace` runs a single app that the whole lab opens at `http://golgi:<port>`,
-with no repository, launcher or SSH key on their side. People log in with their name as the
-user name and a shared lab password. They upload a CZI from their own computer, draw the
+with no repository, launcher or SSH key on their side. People log in on the page with their name
+and a shared lab password, and **Log out** in the header ends the session. They upload a CZI from their own computer, draw the
 ROI, start the run, and download a zip of the logs, ROI and result tables (no masks or
 TIFFs). Each name gets `<workspace>/<name>/uploads/` and `<workspace>/<name>/runs/`, and
-can't open anything outside that folder. Every job runs under the account that started
+can't write anything outside that folder. Every job runs under the account that started
 the app.
+
+**Open a file on the server** (Runs page) opens a pasted server path in a new tab. It works
+for an HTML page with its images, a picture or a PDF. In lab mode the path may be in the
+user's own folder, or under a `--data-root` given at startup, which is read-only. Without
+`--data-root`, users can only open files in their own folder.
 
 ```bash
 echo 'the-lab-password' > ~/.ms2_password && chmod 600 ~/.ms2_password
 ms2 app --host 0.0.0.0 --port 8765 \
-    --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file ~/.ms2_password
+    --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file ~/.ms2_password \
+    --data-root /zjbd/zd1/shechtmanlab
 ```
 
-The password travels as plain http, so this is for the lab network and VPN only.
+The password travels as plain http, so this is for the lab network and VPN only. A login
+lasts 30 days; changing the password file (and restarting) logs everyone out.
 
 To keep it running, use a `systemd --user` service. It restarts after a crash or a reboot,
 and needs `loginctl enable-linger <you>` once, from an admin. Save the following as
@@ -49,7 +56,7 @@ and needs `loginctl enable-linger <you>` once, from an admin. Save the following
 Description=MS2 lab page
 
 [Service]
-ExecStart=/zjbd/zd1/shechtmanlab/conda_envs/ms2/bin/ms2 app --host 0.0.0.0 --port 8765 --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file %h/.ms2_password
+ExecStart=/zjbd/zd1/shechtmanlab/conda_envs/ms2/bin/ms2 app --host 0.0.0.0 --port 8765 --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file %h/.ms2_password --data-root /zjbd/zd1/shechtmanlab
 Restart=on-failure
 KillMode=process
 
@@ -60,6 +67,11 @@ WantedBy=default.target
 Then run `systemctl --user enable --now ms2-app`. `KillMode=process` stops only the app on a
 restart: runs are detached and keep going either way. Without linger, start the same command
 in a `tmux` session; you have to start it again after a reboot.
+
+The header shows the commit the app was started from; restart the app after a `git pull`.
+The About tab's clip is `ms2/app/static/explainer.webp`. It is rendered from one finished
+recording by `python -m ms2.app.make_explainer <rec dir>`, so rerun that if the pipeline's
+look changes.
 
 Not handled: there is no GPU queue, so two runs on one GPU can run out of memory (the GPU
 list shows free memory). Uploads and runs are never deleted automatically.

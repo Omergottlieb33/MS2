@@ -3,16 +3,17 @@
     python -m ms2.pipeline_compare experiment.json [--device cuda:0] [--workers N]
 
 experiment.json names the results root and, per recording, its czi and the stage window
-(0-based frames, both included); roi, noise_floor, noise_peak and min_presence are optional:
+(0-based frames, both included); roi, noise_floor, noise_peak and min_presence are optional,
+and so is out, the results root of a recording run somewhere else than the experiment's out:
 
     {"out": "/zjbd/.../outputs/stage_comparison",
      "recordings": {
         "New-02-v3-ST11-12": {"czi": "/zjbd/.../New-02-v3-ST11-12.czi",
                               "t_start": 0, "t_end": 60, "roi": ".../roi_selection.json"},
         "New-03-v1-ST11-12": {"czi": "/zjbd/.../New-03-v1-ST11-12.czi",
-                              "t_start": 0, "t_end": 75}}}
+                              "t_start": 0, "t_end": 75, "out": "/zjbd/.../outputs/stage_11"}}}
 
-Every recording goes through ms2/pipeline.py into <out>/<czi name>/ (finished steps are
+Every recording goes through ms2/pipeline.py into <its out>/<czi name>/ (finished steps are
 skipped, so recordings already processed cost nothing).  Then <out>/_comparison/ gets the
 generated recordings.json and everything ms2/cell_activity_compare.py writes: cells.csv,
 timecourse.csv, metrics.csv, stats.csv and the figures.
@@ -32,7 +33,7 @@ def activity_config(experiment):
     pipeline's layout."""
     config = {}
     for name, entry in experiment['recordings'].items():
-        rec = pipeline.Recording(entry['czi'], experiment['out'])
+        rec = pipeline.Recording(entry['czi'], entry.get('out', experiment['out']))
         config[name] = {'csv': rec.expression_csv, 'tracklets': rec.unified_tracklets,
                         'masks_dir': rec.unified_masks,
                         't_start': entry['t_start'], 't_end': entry['t_end'],
@@ -42,7 +43,7 @@ def activity_config(experiment):
 
 def run(experiment, device='cuda:0', workers=None, plots=False, ladder='joint'):
     for name, entry in experiment['recordings'].items():
-        argv = [entry['czi'], '--out', experiment['out'], '--device', device]
+        argv = [entry['czi'], '--out', entry.get('out', experiment['out']), '--device', device]
         if entry.get('roi'):
             argv += ['--roi', entry['roi']]
         if workers:

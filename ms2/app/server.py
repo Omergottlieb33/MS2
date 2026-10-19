@@ -14,33 +14,44 @@ and the Runs page picks them up again from their folders.
 With --workspace the app is one shared page for the lab, left running on the server: people
 log in with their name and the lab password, upload a CZI from their own computer, and
 download the results as a zip.  Each name gets its own folder, DIR/<name>, with uploads/ and
-runs/ in it, and may open nothing outside it.
+runs/ in it, and may write nothing outside it.  --data-root folders, if given, may be read
+too: pasting a server path opens that file in the browser.
 """
 import argparse
-import base64
 import glob
+import hashlib
 import hmac
+import io
 import json
 import mimetypes
 import os
 import re
 import subprocess
 import sys
+import time
 import zipfile
+from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+import numpy as np
+from PIL import Image
 
 from ms2.app import jobs
+from ms2.cell_activity_compare import ALIGNMENT_NAME, align_comparison, cell_projection, stage_frame
 from ms2.pipeline import Recording
 from ms2.preprocess import make_projection
 from ms2.viewer import app as viewer
 
 STATIC = os.path.join(os.path.dirname(__file__), 'static')
+mimetypes.add_type('image/webp', '.webp')     # missing from older Pythons' table
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class App:
-    def __init__(self, data_roots, out_root, workspace=None, password=None):
+    def __init__(self, data_roots, out_root, workspace=None, password=None, read_roots=()):
         self.data_roots = [os.path.realpath(r) for r in data_roots]
+        self.read_roots = [os.path.realpath(r) for r in read_roots]   # lab mode: open, not write
         self.out_root = out_root
         self.workspace = workspace and os.path.realpath(workspace)
         self.password = password
@@ -48,6 +59,7 @@ class App:
         # are on the ROI page, and the recording their viewer pages show
         self.forms = {}
         self.viewers = {}
+        self.version = code_version()
 
     def roots(self, user=''):
         return [os.path.join(self.workspace, user)] if self.workspace else self.data_roots
@@ -55,9 +67,17 @@ class App:
     def out(self, user=''):
         return os.path.join(self.workspace, user, 'runs') if self.workspace else self.out_root
 
-    def allowed(self, path, user=''):
+    def allowed(self, path, user='', roots=None):
         real = os.path.realpath(path)
-        return any(real == r or real.startswith(r + os.sep) for r in self.roots(user))
+        return any(real == r or real.startswith(r + os.sep) for r in roots or self.roots(user))
+
+    def check_read(self, path, user=''):
+        """A file to open in the browser: the user's own folders, or the read-only ones."""
+        if not os.path.isabs(path):
+            raise ValueError(f'{path} is not a full path; it should start with /')
+        if not (self.allowed(path, user) or self.read_roots and self.allowed(path, roots=self.read_roots)):
+            raise PermissionError(f'{path} is outside the folders this page may open: '
+                                  f'{", ".join(self.roots(user) + self.read_roots)}')
 
     def check(self, *paths, user=''):
         for p in paths:
@@ -67,20 +87,36 @@ class App:
                 raise PermissionError(f'{p or "(empty path)"} is outside the data folders '
                                       f'{", ".join(self.roots(user))}')
 
-    def login(self, header):
-        """The user name from an HTTP Basic Authorization header, or None if it is refused."""
-        try:
-            kind, cred = (header or '').split(' ', 1)
-            name, password = base64.b64decode(cred).decode().split(':', 1)
-        except ValueError:
-            return None
-        name = name.strip().lower()
-        if kind != 'Basic' or not USER_NAME.fullmatch(name) \
-                or not hmac.compare_digest(password.encode(), self.password.encode()):
+    def login(self, name, password):
+        """The user's folder name, or None if the name or the password is refused."""
+        name = (name or '').strip().lower()
+        if not USER_NAME.fullmatch(name) \
+                or not hmac.compare_digest((password or '').encode(), self.password.encode()):
             return None
         return name
 
+    def _sign(self, name):
+        return hmac.new(self.password.encode(), name.encode(), hashlib.sha256).hexdigest()
 
+    def cookie(self, name):
+        """The login cookie's value: the name, signed with the lab password.  Changing the
+        password logs everyone out; nothing has to be kept on the server."""
+        return f'{name}:{self._sign(name)}'
+
+    def user_of(self, cookie_header):
+        """The user a request's login cookie names, or None."""
+        try:
+            morsel = SimpleCookie(cookie_header or '').get(COOKIE)
+        except Exception:
+            return None
+        name, _, sig = (morsel.value if morsel else '').partition(':')
+        if USER_NAME.fullmatch(name) and hmac.compare_digest(sig, self._sign(name)):
+            return name
+        return None
+
+
+COOKIE = 'ms2login'
+PAGES = ('/', '/view', '/roi')        # opened by hand: sent to the login form, not refused
 USER_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,39}')   # becomes a folder name
 PATH_FIELDS = ('czi', 'out', 'dir', 'path', 'root')
 
@@ -105,6 +141,21 @@ def gpus():
         free = (int(total) - int(used)) / 1024
         found.append({'id': f'cuda:{i}', 'label': f'GPU {i} · {name} · {free:.0f} GB free'})
     return found + [{'id': 'cpu', 'label': 'CPU (no GPU; segmentation is very slow)'}]
+
+
+def code_version(repo=REPO):
+    """The commit this app's code came from, read once at startup: a later git pull is not
+    running until the app restarts.  commit is None outside a git checkout."""
+    def git(*args):
+        return subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True,
+                              timeout=10, check=True).stdout.strip()
+    try:
+        short, full, date = git('log', '-1', '--format=%h|%H|%cI').split('|')
+        return {'commit': short, 'full': full, 'date': date,
+                'branch': git('rev-parse', '--abbrev-ref', 'HEAD'),
+                'modified': bool(git('status', '--porcelain', '--untracked-files=no'))}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {'commit': None}
 
 
 def listdir(path):
@@ -174,6 +225,53 @@ def save_upload(rfile, length, folder, name):
     return path
 
 
+def comparison_recordings(cmp_dir):
+    with open(os.path.join(cmp_dir, 'recordings.json')) as f:
+        return json.load(f)
+
+
+def alignment_state(cmp_dir):
+    """Each recording of a comparison with its window's first frame and its saved turn."""
+    path = os.path.join(cmp_dir, ALIGNMENT_NAME)
+    saved = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            saved = json.load(f)
+    rows = []
+    for name, rec in comparison_recordings(cmp_dir).items():
+        row = {'name': name, 't': rec['t_start'], 'flip': False, 'rotate': 0, **saved.get(name, {})}
+        try:
+            cell_projection(rec)
+        except FileNotFoundError as exc:
+            row['error'] = str(exc)
+        rows.append(row)
+    aligned = os.path.join(cmp_dir, 'spatial_maps_aligned.png')
+    return {'recordings': rows, 'map': aligned if os.path.exists(aligned) else None}
+
+
+def frame_png(frame, size=512):
+    """A cell-channel frame as a greyscale png, its contrast from the 1st-99.5th percentile."""
+    lo, hi = np.percentile(frame, [1, 99.5])
+    img = Image.fromarray((np.clip((frame - lo) / max(hi - lo, 1e-9), 0, 1) * 255).astype(np.uint8))
+    img.thumbnail((size, size))
+    buf = io.BytesIO()
+    img.save(buf, 'PNG')
+    return buf.getvalue()
+
+
+def save_alignment(cmp_dir, alignment):
+    """Write alignment.json -- {name: {flip, rotate}}, every recording of the comparison -- and
+    redraw the aligned spatial map.  Returns the map's path."""
+    names = list(comparison_recordings(cmp_dir))
+    if set(alignment) != set(names):
+        raise ValueError(f'the alignment names {sorted(alignment)}, the comparison {sorted(names)}')
+    clean = {n: {'flip': bool(alignment[n].get('flip')), 'rotate': float(alignment[n].get('rotate', 0))}
+             for n in names}
+    with open(os.path.join(cmp_dir, ALIGNMENT_NAME), 'w') as f:
+        json.dump(clean, f, indent=2)
+    return align_comparison(cmp_dir)
+
+
 def zip_results(rec_dir, out):
     """Logs, ROI and the result tables of a recording, zipped into out (may be a socket)."""
     files = sorted(glob.glob(os.path.join(rec_dir, '*.log')))
@@ -203,30 +301,43 @@ class Handler(viewer.Handler):
     def set_viewer(self, v):
         self.app.viewers[self.user] = v
 
-    def authorized(self):
-        """In lab mode, ask the browser for a name and the lab password until it gives them."""
+    def authorized(self, path):
+        """In lab mode, every request but the login form's needs the login cookie."""
         if self.app.password is None:
             return True
-        self.user = self.app.login(self.headers.get('Authorization'))
-        if self.user is not None:
-            os.makedirs(os.path.join(self.app.workspace, self.user, 'runs'), exist_ok=True)
+        user = self.app.user_of(self.headers.get('Cookie'))
+        if user is not None:
+            self.user = user
+            os.makedirs(os.path.join(self.app.workspace, user, 'runs'), exist_ok=True)
             return True
-        self.user = ''
-        body = (b'Log in with your name (letters, digits, - or _) as the user name '
-                b'and the lab password.')
-        self.send_response(401)
-        self.send_header('WWW-Authenticate', 'Basic realm="MS2", charset="UTF-8"')
-        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        if path in ('/login', '/api/login'):
+            return True
+        if self.command == 'GET' and path in PAGES:
+            self.send_response(302)
+            self.send_header('Location', '/login')
+            self.end_headers()
+        else:
+            if self.command == 'PUT':
+                self.close_connection = True   # don't read the upload that was refused
+            self._error(PermissionError('you are logged out: reload the page to log in'), 401)
+        return False
+
+    def _login_reply(self, value, max_age):
+        body = json.dumps({'ok': True}).encode()
+        self.send_response(200)
+        self.send_header('Set-Cookie', f'{COOKIE}={value}; Path=/; Max-Age={max_age}; '
+                                       f'HttpOnly; SameSite=Lax')
+        self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        return False
 
     def _json(self, obj):
         self._send(json.dumps(obj).encode(), 'application/json')
 
-    def _error(self, exc):
-        code = 403 if isinstance(exc, PermissionError) else 400 if isinstance(exc, (ValueError, KeyError, FileNotFoundError)) else 500
+    def _error(self, exc, code=None):
+        if code is None:
+            code = 403 if isinstance(exc, PermissionError) else 400 if isinstance(exc, (ValueError, KeyError, FileNotFoundError)) else 500
         body = json.dumps({'error': str(exc)}).encode()
         self.send_response(code)
         self.send_header('Content-Type', 'application/json')
@@ -235,19 +346,32 @@ class Handler(viewer.Handler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self.authorized():
-            return
         url = urlparse(self.path)
+        if not self.authorized(url.path):
+            return
         q = clean_paths({k: v[0] for k, v in parse_qs(url.query).items()})
         a = self.app
         try:
             if url.path == '/':
                 with open(os.path.join(STATIC, 'index.html'), 'rb') as f:
                     self._send(f.read(), 'text/html; charset=utf-8')
+            elif url.path == '/login':
+                with open(os.path.join(STATIC, 'login.html'), 'rb') as f:
+                    self._send(f.read(), 'text/html; charset=utf-8')
+            elif url.path.startswith('/open/'):
+                # the path is in the URL itself, so a page's relative links (its images,
+                # scripts) resolve to their files next to it
+                path = unquote(url.path[len('/open'):])
+                a.check_read(path, self.user)
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(f'{path} is not a file')
+                kind = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+                with open(path, 'rb') as f:
+                    self._send(f.read(), kind)
             elif url.path == '/api/config':
                 self._json({'data_roots': a.roots(self.user), 'out_root': a.out(self.user),
                             'gpus': gpus(), 'form': a.forms.get(self.user, {}),
-                            'lab': bool(a.workspace), 'user': self.user})
+                            'lab': bool(a.workspace), 'user': self.user, 'version': a.version})
             elif url.path == '/api/ls':
                 self.check(q['path'])
                 self._json({'path': os.path.realpath(q['path']),
@@ -268,6 +392,22 @@ class Handler(viewer.Handler):
                             'files': [{'name': os.path.basename(f), 'path': f}
                                       for f in sorted(glob.glob(os.path.join(d, '*')))
                                       if os.path.isfile(f) and not f.endswith(('job.json', 'exit_code'))]})
+            elif url.path == '/api/align':
+                self.check(q['dir'])
+                self._json(alignment_state(q['dir']))
+            elif url.path == '/api/align/frame':
+                self.check(q['dir'])
+                rec = comparison_recordings(q['dir'])[q['name']]
+                a.check_read(cell_projection(rec), self.user)
+                self._send(frame_png(stage_frame(rec)), 'image/png', cache=True)
+            elif url.path.startswith('/static/'):
+                name = url.path[len('/static/'):]
+                path = os.path.join(STATIC, name)
+                if '/' in name or name.startswith('.') or not os.path.isfile(path):
+                    return self.send_error(404)
+                with open(path, 'rb') as f:
+                    self._send(f.read(), mimetypes.guess_type(name)[0] or 'application/octet-stream',
+                               cache=True)
             elif url.path == '/api/download':
                 self.check(q['dir'])
                 name = os.path.basename(os.path.realpath(q['dir']))
@@ -289,9 +429,9 @@ class Handler(viewer.Handler):
             self._error(exc)
 
     def do_PUT(self):
-        if not self.authorized():
-            return
         url = urlparse(self.path)
+        if not self.authorized(url.path):
+            return
         try:
             if url.path != '/api/upload' or not self.app.workspace:
                 return self.send_error(404)
@@ -304,15 +444,26 @@ class Handler(viewer.Handler):
             self._error(exc)
 
     def do_POST(self):
-        if not self.authorized():
-            return
         url = urlparse(self.path)
+        if not self.authorized(url.path):
+            return
         if not url.path.startswith('/api/'):
             return super().do_POST()            # /roi/preview, /roi/save
         a = self.app
         try:
             body = clean_paths(json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}'))
-            if url.path == '/api/roi/open':
+            if url.path == '/api/login':
+                if a.password is None:
+                    raise ValueError('this app has no login; it is not in lab mode')
+                name = a.login(body.get('name'), body.get('password'))
+                if name is None:
+                    time.sleep(1)               # slows down guessing the password
+                    raise PermissionError('wrong password, or a name that is not letters, '
+                                          'digits, - or _')
+                self._login_reply(a.cookie(name), 30 * 24 * 3600)
+            elif url.path == '/api/logout':
+                self._login_reply('', 0)
+            elif url.path == '/api/roi/open':
                 # Draw the ROI before anything has run: only the projection is needed.
                 self.check(body['czi'], body['out'])
                 a.forms[self.user] = body
@@ -361,7 +512,8 @@ class Handler(viewer.Handler):
                 jobs.start(cmd, os.path.join(rec.dir, 'dashboard'), 'dashboard.log')
                 self._json({'ok': True})
             elif url.path == '/api/compare/start':
-                self.check(body['out'], *[r['czi'] for r in body['recordings'].values()])
+                recs = body['recordings'].values()
+                self.check(body['out'], *[r['czi'] for r in recs], *[r['out'] for r in recs if 'out' in r])
                 d = os.path.join(body['out'], '_comparison')
                 if jobs.state(d) == 'running':
                     raise ValueError('a comparison is already running in this folder')
@@ -373,6 +525,9 @@ class Handler(viewer.Handler):
                        '--device', body.get('device', 'cuda:0'), '--ladder', body.get('ladder', 'joint')]
                 jobs.start(cmd, d, 'compare.log')
                 self._json({'ok': True})
+            elif url.path == '/api/align/save':
+                self.check(body['dir'])
+                self._json({'map': save_alignment(body['dir'], body['alignment'])})
             else:
                 self.send_error(404)
         except Exception as exc:
@@ -385,7 +540,8 @@ class Handler(viewer.Handler):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--data-root', action='append',
-                   help='folder the file browser may open (repeat for several); default: your home')
+                   help='folder the file browser may open (repeat for several); default: your home. '
+                        'In lab mode: folders people may open files from, read-only')
     p.add_argument('--out-root', help='default results folder')
     p.add_argument('--port', type=int, default=8765)
     p.add_argument('--workspace', help='lab mode: one page for everyone, with a folder per user '
@@ -403,7 +559,9 @@ def main():
         if not password:
             p.error(f'{args.password_file} is empty')
     roots = args.data_root or [os.path.expanduser('~')]
-    Handler.app = App(roots, args.out_root or roots[0], args.workspace, password)
+    # lab mode reads the --data-root folders only when they are given, never a default home
+    Handler.app = App(roots, args.out_root or roots[0], args.workspace, password,
+                      read_roots=(args.data_root or []) if args.workspace else [])
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
     except OSError:
