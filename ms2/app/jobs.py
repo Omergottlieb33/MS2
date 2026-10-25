@@ -130,6 +130,12 @@ def redo_after_roi_change(rec):
                 os.remove(rec.marker(step))
 
 
+def redo_after_orientation_change(rec):
+    """A new orientation turns the activity figures: draw them again on the next run."""
+    if os.path.exists(rec.marker('activity')):
+        os.remove(rec.marker('activity'))
+
+
 def recording_status(rec_dir):
     """What the Runs page shows for one recording folder."""
     rec = recording(rec_dir)

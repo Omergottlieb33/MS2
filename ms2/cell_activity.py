@@ -14,7 +14,8 @@ ellipse sum above the noise floor, and the levels form a ladder:
                               recordings -- see research/cell_activity_silhouette.py.
 
 Recordings are described by a dict, the same one ms2/cell_activity_compare.py takes, stored
-as json for the command line (noise_floor, noise_peak and min_presence are optional):
+as json for the command line (noise_floor, noise_peak and min_presence are optional, and so
+is orientation, {"flip": bool, "rotate": degrees}, how the cluster overlay is turned):
 
     {"New-02-ST11-12": {"csv": ".../gene_expression_results_fixed.csv",
                         "tracklets": ".../masks/tracklets_bug_fix2.json",
@@ -35,6 +36,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch
+from scipy import ndimage
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
@@ -174,10 +176,39 @@ def classify_cells(desc, score='total', noise_peak=NOISE_PEAK, n_levels=N_LEVELS
     number of levels above the blips, None to choose it by silhouette (see activity_levels).
     weights, one per row, weigh the ladder fit."""
     levels = np.where(desc['peak'] > 0, 1, 0)
-    ranked = (desc['peak'] >= noise_peak).to_numpy()
+    # on the ladder: fired at all, and as high as a blip.  The first matters at a blip height of
+    # 0, where 'peak >= 0' alone would put every silent cell on the ladder as weakly active
+    ranked = ((desc['peak'] > 0) & (desc['peak'] >= noise_peak)).to_numpy()
     levels[ranked] = 2 + activity_levels(desc[score].to_numpy()[ranked], n_levels, k=k,
                                          weights=None if weights is None else weights[ranked])
     return levels
+
+
+def ladder_cuts(desc, levels, score='rate'):
+    """The score values between the ladder's levels (2 | 3 | 4 ...): halfway between the
+    highest score of one level and the lowest of the next.  KMeans on one dimension cuts it
+    into contiguous runs, so levels_from_cuts with these reproduces the fitted levels.  None
+    where a level is empty."""
+    s = desc[score].to_numpy()
+    top = int(levels.max()) if len(levels) else ACTIVE_LADDER_START
+    cuts = []
+    for lo in range(ACTIVE_LADDER_START, max(top, ACTIVE_LADDER_START + K_LEVELS - 1)):
+        below, above = s[levels == lo], s[levels == lo + 1]
+        cuts.append(float((below.max() + above.min()) / 2) if len(below) and len(above) else None)
+    return cuts
+
+
+def levels_from_cuts(desc, cuts, noise_peak=NOISE_PEAK, score='rate'):
+    """classify_cells with the ladder given as score cuts instead of fitted: silent, blips,
+    then one level more per cut a cell's score reaches."""
+    levels = np.where(desc['peak'] > 0, 1, 0)
+    ranked = ((desc['peak'] > 0) & (desc['peak'] >= noise_peak)).to_numpy()    # as classify_cells
+    s = desc[score].to_numpy()
+    levels[ranked] = ACTIVE_LADDER_START + sum((s[ranked] >= c).astype(int) for c in cuts if c is not None)
+    return levels
+
+
+ACTIVE_LADDER_START = 2      # levels 0 and 1 are silent and blips; the fitted ladder starts here
 
 
 def normalise_signals(signals, noise_floor=NOISE_FLOOR):
@@ -265,11 +296,21 @@ def cluster_overlay(masks, labels_by_level, alpha=0.6):
     return img.astype(np.uint8)
 
 
+def orient_image(img, flip=False, rotate=0.0):
+    """An image as the recording's orientation shows it: mirrored left-right if flip, then
+    rotated clockwise by rotate degrees, the canvas grown to hold all of it."""
+    if flip:
+        img = img[:, ::-1]
+    if rotate % 90 == 0:
+        return np.rot90(img, -int(rotate // 90))      # exact, no resampling
+    return ndimage.rotate(img, -rotate, reshape=True, order=0)
+
+
 def render_overlay_gif(masks_dir, tracklets, cells, levels, signals, timepoints, noise_floor,
-                       out_dir):
+                       out_dir, orientation=None):
     """cluster_overlay.gif over the window.  A cell wears its level's colour on the frames its
     signal clears the noise floor and silent grey on the others; the first frame is also
-    saved as a still."""
+    saved as a still.  Turned by orientation ({flip, rotate}), else 90 degrees clockwise."""
     paths = mask_paths_by_t(masks_dir)
     track_ids = [c[len('cell_'):] for c in cells]
     # Fixed legend: which levels light up changes from frame to frame
@@ -285,7 +326,7 @@ def render_overlay_gif(masks_dir, tracklets, cells, levels, signals, timepoints,
         img = cluster_overlay(load_masks(paths[t]), labels_by_level)
 
         fig = plt.figure(figsize=(6, 6))
-        plt.imshow(np.rot90(img, -1))
+        plt.imshow(orient_image(img, **orientation) if orientation else np.rot90(img, -1))
         plt.axis('off')
         plt.title(f'Cluster at timepoint {t}')
         plt.legend(handles=legend, loc='upper right', fontsize=6)
@@ -333,7 +374,7 @@ def analyze_recording(name, rec, out_dir, k=K_LEVELS):
     with open(rec['tracklets']) as f:
         tracklets = json.load(f)
     render_overlay_gif(rec['masks_dir'], tracklets, cells, levels, signals, timepoints,
-                       noise_floor, out_dir)
+                       noise_floor, out_dir, rec.get('orientation'))
     return table
 
 

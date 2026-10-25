@@ -657,6 +657,16 @@ def parse_args():
 
 _PROCESSOR = None
 
+# Without an ROI every cell tracked this long is measured: the analysis page chooses the stage,
+# region and cells afterwards, and a shorter track cannot pass any window's presence filter.
+MIN_TRACKED_FRAMES = 10
+
+
+def cells_to_measure(tracklets, min_frames=MIN_TRACKED_FRAMES):
+    """The tracklet ids with a label on at least min_frames frames.  Counting tracked frames,
+    not missing ones, keeps the cells born or leaving mid-recording."""
+    return [key for key, labels in tracklets.items() if sum(1 for v in labels if v > 0) >= min_frames]
+
 
 def _init_worker():
     # One BLAS thread per worker, or N workers x all cores oversubscribe the machine.
@@ -715,10 +725,7 @@ def run_gene_expression(czi_file_path, seg_maps_dir, tracklets_path, ms2_backgro
         valid_ids = [str(tid) for tid in selected]
         print(f"ROI {roi}: {len(valid_ids)} cells selected")
     else:
-        #add a diffent temporal condition
-        valid_ids = [
-        key for key, cell_labels in tracklets.items()
-        if cell_labels.count(-1) < 20 and any(v > 0 for v in cell_labels)]
+        valid_ids = cells_to_measure(tracklets)
     # valid_ids = np.arange(0, 50)
     non_zero_min = []
     cells_center_of_mass_df = pd.DataFrame(

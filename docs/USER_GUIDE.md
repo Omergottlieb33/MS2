@@ -7,8 +7,8 @@ computer only shows the app in a web browser.
 **The quick way, if the lab page is running:** open `http://golgi:8765` (ask for the address
 and the lab password). Log in with your name and the lab password (**Log out** is at the top). Then,
 under **CZI file**, pick the CZI from your computer and carry on from
-[Draw the region of interest](#2-draw-the-region-of-interest-optional-recommended). When the
-run has finished, **Download results** on the Runs page gives you a zip of the logs and result
+[Start](#2-start). When the run has finished, analyse it on the
+[Analysis page](#analysing-the-results), and **Download results** on the Runs page gives you a zip of the logs and result
 tables to save wherever you like. To view a page, picture or PDF that is on the server, paste
 its full path into **Open a file on the server** on the Runs page. You need nothing else on your computer. The rest of this
 section, and the setup below, are for running your own copy of the app.
@@ -84,32 +84,15 @@ number).
 On **New analysis**, click **Browse…** and go to your `.czi` file. Then check the **Results
 folder**. Each recording gets its own sub-folder there, named after the file.
 
-### 2. Draw the region of interest (optional, recommended)
-
-Click **Draw ROI**. The first time, this takes about a minute while the app prepares the image.
-You will see the embryo twice, side by side:
-
-- **Left:** move the **start frame** slider to the first frame of the developmental stage you
-  want to analyse.
-- **Right:** move the **end frame** slider to the last frame of that stage.
-- On each side, click around the region to outline it, then click **close** to finish the
-  shape. **undo** removes the last point and **clear** starts over. Zoom with the mouse wheel.
-  Move the image by dragging with the right mouse button.
-- Click **save roi**, then **continue →** to return.
-
-A cell is analysed if it is inside **either** outline, the one at the start or the one at
-the end. Activity is measured only between the start and end frames.
-
-Without an ROI, the app analyses every cell that was tracked for most of the recording,
-across all frames.
-
-### 3. Start
+### 2. Start
 
 - **Processor:** pick a GPU with the most free memory. The CPU option works but takes very long.
 - **Advanced settings:** leave them alone unless you know why you are changing them.
   *MS2 spot prominence* is how bright a spot must be to count as transcription.
 
-Click **Start analysis**. The app switches to **Runs & results**.
+Click **Start analysis**. The app switches to **Runs & results**. The run measures every cell
+tracked for 10 frames or more; you choose the stage, the region and the cells afterwards, on the
+Analysis page (see *Analysing the results*).
 
 ---
 
@@ -138,8 +121,6 @@ The status labels mean:
 Click a recording to see its log and buttons:
 
 - **Open viewer**: browse the embryo frame by frame with the detected cells drawn on top.
-- **Edit ROI**: change the region or the frames. Then press **Resume**, and only the
-  measurement steps run again.
 - **Tracking dashboard**: a quality report on how well cells were followed over time.
 
 ## The results
@@ -158,34 +139,101 @@ PNG files open in the browser. Click a CSV to download it and open it in Excel.
 
 ---
 
-## Comparing recordings
+## Analysing the results
 
-Several embryos at the same stage, for example. Put the recordings in the same results folder
-and run each one first. Then open **Compare recordings**:
+The run measures every cell. Every decision about which cells to analyse and how is made
+afterwards, on the **Analysis** page: the link at the top of the pipeline page, or
+`http://localhost:8777/analysis`. Nothing there changes the run's results, so you can try
+different settings as often as you like.
 
-1. Tick the recordings to compare.
-2. Check the start and end frames. They are filled in from each recording's ROI. Without an
-   ROI you must type the end frame.
-3. Click **Start comparison**. Results appear below and in the `_comparison` folder.
+### 1. Samples and stages
 
-A run in another folder can join too. Paste its folder (for example
-`.../outputs/STAGE-11/New-02-v3-ST11-12`) under **Add a run from another folder** and click
-**Add**. It stays in its own folder, and its finished steps are not run again. It must be a
-run of the pipeline: a folder analysed by hand, with no CZI recorded in it, is refused.
+The list on the left shows every result in the results folder, grouped by stage folder. Search
+it, or paste a result's path under **add a result by its path**.
 
-The p-values compare **cells**, not embryos. A small p-value means the two recordings differ, not
-that the two stages or conditions differ. To claim that, you need several embryos per group.
+- **Stage comparison:** several embryos at one stage. Type the stage (for example 13), then
+  click each recording to add it.
+- **Single recording, several stages:** one embryo over its stages. Click the recording, then
+  **+ add a stage** for each further stage and name each one.
 
-### Aligning the embryos
+For every sample, set where the stage **starts** and **ends** with the two sliders. Each shows
+the frame it points at. Turn the embryo with ⟲/⟳ 90°, the angle slider and ⇋/⇵ flip, so all
+embryos face the same way. Every image on the page zooms with the mouse wheel; drag to move.
 
-Embryos are mounted at different angles, so their spatial maps don't line up. Under **Align the
-recordings**, open the comparison folder (any folder with `recordings.json` and `cells.csv`). Each
-recording shows the first frame of its stage window. Turn it with ⟲/⟳ or the angle slider and
-mirror it with ⇋/⇵ until all embryos face the same way, then click **Save alignment**. This saves
-`alignment.json` and draws `spatial_maps_aligned.png`. It shows only the analysed cells, in the
-style of the spatial map, with each embryo turned as you set it. A rerun of the comparison
-draws it again. The numbers don't change, because none of them depends
-on orientation.
+The first time a recording is opened it takes about half a minute while its cells are read.
+
+### 2. Cells: tracking filters
+
+- **Tracked through at least …% of the window:** cells followed through less of the stage are
+  left out.
+- **Volume CV at most …:** cells whose segmented volume changes too much over the stage (an
+  unstable segmentation) are left out.
+
+### 3. Region and segments
+
+One panel per sample shows the cells that pass the tracking filters, each outlined by its own
+segmentation. Choose what to draw, click around it, then **close**:
+
+- **ROI:** outline the region on the **start frame** and on the **end frame**. A cell is
+  analysed if it is inside either outline on that frame. Analysed cells are outlined in blue,
+  the others in grey. With no ROI, every cell that passes the filters is analysed.
+- **2, 3, 4, 5:** outline each body segment.
+
+**undo** removes the last point, **clear** starts over, **fit** shows the whole frame.
+**load ROI from a file** and **load segments from a file** offer the ROIs and segments drawn
+earlier for that recording. Nothing from earlier work is shown unless you load it.
+
+**Box each segment** chooses what the segment's grid is cut from: the analysed cells inside the
+outline (a tight box, the default) or the outline itself.
+
+### 4. Activity clustering
+
+- **Noise floor:** a cell fires on a frame when its MS2 signal is above it.
+- **Blip height:** a cell whose highest signal never rises this far above the floor is a
+  *short burst / noise*; it is not clustered.
+- **The two rate cuts** split the rest into weakly, moderate and highly active. **Automatic**
+  places them where KMeans does on all samples together; moving a cut sets it by hand.
+
+The heatmap shows every cell above silent, all samples together, and redraws as you move a
+slider. Use **zoom in** to read it.
+
+### 5. Segment histograms
+
+Each segment is stretched onto one square: centre (0, 0), right-upper corner (1, 1),
+left-lower (−1, −1). The same segment of every sample then lies on the same square.
+
+- **Value:** the share of cells firing, the mean intensity per cell (MS2 signal above the floor,
+  summed over the window), or the share in each cluster (one row per cluster, each in its own
+  colour).
+- **Bins:** a grid, or about N cells per bin. A bin with only 1–2 cells can only read 0, ½ or
+  1, so prefer about 4–6 cells per bin.
+- **Time:** the whole window, or 0%, 10%, … 100% of each sample's window.
+
+Hatched bins hold no cells. The table under the maps gives how alike each pair of samples' maps
+are (Pearson r).
+
+### 6. Save and export
+
+Give the analysis a name and click **Save**: everything on the page, the outlines included, is
+saved as `analyses/<name>/analysis.json` in the results folder. Saved analyses are listed below;
+**load** reopens one exactly as saved.
+
+**Save and export** also writes every figure and table into the same folder, with the page's
+settings. It takes a few minutes; the files appear on the page as they are written:
+
+| File | What it is |
+|---|---|
+| `cells.csv` | one row per analysed cell: its sample, activity level, rate, peak, position |
+| `metrics.csv` | one row per sample: how many cells, how many in each level, and more |
+| `heatmap_active_*.png` | the heatmap per sample and all samples together |
+| `level_composition.png`, `per_cell_metrics.png`, `timecourse.png` | the samples compared |
+| `spatial_maps_aligned.png` | every sample's cells, turned as set on the page |
+| `segment_activity/segment_<n>_*.png` | the segment histograms: firing, intensity, clusters, and a GIF over time |
+| `segment_activity/*_correlation.csv` | how alike the samples' maps are |
+
+The p-values in `stats.csv` compare **cells**, not embryos. A small p-value means the samples
+differ, not that the stages or conditions differ. To claim that, you need several embryos per
+group.
 
 ---
 

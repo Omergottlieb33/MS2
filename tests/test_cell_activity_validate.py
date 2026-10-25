@@ -84,12 +84,15 @@ def test_out_of_range_max_unstable_frac(tmp):
     passed('max_unstable_frac outside 0..1 is an error')
 
 
-def test_retired_max_volume_cv(tmp):
+def test_max_volume_cv(tmp):
+    """The analysis page's volume CV filter is accepted; a negative or non-number one is not."""
     rec = write_recording(os.path.join(tmp, 'volume_cv'), SIGNALS)
     rec['max_volume_cv'] = 0.3
+    assert ('thresholds', 'A') not in report_checks(validate_config({'A': rec}), 'error')
+    rec['max_volume_cv'] = -1
     report = validate_config({'A': rec})
     assert ('thresholds', 'A') in report_checks(report, 'error'), report.to_string()
-    passed('the replaced max_volume_cv is an error, not silently ignored')
+    passed('max_volume_cv is a filter again; out-of-range values are errors')
 
 
 def test_no_cell_survives_min_presence(tmp):

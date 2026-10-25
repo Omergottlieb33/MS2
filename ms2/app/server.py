@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from http.cookies import SimpleCookie
@@ -35,10 +36,14 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 
-from ms2.app import jobs
-from ms2.cell_activity_compare import ALIGNMENT_NAME, align_comparison, cell_projection, stage_frame
+from ms2.app import analysis, jobs
+from ms2.cell_activity_compare import (ALIGNMENT_NAME, align_comparison, cell_projection,
+                                       comparison_alignment, stage_frame)
+from ms2.cell_activity_segments import (ACTIVITY_DIR, SEGMENT_LABELS, analyse_segments,
+                                        load_segments, save_segments)
 from ms2.pipeline import Recording
 from ms2.preprocess import make_projection
 from ms2.viewer import app as viewer
@@ -116,7 +121,7 @@ class App:
 
 
 COOKIE = 'ms2login'
-PAGES = ('/', '/view', '/roi')        # opened by hand: sent to the login form, not refused
+PAGES = ('/', '/view', '/roi', '/segments', '/analysis')        # opened by hand: sent to the login form, not refused
 USER_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,39}')   # becomes a folder name
 PATH_FIELDS = ('czi', 'out', 'dir', 'path', 'root')
 
@@ -231,7 +236,8 @@ def comparison_recordings(cmp_dir):
 
 
 def alignment_state(cmp_dir):
-    """Each recording of a comparison with its window's first frame and its saved turn."""
+    """Each recording of a comparison with its window's first frame and its turn: the one
+    saved for this comparison, else the one saved with the recording's ROI."""
     path = os.path.join(cmp_dir, ALIGNMENT_NAME)
     saved = {}
     if os.path.exists(path):
@@ -239,7 +245,8 @@ def alignment_state(cmp_dir):
             saved = json.load(f)
     rows = []
     for name, rec in comparison_recordings(cmp_dir).items():
-        row = {'name': name, 't': rec['t_start'], 'flip': False, 'rotate': 0, **saved.get(name, {})}
+        row = {'name': name, 't': rec['t_start'], 'flip': False, 'rotate': 0,
+               **(rec.get('orientation') or {}), **saved.get(name, {})}
         try:
             cell_projection(rec)
         except FileNotFoundError as exc:
@@ -249,14 +256,77 @@ def alignment_state(cmp_dir):
     return {'recordings': rows, 'map': aligned if os.path.exists(aligned) else None}
 
 
+def segments_state(cmp_dir):
+    """What the Segments page needs: each recording's window, image size and orientation (as
+    the aligned map turns it), the segments saved for this comparison -- else those marked
+    with the recording's ROI -- and the labels to mark."""
+    from ms2.roi_selection import load_projection
+    recordings = comparison_recordings(cmp_dir)
+    alignment = comparison_alignment(cmp_dir, recordings) or {}
+    rows = []
+    for name, rec in recordings.items():
+        row = {'name': name, 't_start': rec['t_start'], 't_end': rec['t_end'],
+               'orientation': {'flip': False, 'rotate': 0, **alignment.get(name, {})}}
+        try:
+            row['height'], row['width'] = load_projection(cell_projection(rec)).shape[1:]
+        except FileNotFoundError as exc:
+            row['error'] = str(exc)
+        rows.append(row)
+    segments = {name: rec['segments'] for name, rec in recordings.items() if rec.get('segments')}
+    segments.update(load_segments(cmp_dir))
+    return {'recordings': rows, 'segments': segments, 'labels': SEGMENT_LABELS}
+
+
 def frame_png(frame, size=512):
-    """A cell-channel frame as a greyscale png, its contrast from the 1st-99.5th percentile."""
+    """A cell-channel frame as a greyscale png, its contrast from the 1st-99.5th percentile;
+    shrunk to fit size, or at full resolution when size is None."""
     lo, hi = np.percentile(frame, [1, 99.5])
     img = Image.fromarray((np.clip((frame - lo) / max(hi - lo, 1e-9), 0, 1) * 255).astype(np.uint8))
-    img.thumbnail((size, size))
+    if size:
+        img.thumbnail((size, size))
     buf = io.BytesIO()
     img.save(buf, 'PNG')
     return buf.getvalue()
+
+
+_resolved = {}
+KMEANS_LOCK = threading.Lock()
+
+
+def warm_up():
+    """Fit KMeans once before serving.  Its first fit makes scikit-learn's threadpoolctl walk
+    the loaded libraries, holding the dynamic loader's lock while its ctypes callback waits for
+    Python's lock -- and a request thread being started holds Python's lock while it waits for
+    the loader's.  Done concurrently by request threads, the two deadlocked the whole server.
+    After this fit the walk is cached and requests never make it."""
+    from ms2.cell_activity import classify_cells
+    desc = pd.DataFrame({'rate': np.linspace(1, 50, 30), 'peak': np.linspace(20, 90, 30)})
+    with KMEANS_LOCK:
+        classify_cells(desc, score='rate')
+
+
+def analysis_recording(csv_path):
+    """A result's inputs (analysis.resolve), remembered while its matrix is unchanged."""
+    key = (os.path.abspath(csv_path), os.path.getmtime(csv_path))
+    if key not in _resolved:
+        _resolved[key] = analysis.resolve(csv_path)
+    return _resolved[key]
+
+
+def analysis_outputs(folder):
+    """An exported analysis's figures and tables, figures first; segment ones after."""
+    found = [f for pat in ('*', os.path.join(ACTIVITY_DIR, '*')) for f in glob.glob(os.path.join(glob.escape(folder), pat))
+             if f.endswith(('.png', '.gif', '.csv')) and os.path.isfile(f)]
+    found.sort(key=lambda f: (ACTIVITY_DIR in f, f.endswith('.csv'), f))
+    return [{'name': os.path.relpath(f, folder), 'path': f} for f in found]
+
+
+def activity_files(cmp_dir):
+    """The segment activity results already in a comparison folder, figures first."""
+    files = sorted(glob.glob(os.path.join(cmp_dir, ACTIVITY_DIR, '*')),
+                   key=lambda f: (f.endswith('.csv'), f))
+    return [{'name': os.path.basename(f), 'path': f} for f in files
+            if f.endswith(('.png', '.gif', '.csv'))]
 
 
 def save_alignment(cmp_dir, alignment):
@@ -294,6 +364,9 @@ class Handler(viewer.Handler):
 
     def check_path(self, path):
         self.check(path)            # the viewer's results-folder box stays inside the data roots
+
+    def orientation_saved(self, roi_path):
+        jobs.redo_after_orientation_change(jobs.recording(os.path.dirname(os.path.abspath(roi_path))))
 
     def get_viewer(self):
         return self.app.viewers.get(self.user)
@@ -355,6 +428,79 @@ class Handler(viewer.Handler):
             if url.path == '/':
                 with open(os.path.join(STATIC, 'index.html'), 'rb') as f:
                     self._send(f.read(), 'text/html; charset=utf-8')
+            elif url.path == '/analysis':
+                with open(os.path.join(STATIC, 'analysis.html'), 'rb') as f:
+                    self._send(f.read(), 'text/html; charset=utf-8')
+            elif url.path == '/api/analysis/recordings':
+                roots = [q['root']] if q.get('root') else a.roots(self.user) + a.read_roots
+                for r in roots:
+                    a.check_read(r, self.user)
+                self._json({'roots': roots, 'recordings': analysis.discover(roots)})
+            elif url.path == '/api/analysis/resolve':
+                # a result added by its path: the matrix, or the folder holding it
+                path = q['path']
+                a.check_read(path, self.user)
+                if os.path.isdir(path):
+                    found = analysis.find_matrices(path, depth=2)
+                    if not found:
+                        raise FileNotFoundError(f'no gene expression results in {path}')
+                    path = found[0]
+                self._json(analysis.recording_info(analysis_recording(path)))
+            elif url.path == '/api/analysis/sample':
+                a.check_read(q['csv'], self.user)
+                rec = analysis_recording(q['csv'])
+                if not rec['tracklets'] or not rec['masks_dir']:
+                    raise FileNotFoundError(f'the tracks or masks of {q["csv"]} were not found')
+                self._json(analysis.sample_data(rec, int(q['t0']), int(q['t1']),
+                                                os.path.join(a.out(self.user), 'analyses')))
+            elif url.path == '/api/analysis/labels':
+                a.check_read(q['csv'], self.user)
+                rec = analysis_recording(q['csv'])
+                a.check_read(rec['masks_dir'], self.user)
+                self._send(analysis.label_png(rec['masks_dir'], int(q['t'])), 'image/png', cache=True)
+            elif url.path == '/api/analysis/files':
+                a.check_read(q['csv'], self.user)
+                roots = [q['root']] if q.get('root') else a.roots(self.user) + a.read_roots
+                self._json(analysis.outline_files(analysis_recording(q['csv']), roots))
+            elif url.path == '/api/analysis/file':
+                a.check_read(q['path'], self.user)
+                self._json(analysis.read_outline_file(q['path'], q.get('name') or None))
+            elif url.path == '/api/analysis/saved':
+                self._json(analysis.list_analyses(a.out(self.user)))
+            elif url.path == '/api/analysis/load':
+                self._json(analysis.load_analysis(a.out(self.user), q['name']))
+            elif url.path == '/api/analysis/export':
+                folder = analysis.analysis_dir(a.out(self.user), q['name'])
+                self._json({'state': jobs.state(folder), 'log': jobs.log_tail(folder),
+                            'files': analysis_outputs(folder)})
+            elif url.path == '/api/analysis/zip':
+                folder = analysis.analysis_dir(a.out(self.user), q['name'])
+                if jobs.state(folder) == 'running':
+                    raise ValueError(f'{q["name"]} is still being exported')
+                if not os.path.exists(os.path.join(folder, 'cells.csv')):
+                    raise FileNotFoundError(f'{q["name"]} has not been exported yet')
+                zip_name = re.sub(r'[^A-Za-z0-9._-]+', '_', q['name']) + '_results.zip'
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', f'attachment; filename="{zip_name}"')
+                self.end_headers()          # no length: the zip is written as it is made
+                analysis.write_zip(folder, self.wfile)
+            elif url.path == '/api/analysis/frame':
+                a.check_read(q['csv'], self.user)
+                rec = analysis_recording(q['csv'])
+                if not rec['projection']:
+                    raise FileNotFoundError(f'no cell-channel image found for {q["csv"]}')
+                a.check_read(rec['projection'], self.user)
+                from ms2.roi_selection import load_projection
+                frames = load_projection(rec['projection'])
+                t = int(q['t'])
+                if not 0 <= t < len(frames):
+                    raise ValueError(f'frame {t} is outside 0..{len(frames) - 1}')
+                self._send(frame_png(np.asarray(frames[t], dtype=float), int(q.get('size', 512)) or None),
+                           'image/png', cache=True)
+            elif url.path == '/segments':
+                with open(os.path.join(STATIC, 'segments.html'), 'rb') as f:
+                    self._send(f.read(), 'text/html; charset=utf-8')
             elif url.path == '/login':
                 with open(os.path.join(STATIC, 'login.html'), 'rb') as f:
                     self._send(f.read(), 'text/html; charset=utf-8')
@@ -399,7 +545,18 @@ class Handler(viewer.Handler):
                 self.check(q['dir'])
                 rec = comparison_recordings(q['dir'])[q['name']]
                 a.check_read(cell_projection(rec), self.user)
-                self._send(frame_png(stage_frame(rec)), 'image/png', cache=True)
+                t = int(q.get('t', rec['t_start']))
+                if not rec['t_start'] <= t <= rec['t_end']:
+                    raise ValueError(f'frame {t} is outside {q["name"]}\'s window')
+                # full=1: every pixel, for outlines drawn at image precision
+                self._send(frame_png(stage_frame(rec, t), None if q.get('full') else 512),
+                           'image/png', cache=True)
+            elif url.path == '/api/segments':
+                self.check(q['dir'])
+                self._json(segments_state(q['dir']))
+            elif url.path == '/api/segments/activity':
+                self.check(q['dir'])
+                self._json({'files': activity_files(q['dir'])})
             elif url.path.startswith('/static/'):
                 name = url.path[len('/static/'):]
                 path = os.path.join(STATIC, name)
@@ -525,6 +682,34 @@ class Handler(viewer.Handler):
                        '--device', body.get('device', 'cuda:0'), '--ladder', body.get('ladder', 'joint')]
                 jobs.start(cmd, d, 'compare.log')
                 self._json({'ok': True})
+            elif url.path == '/api/analysis/save':
+                self._json({'path': analysis.save_analysis(a.out(self.user), body['name'], body['analysis'])})
+            elif url.path == '/api/analysis/export':
+                # saved first, then exported in the background: the comparison takes a minute
+                folder = os.path.dirname(analysis.save_analysis(a.out(self.user), body['name'], body['analysis']))
+                if jobs.state(folder) == 'running':
+                    raise ValueError(f'{body["name"]} is already being exported')
+                jobs.start([sys.executable, '-m', 'ms2.app.analysis', 'export', folder], folder, 'export.log')
+                self._json({'ok': True, 'folder': folder})
+            elif url.path == '/api/analysis/ladder':
+                # the automatic ladder: KMeans as classify_cells fits it, given as rate cuts;
+                # one fit at a time (see warm_up)
+                from ms2.cell_activity import classify_cells, ladder_cuts
+                desc = pd.DataFrame({'rate': body['rate'], 'peak': body['peak']}, dtype=float)
+                with KMEANS_LOCK:
+                    levels = classify_cells(desc, score='rate', noise_peak=float(body['noise_peak']))
+                self._json({'cuts': ladder_cuts(desc, levels)})
+            elif url.path == '/api/segments/activity':
+                # seconds: positions from cells.csv and traces from the expression tables
+                self.check(body['dir'])
+                analyse_segments(body['dir'], int(body.get('bins', 8)), int(body.get('time_bins', 4)),
+                                 body.get('segments') or None,
+                                 int(body['cells_per_bin']) if body.get('cells_per_bin') else None)
+                self._json({'files': activity_files(body['dir'])})
+            elif url.path == '/api/segments/save':
+                self.check(body['dir'])
+                self._json({'path': save_segments(body['dir'], body['segments'],
+                                                  comparison_recordings(body['dir']))})
             elif url.path == '/api/align/save':
                 self.check(body['dir'])
                 self._json({'map': save_alignment(body['dir'], body['alignment'])})
@@ -547,8 +732,6 @@ def main():
     p.add_argument('--workspace', help='lab mode: one page for everyone, with a folder per user '
                                        'here for their uploads and runs (needs --password-file)')
     p.add_argument('--password-file', help='file holding the lab password, asked at login')
-    p.add_argument('--host', default='127.0.0.1',
-                   help='address to listen on; 0.0.0.0 to be reached from other computers')
     args = p.parse_args()
     if args.workspace and not args.password_file:
         p.error('--workspace needs --password-file: the name people log in with picks their folder')
@@ -562,6 +745,7 @@ def main():
     # lab mode reads the --data-root folders only when they are given, never a default home
     Handler.app = App(roots, args.out_root or roots[0], args.workspace, password,
                       read_roots=(args.data_root or []) if args.workspace else [])
+    warm_up()
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
     except OSError:

@@ -16,8 +16,9 @@ where the last one stopped:
 To pick cells by ROI, draw the boundaries first -- in `ms2 app`, or with
 `ms2 view --projection preprocess/SUM_C2-<rec>.tif` -- on the two frames that bound the
 stage, and pass the saved file as --roi.  Gene expression keeps the cells inside either
-boundary and activity is measured between the two frames.  Without --roi, gene expression
-keeps cells with fewer than 20 missing frames and activity covers the whole recording.
+boundary and activity is measured between the two frames.  Without --roi -- how the app runs it
+now that the region is chosen on its analysis page -- gene expression measures every cell tracked
+for 10 frames or more and activity covers the whole recording.
 """
 import argparse
 import datetime
@@ -38,6 +39,8 @@ class Recording:
         self.ms2_bg_removed = os.path.join(self.preprocess, f'C1-{self.name}_bg_removed.tif')
         self.projection = os.path.join(self.preprocess, f'SUM_C2-{self.name}.tif')
         self.roi = os.path.join(self.dir, 'roi_selection.json')    # where the app saves one
+        self.orientation = os.path.join(self.dir, 'orientation.json')   # saved beside it
+        self.segments = os.path.join(self.dir, 'segments.json')         # and so are these
         self.masks = os.path.join(self.dir, 'masks')    # where segment_3d_cells writes
         self.tracklets = os.path.join(self.dir, 'tracklets.json')
         self.unified = os.path.join(self.dir, 'unified')
@@ -76,8 +79,17 @@ def run_step(rec, step, args):
         t_start, t_end = activity_window(args.roi, len(pd.read_csv(rec.expression_csv)))
         analyze_recording(rec.name, {'csv': rec.expression_csv, 'tracklets': rec.unified_tracklets,
                                      'masks_dir': rec.unified_masks,
-                                     't_start': t_start, 't_end': t_end},
+                                     't_start': t_start, 't_end': t_end,
+                                     'orientation': load_orientation(rec)},
                           rec.activity)
+
+
+def load_orientation(rec):
+    """The orientation saved with the recording's ROI, or None."""
+    if not os.path.exists(rec.orientation):
+        return None
+    with open(rec.orientation) as f:
+        return json.load(f)
 
 
 def activity_window(roi, n_frames):

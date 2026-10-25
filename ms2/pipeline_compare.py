@@ -14,7 +14,9 @@ and so is out, the results root of a recording run somewhere else than the exper
                               "t_start": 0, "t_end": 75, "out": "/zjbd/.../outputs/stage_11"}}}
 
 Every recording goes through ms2/pipeline.py into <its out>/<czi name>/ (finished steps are
-skipped, so recordings already processed cost nothing).  Then <out>/_comparison/ gets the
+skipped, so recordings already processed cost nothing).  The orientation saved with a
+recording's ROI travels into the config, so the aligned spatial map needs no aligning, and
+so do the segments marked there, which the Segments page starts from.  Then <out>/_comparison/ gets the
 generated recordings.json and everything ms2/cell_activity_compare.py writes: cells.csv,
 timecourse.csv, metrics.csv, stats.csv and the figures.
 """
@@ -38,6 +40,12 @@ def activity_config(experiment):
                         'masks_dir': rec.unified_masks,
                         't_start': entry['t_start'], 't_end': entry['t_end'],
                         **{k: entry[k] for k in OPTIONAL_KEYS if k in entry}}
+        orientation = pipeline.load_orientation(rec)
+        if orientation:
+            config[name]['orientation'] = orientation
+        if os.path.exists(rec.segments):
+            with open(rec.segments) as f:
+                config[name]['segments'] = json.load(f)
     return config
 
 

@@ -81,6 +81,33 @@ def save_roi(path, roi_first, roi_last, t_first, t_last, projection=None, trackl
     return path
 
 
+ORIENTATION_NAME = 'orientation.json'
+
+
+def orientation_path(roi_path):
+    """The recording's orientation sits beside its ROI, in a file of its own: rewriting the ROI
+    sends gene expression round again, turning the figures should not."""
+    return os.path.join(os.path.dirname(os.path.abspath(roi_path)), ORIENTATION_NAME)
+
+
+def save_orientation(roi_path, flip, rotate):
+    """{"flip", "rotate"}: how every spatial figure of the recording is turned -- mirrored
+    left-right if flip, then rotated clockwise by rotate degrees."""
+    path = orientation_path(roi_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump({'flip': bool(flip), 'rotate': float(rotate)}, f, indent=2)
+    return path
+
+
+def load_orientation(roi_path):
+    path = orientation_path(roi_path)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
 def load_roi(path):
     with open(path) as f:
         return json.load(f)

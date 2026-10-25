@@ -37,6 +37,17 @@
   #count b { color: #4caf50; font-size: 15px; }
   .warn { color: #e0a030; }
   .ptitle input[type=range] { width: 180px; vertical-align: middle; }
+  #orient { display: flex; align-items: center; gap: 6px; padding: 6px 16px; background: #161616;
+            border-bottom: 1px solid #2c2c2c; flex: none; }
+  #orient input[type=range] { width: 200px; }
+  #orient input[type=number] { width: 60px; padding: 3px 5px; background: #111; color: #ddd;
+                               border: 1px solid #333; border-radius: 4px; }
+  #orient .hint { color: #888; font-size: 12px; }
+  #marks { display: flex; align-items: center; gap: 6px; padding: 6px 16px; background: #161616;
+           border-bottom: 1px solid #2c2c2c; flex: none; }
+  #marks .hint { color: #888; font-size: 12px; }
+  .mk { border-width: 2px; min-width: 52px; }
+  .mk.on { color: #000; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -48,6 +59,25 @@
     <b>either</b> boundary</span>
   <span style="margin-left:auto"><a href="/view" id="back" hidden>← viewer</a></span>
 </header>
+
+<div id="orient">
+  <span>orientation</span>
+  <button data-o="ccw" title="rotate 90° anticlockwise">⟲ 90°</button>
+  <button data-o="cw" title="rotate 90° clockwise">⟳ 90°</button>
+  <button data-o="h" title="mirror left-right">⇋ flip</button>
+  <button data-o="v" title="mirror top-bottom">⇵ flip</button>
+  <input type="range" id="ang" min="-180" max="180" step="1"><input type="number" id="angNum" step="1">°
+  <button data-o="reset">reset</button>
+  <button id="saveOrient">save orientation &amp; segments</button>
+  <span class="hint" id="orientMsg">turn the embryo the way every figure of this recording should show it;
+    it is saved with the roi, and the comparison uses it</span>
+</div>
+
+<div id="marks">
+  <span>mark</span><span id="markBtns"></span>
+  <span class="hint">segments 2–5 are outlined on the <b>start frame</b>, like the ROI: click around,
+    then <b>close</b>; one the image does not hold can be left out</span>
+</div>
 
 <div id="panels">
   <div class="panel">
@@ -90,6 +120,26 @@
 <script>
 const $ = id => document.getElementById(id);
 let meta = {}, panels = [];
+// The view turns about the image centre: mirrored left-right if flip, then rotated clockwise.
+// Vertices stay in image coordinates, so the turn never changes which cells the ROI holds.
+let orient = {flip: false, rotate: 0};
+// What clicks draw: 'roi', or a segment label.  Segments live on the start frame (panel 0),
+// in image coordinates like the ROI, each {pts, closed}.
+const SEG_LABELS = ['2', '3', '4', '5'];
+const SEG_COLORS = {'2': '#e8a33d', '3': '#4caf50', '4': '#6cf', '5': '#e87ba4'};
+let mode = 'roi';
+const segs = Object.fromEntries(SEG_LABELS.map(l => [l, {pts: [], closed: false}]));
+// the shape a panel's clicks and buttons work on; none on the end frame while marking segments
+const shape = p => mode === 'roi' ? p : p.i === 0 ? segs[mode] : null;
+function drawMarks() {
+  $('markBtns').innerHTML = ['roi', ...SEG_LABELS].map(m => {
+    const col = m === 'roi' ? '#4caf50' : SEG_COLORS[m], on = m === mode;
+    const tick = m === 'roi' ? '' : segs[m].closed ? ' ✓' : segs[m].pts.length ? ' …' : '';
+    return `<button class="mk${on ? ' on' : ''}" data-m="${m}" style="border-color:${col};${on ? 'background:' + col : ''}">` +
+      `${m === 'roi' ? 'ROI' : m}${tick}</button>`;
+  }).join(' ');
+}
+const norm = a => ((a + 180) % 360 + 360) % 360 - 180;
 
 function mkPanel(i, t) {
   const p = {
@@ -124,11 +174,13 @@ function mkPanel(i, t) {
   addEventListener('mouseup', () => { drag = null; });
 
   p.stage.addEventListener('click', e => {
-    if (p.closed) return;
+    const sh = shape(p);
+    if (!sh || sh.closed) return;
     const [x, y] = toImage(p, e);
     if (x < 0 || y < 0 || x > meta.width || y > meta.height) return;
-    p.pts.push([x, y]);
+    sh.pts.push([x, y]);
     draw(p);
+    drawMarks();
   });
   return p;
 }
@@ -145,21 +197,59 @@ function setFrame(p, t) {
 // can never change what the boundary encloses.
 function toImage(p, e) {
   const r = p.stage.getBoundingClientRect();
-  return [(e.clientX - r.left - p.view.x) / p.view.k,
-          (e.clientY - r.top - p.view.y) / p.view.k];
+  const cx = meta.width / 2, cy = meta.height / 2, a = orient.rotate * Math.PI / 180;
+  const dx = (e.clientX - r.left - p.view.x) / p.view.k - cx;
+  const dy = (e.clientY - r.top - p.view.y) / p.view.k - cy;
+  // undo the turn: rotate back, then mirror
+  const ux = Math.cos(a) * dx + Math.sin(a) * dy, uy = -Math.sin(a) * dx + Math.cos(a) * dy;
+  return [cx + (orient.flip ? -ux : ux), cy + uy];
 }
 
 function apply(p) {
-  p.wrap.style.transform = `translate(${p.view.x}px, ${p.view.y}px) scale(${p.view.k})`;
+  const cx = meta.width / 2, cy = meta.height / 2;
+  p.wrap.style.transform = `translate(${p.view.x}px, ${p.view.y}px) scale(${p.view.k}) ` +
+    `translate(${cx}px, ${cy}px) rotate(${orient.rotate}deg) scaleX(${orient.flip ? -1 : 1}) ` +
+    `translate(${-cx}px, ${-cy}px)`;
   draw(p);
 }
 
 function fit(p) {
-  const k = Math.min(p.stage.clientWidth / meta.width, p.stage.clientHeight / meta.height);
-  p.view = {k, x: (p.stage.clientWidth - meta.width * k) / 2,
-                y: (p.stage.clientHeight - meta.height * k) / 2};
+  // the turned image's bounding box, centred in the stage
+  const a = orient.rotate * Math.PI / 180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+  const bw = meta.width * c + meta.height * s, bh = meta.width * s + meta.height * c;
+  const k = Math.min(p.stage.clientWidth / bw, p.stage.clientHeight / bh);
+  p.view = {k, x: p.stage.clientWidth / 2 - k * meta.width / 2,
+                y: p.stage.clientHeight / 2 - k * meta.height / 2};
   apply(p);
 }
+
+function setOrient(o) {
+  orient = {flip: !!o.flip, rotate: norm(+o.rotate || 0)};
+  $('ang').value = $('angNum').value = Math.round(orient.rotate * 10) / 10;
+  panels.forEach(fit);
+}
+document.querySelectorAll('button[data-o]').forEach(b => b.onclick = () => {
+  const {flip, rotate} = orient;
+  // the flips act on the picture as it now looks, rewritten as mirror-then-rotate
+  setOrient({cw: {flip, rotate: rotate + 90}, ccw: {flip, rotate: rotate - 90},
+             h: {flip: !flip, rotate: -rotate}, v: {flip: !flip, rotate: 180 - rotate},
+             reset: {flip: false, rotate: 0}}[b.dataset.o]);
+});
+$('ang').oninput = $('angNum').oninput = e => {
+  if (e.target.value !== '') setOrient({...orient, rotate: +e.target.value});
+};
+$('saveOrient').onclick = async () => {
+  if (openSegs().length) {
+    $('orientMsg').innerHTML = `<span class="warn">close or clear segment ${openSegs().join(', ')} first</span>`;
+    return;
+  }
+  try {
+    const marked = closedSegs();
+    await post('/roi/orientation', {path: $('out').value, ...orient, t: panels[0].t, segments: marked});
+    $('orientMsg').textContent = `saved: ${orient.flip ? 'mirrored, ' : ''}rotated ${orient.rotate}°` +
+      (Object.keys(marked).length ? `, segments ${Object.keys(marked).join(', ')} on frame ${panels[0].t}` : '');
+  } catch (e) { $('orientMsg').innerHTML = `<span class="warn">${e.message}</span>`; }
+};
 
 function draw(p) {
   const s = 1 / p.view.k;                       // keep strokes and handles a constant screen size
@@ -178,23 +268,64 @@ function draw(p) {
       `<circle cx="${x}" cy="${y}" r="${3.5*s}" fill="#fff" stroke="#111" stroke-width="${s}"/>`
     ).join('');
   }
+  if (p.i === 0) h += drawSegs(s);
   p.svg.setAttribute('width', meta.width);
   p.svg.setAttribute('height', meta.height);
   p.svg.innerHTML = h;
 }
 
+// The segments, each in its colour, the one being marked brighter, its number upright on
+// screen whatever the turn (the label undoes the picture's turn about its own anchor).
+function drawSegs(s) {
+  let h = '';
+  for (const l of SEG_LABELS) {
+    const seg = segs[l], col = SEG_COLORS[l], on = l === mode;
+    if (!seg.pts.length) continue;
+    const pts = seg.pts.map(q => q.join(',')).join(' ');
+    h += seg.closed
+      ? `<polygon points="${pts}" fill="${col}" fill-opacity="${on ? .25 : .12}" stroke="${col}" stroke-width="${(on ? 2.5 : 1.5) * s}"/>`
+      : `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="${2 * s}"/>`;
+    if (on && !seg.closed)
+      h += seg.pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="${3.5 * s}" fill="#fff" stroke="#111" stroke-width="${s}"/>`).join('');
+    if (seg.closed) {
+      const cx = seg.pts.reduce((t, q) => t + q[0], 0) / seg.pts.length;
+      const cy = seg.pts.reduce((t, q) => t + q[1], 0) / seg.pts.length;
+      h += `<text transform="translate(${cx},${cy}) scale(${s * (orient.flip ? -1 : 1)},${s}) rotate(${-orient.rotate})"
+              text-anchor="middle" dominant-baseline="central" font-size="22" font-weight="700"
+              fill="${col}" stroke="#000" stroke-width="3" paint-order="stroke">${l}</text>`;
+    }
+  }
+  return h;
+}
+
 document.querySelectorAll('button[data-a]').forEach(b => {
   b.onclick = () => {
     const p = panels[+b.dataset.p];
-    const a = b.dataset.a;
-    if (a === 'close') { if (p.pts.length >= 3) p.closed = true; }
-    else if (a === 'undo') { p.closed = false; p.pts.pop(); }
-    else if (a === 'clear') { p.pts = []; p.closed = false; }
-    else if (a === 'fit') { fit(p); }
+    const a = b.dataset.a, sh = shape(p);
+    if (a === 'fit') fit(p);
+    else if (!sh) return;
+    else if (a === 'close') {
+      if (sh.pts.length >= 3) sh.closed = true;
+      // marking segments: move on to the next one not yet outlined
+      if (sh.closed && mode !== 'roi') mode = SEG_LABELS.find(l => !segs[l].closed) || mode;
+    }
+    else if (a === 'undo') { sh.closed = false; sh.pts.pop(); }
+    else if (a === 'clear') { sh.pts = []; sh.closed = false; }
     draw(p);
-    resetCount();
+    drawMarks();
+    if (mode === 'roi') resetCount();
   };
 });
+$('markBtns').onclick = e => {
+  const b = e.target.closest('button[data-m]');
+  if (!b) return;
+  mode = b.dataset.m;
+  panels.forEach(draw);
+  drawMarks();
+};
+// Only closed outlines are segments; one left open is asked about rather than dropped.
+const openSegs = () => SEG_LABELS.filter(l => segs[l].pts.length && !segs[l].closed);
+const closedSegs = () => Object.fromEntries(SEG_LABELS.filter(l => segs[l].closed).map(l => [l, segs[l].pts]));
 
 // Drawn before the pipeline ran there are no cells to count yet, only boundaries to save.
 const resetCount = () => $('count').innerHTML = meta.has_tracks ? '—'
@@ -233,8 +364,13 @@ $('save').onclick = async () => {
     $('count').innerHTML = '<span class="warn">nothing to save</span>';
     return;
   }
+  if (openSegs().length) {
+    $('count').innerHTML = `<span class="warn">close or clear segment ${openSegs().join(', ')} first</span>`;
+    return;
+  }
   try {
-    const d = await post('/roi/save', {...b, path: $('out').value});
+    const d = await post('/roi/save', {...b, path: $('out').value, orientation: orient,
+                                       segments: closedSegs()});
     $('count').innerHTML = (d.n_total == null ? 'saved' : `saved <b>${d.n_total}</b> cells`) +
       ` (frames ${b.t_first}–${b.t_last}) → <span style="color:#888">${d.path}</span>`;
     if (meta.next_url) $('count').innerHTML += ` &nbsp;<a href="${meta.next_url}">continue →</a>`;
@@ -251,6 +387,11 @@ addEventListener('resize', () => panels.forEach(fit));
   resetCount();
   for (const i of [0, 1]) $('r' + i).max = meta.n_t - 1;
   panels = [mkPanel(0, meta.t_first), mkPanel(1, meta.t_last)];
+  setOrient(meta.orientation || {});
+  for (const [l, pts] of Object.entries((meta.segments || {}).segments || {}))
+    if (segs[l]) segs[l] = {pts, closed: true};
+  drawMarks();
+  panels.forEach(draw);
   // The window is start <= end; dragging one slider past the other is refused.
   $('r0').oninput = () => { setFrame(panels[0], Math.min(+$('r0').value, panels[1].t)); resetCount(); };
   $('r1').oninput = () => { setFrame(panels[1], Math.max(+$('r1').value, panels[0].t)); resetCount(); };

@@ -15,7 +15,9 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from ms2.roi_selection import load_projection, save_roi, select_tracklets
+from ms2.cell_activity_segments import load_recording_segments, save_recording_segments
+from ms2.roi_selection import (load_orientation, load_projection, save_orientation, save_roi,
+                               select_tracklets)
 from ms2.viewer.loaders import (CELL_CHANNEL, FamilyStore, MaskStore, Ms2Store, PeakStore,
                                 TrackletStore, find_results, load_image, locate)
 from ms2.viewer.render import composite, intensity_window
@@ -159,6 +161,9 @@ class Handler(BaseHTTPRequestHandler):
     def check_path(self, path):
         """Refuse a folder the page may not open; anything goes when the viewer runs alone."""
 
+    def orientation_saved(self, roi_path):
+        """After a new orientation is saved beside roi_path; the app redraws the figures."""
+
     def get_viewer(self):
         return type(self).viewer
 
@@ -195,10 +200,25 @@ class Handler(BaseHTTPRequestHandler):
                 t_first, t_last = v.roi_frames(body.get('t_first'), body.get('t_last'))
                 path = save_roi(body['path'], body.get('roi_first'), body.get('roi_last'),
                                 t_first, t_last, v.projection_path, v.tracklets_path)
+                if body.get('orientation'):
+                    save_orientation(path, **body['orientation'])
+                    self.orientation_saved(path)
+                if 'segments' in body:          # marked on the start frame
+                    save_recording_segments(path, t_first, body.get('orientation'), body['segments'])
                 sel = v.roi_select(body.get('roi_first'), body.get('roi_last'), t_first, t_last)
                 self._send(json.dumps({'path': path,
                                        'n_total': sel['n_total'] if sel else None}).encode(),
                            'application/json')
+            elif url.path == '/roi/orientation':
+                # the orientation, and the segments when sent, without touching the ROI
+                self.check_path(body['path'])
+                save_orientation(body['path'], body['flip'], body['rotate'])
+                self.orientation_saved(body['path'])
+                if 'segments' in body:
+                    save_recording_segments(body['path'], body['t'],
+                                            {'flip': body['flip'], 'rotate': body['rotate']},
+                                            body['segments'])
+                self._send(json.dumps({'ok': True}).encode(), 'application/json')
             elif url.path == '/results/open':
                 # Windows' "Copy as path" wraps a path in quotes
                 path = body.get('dir', '').strip().strip('"\'').strip()
@@ -234,6 +254,8 @@ class Handler(BaseHTTPRequestHandler):
                     'image/png', cache=True)
             elif url.path == '/roi/meta':
                 t_first, t_last = v.roi_frames()
+                default_out = v.roi_out or os.path.join(
+                    os.path.dirname(v.tracklets_path or '.'), 'roi_selection.json')
                 self._send(json.dumps({
                     't_first': t_first, 't_last': t_last, 'n_t': len(v.projection),
                     'height': v.projection.shape[1], 'width': v.projection.shape[2],
@@ -241,8 +263,9 @@ class Handler(BaseHTTPRequestHandler):
                     'has_image': v.image is not None,
                     'next_url': v.next_url,
                     'build': BUILD,
-                    'default_out': v.roi_out or os.path.join(
-                        os.path.dirname(v.tracklets_path or '.'), 'roi_selection.json'),
+                    'default_out': default_out,
+                    'orientation': load_orientation(default_out),
+                    'segments': load_recording_segments(default_out),
                 }).encode(), 'application/json')
             elif url.path == '/meta':
                 self._send(json.dumps({

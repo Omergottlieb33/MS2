@@ -66,18 +66,6 @@
   .about code { font-size: 12px; color: var(--dim); }
   a { color: var(--accent); }
   details summary { cursor: pointer; color: var(--dim); margin-top: 10px; }
-  .align { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 10px; }
-  .align .frame { position: relative; aspect-ratio: 1; overflow: hidden; background: #000; border-radius: 3px; }
-  .align img { width: 100%; height: 100%; display: block; transition: transform .15s; }
-  /* a centre cross to line the embryos' axes up against */
-  .align .frame::after { content: ''; position: absolute; inset: 0; pointer-events: none;
-    background: linear-gradient(to right, transparent calc(50% - .5px), #fff6 50%, transparent calc(50% + .5px)),
-                linear-gradient(to bottom, transparent calc(50% - .5px), #fff6 50%, transparent calc(50% + .5px)); }
-  .align .row { margin-top: 6px; gap: 4px; }
-  .align button { padding: 3px 8px; }
-  .align input[type=range] { flex: 1; }
-  .align input[type=number] { width: 64px; }
-  #alnMap img { width: 100%; background: #fff; border-radius: 3px; margin-top: 10px; }
   .busy::after { content: ' …'; animation: blink 1s infinite; }
   @keyframes blink { 50% { opacity: .3; } }
 </style>
@@ -88,9 +76,9 @@
   <nav>
     <button data-tab="new" class="on">New analysis</button>
     <button data-tab="runs">Runs &amp; results</button>
-    <button data-tab="compare">Compare recordings</button>
     <button data-tab="about">About</button>
   </nav>
+  <a href="/analysis" style="font-weight:600">Analysis →</a>
   <span class="hint" id="who"></span>
   <button id="logout" hidden>Log out</button>
 </header>
@@ -111,15 +99,10 @@
   </div>
 
   <div class="card">
-    <h2><span class="n">2</span>Region of interest <span class="hint">(optional)</span></h2>
-    <div class="row"><button id="roiBtn">Draw ROI</button><span id="roiStatus"></span></div>
-    <p class="hint">Pick the first and last frames of the stage you want, and outline the region on
-      each. A cell is analysed if it is inside either outline. Without an ROI, every cell tracked
-      for most of the recording is analysed.</p>
-  </div>
-
-  <div class="card">
-    <h2><span class="n">3</span>Run</h2>
+    <h2><span class="n">2</span>Run</h2>
+    <p class="hint">The run segments and tracks every nucleus and measures the MS2 signal of every
+      cell tracked for 10 frames or more. Choosing the stage, the region, the cells and the segments
+      is done afterwards, on the <a href="/analysis">analysis page</a>.</p>
     <label>Processor</label>
     <select id="device"></select>
     <details>
@@ -156,7 +139,6 @@
     <h2 id="dTitle"></h2>
     <div class="row">
       <button id="dView">Open viewer</button>
-      <button id="dRoi">Edit ROI</button>
       <button id="dDash">Tracking dashboard</button>
       <button id="dResume">Resume</button>
       <button id="dStop">Stop</button>
@@ -166,48 +148,6 @@
     <p class="hint" id="dSteps"></p>
     <details id="dLogWrap" open><summary>Log</summary><pre id="dLog"></pre></details>
     <div class="files" id="dFiles"></div>
-  </div>
-</section>
-
-<!-- ───────────── Compare ───────────── -->
-<section id="compare" hidden>
-  <div class="card">
-    <h2>Recordings to compare</h2>
-    <p class="hint">From the results folder on the Runs page. Frames are the stage window
-      (both included); they start at each recording's ROI frames.</p>
-    <table>
-      <thead><tr><th></th><th>Recording</th><th>Start frame</th><th>End frame</th><th>Status</th></tr></thead>
-      <tbody id="cmpBody"></tbody>
-    </table>
-    <label>Add a run from another folder</label>
-    <div class="row"><input type="text" id="cmpAdd" spellcheck="false"
-        placeholder="/zjbd/.../outputs/STAGE-11/New-02-v3-ST11-12"><button id="cmpAddBtn">Add</button></div>
-    <p class="hint">The recording's own results folder, as the pipeline made it. Finished steps are
-      not run again.</p>
-    <p class="hint">Results go to <code id="cmpOut"></code>/_comparison.</p>
-    <label>Activity levels</label>
-    <select id="ladder"><option value="joint">one scale for all recordings</option>
-      <option value="per_recording">a scale per recording</option></select>
-    <div class="row" style="margin-top:12px"><button class="primary" id="cmpBtn">Start comparison</button>
-      <span id="cmpMsg"></span></div>
-  </div>
-  <div class="card" id="cmpStatus" hidden>
-    <h2>Comparison <span class="badge" id="cmpState"></span></h2>
-    <details open><summary>Log</summary><pre id="cmpLog"></pre></details>
-    <div class="files" id="cmpFiles"></div>
-  </div>
-  <div class="card">
-    <h2>Align the recordings</h2>
-    <p class="hint">Each recording's first stage frame (cell channel). Turn and mirror them until
-      the embryos face the same way, then save: the spatial map is redrawn in that orientation
-      (spatial_maps_aligned.png), and again on every rerun of the comparison. The numbers do
-      not change; none depends on orientation.</p>
-    <label>Comparison folder</label>
-    <div class="row"><input type="text" id="alnDir" spellcheck="false"><button id="alnOpen">Open</button></div>
-    <div class="align" id="alnTiles"></div>
-    <div class="row" style="margin-top:12px"><button class="primary" id="alnSave" disabled>Save alignment</button>
-      <span id="alnMsg"></span></div>
-    <div id="alnMap"></div>
   </div>
 </section>
 
@@ -233,10 +173,10 @@
     <p>A finished step is kept: a stopped run picks up where it left off.</p>
     <h2>Using this page</h2>
     <ol>
-      <li><b>New analysis</b>: choose a CZI, draw the region of interest on the first and last frames
-        of the stage, and start.</li>
+      <li><b>New analysis</b>: choose a CZI and start. Every tracked cell is measured.</li>
       <li><b>Runs &amp; results</b>: follow the steps and the log, open the viewer, and download the results.</li>
-      <li><b>Compare recordings</b>: put several finished recordings on one activity scale.</li>
+      <li><b><a href="/analysis">Analysis</a></b>: pick finished recordings, choose each stage's frames, the
+        region, the cells, the activity levels and the segments, and compare them; save and export.</li>
     </ol>
     <h2>Version</h2>
     <p id="verInfo"></p>
@@ -267,7 +207,6 @@ function tab(name) {
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   document.querySelectorAll('main section').forEach(s => s.hidden = s.id !== name);
   if (name === 'runs') loadRuns();
-  if (name === 'compare') loadCompare();
 }
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => tab(b.dataset.tab));
 
@@ -289,13 +228,13 @@ $('browser').onclick = e => {
   if (t.dataset.d) return browse(t.dataset.p);
   $('czi').value = t.dataset.p;
   $('browser').hidden = true;
-  roiStatus();
+  runStatus();
 };
 $('browseBtn').onclick = () => {
   const cur = $('czi').value;
   browse(cur ? cur.replace(/\/[^/]*\.czi$/i, '') || config.data_roots[0] : config.data_roots[0]);
 };
-$('czi').onchange = roiStatus;
+$('czi').onchange = runStatus;
 
 // Lab mode: the CZI comes from the user's computer.  XMLHttpRequest, not fetch, for the progress.
 $('cziFile').onchange = () => {
@@ -311,38 +250,28 @@ $('cziFile').onchange = () => {
     if (xhr.status !== 200) return say('uploadMsg', esc(d.error || xhr.statusText), 'bad');
     say('uploadMsg', '✓ uploaded', 'ok');
     $('czi').value = d.path;
-    roiStatus();
+    runStatus();
   };
   xhr.onerror = () => say('uploadMsg', 'the upload broke off; try again', 'bad');
   say('uploadMsg', 'uploading 0%', 'busy');
   xhr.send(file);
 };
-$('out').onchange = roiStatus;
+$('out').onchange = runStatus;
 
 // Pasted paths often come quoted (Windows' "Copy as path"); the quotes are not part of the name.
 const unquote = s => s.trim().replace(/^["']+|["']+$/g, '').trim();
 const form = () => ({czi: unquote($('czi').value), out: unquote($('out').value), device: $('device').value,
-  prominence: +$('prominence').value, bg_radius: +$('bgRadius').value, plots: $('plots').checked});
+  prominence: +$('prominence').value, bg_radius: +$('bgRadius').value, plots: $('plots').checked,
+  use_roi: false});      // the region is chosen on the analysis page, after the run
 
-async function roiStatus() {
+async function runStatus() {
   const f = form();
-  if (!f.czi.toLowerCase().endsWith('.czi') || !f.out) { $('roiStatus').textContent = ''; return; }
+  if (!f.czi.toLowerCase().endsWith('.czi') || !f.out) return;
   try {
     const d = await api('/api/run?dir=' + encodeURIComponent(join(f.out, recName(f.czi))));
-    if (d.roi) say('roiStatus', `✓ ROI saved, frames ${d.roi.t_first}–${d.roi.t_last}`, 'ok');
-    else $('roiStatus').innerHTML = '<span class="hint">no ROI yet</span>';
     if (d.state === 'running') say('runMsg', `${esc(d.name)} is already running — see Runs`, 'warn');
-  } catch (e) { $('roiStatus').textContent = ''; }
+  } catch (e) { /* not run yet */ }
 }
-
-$('roiBtn').onclick = async () => {
-  const f = form();
-  if (!f.czi || !f.out) return say('runMsg', 'choose a CZI file and a results folder first', 'warn');
-  $('roiBtn').disabled = true;
-  say('roiStatus', 'preparing the projection (a minute for a large file)', 'busy');
-  try { location.href = (await api('/api/roi/open', f)).url; }
-  catch (e) { say('roiStatus', esc(e.message), 'bad'); $('roiBtn').disabled = false; }
-};
 
 $('runBtn').onclick = async () => {
   const f = form();
@@ -413,7 +342,6 @@ async function loadDetail() {
     $('dView').disabled = !unified;
     $('dDash').disabled = !unified || d.dashboard === 'running';
     $('dDash').textContent = d.dashboard === 'running' ? 'Building dashboard…' : 'Tracking dashboard';
-    $('dRoi').disabled = d.state === 'running' || !d.czi;
     $('dZip').hidden = !config.lab;
     $('dZip').disabled = !d.results.length;
     $('dFiles').innerHTML = d.results.map(fileTile).join('');
@@ -425,10 +353,6 @@ async function action(path, body, msg) {
   catch (e) { say('dMsg', esc(e.message), 'bad'); }
 }
 $('dView').onclick = async () => { const d = await action('/api/view', {dir: selected}); if (d) location.href = d.url; };
-$('dRoi').onclick = async () => {
-  say('dMsg', 'preparing the projection', 'busy');
-  const d = await action('/api/roi/edit', {dir: selected}); if (d) location.href = d.url;
-};
 $('dStop').onclick = async () => { if (confirm('Stop this run? Finished steps are kept.')) { await action('/api/run/stop', {dir: selected}, 'stopped'); loadRuns(); } };
 $('dResume').onclick = async () => {
   const r = runs.find(x => x.dir === selected);
@@ -445,157 +369,10 @@ $('openPath').onkeydown = e => { if (e.key === 'Enter') $('openBtn').onclick(); 
 $('dZip').onclick = () => { location.href = '/api/download?dir=' + encodeURIComponent(selected); };
 $('dDash').onclick = async () => { await action('/api/dashboard', {dir: selected}, 'building the dashboard; it appears below when done'); loadDetail(); };
 
-// ── compare ──
-// The runs in the Runs page's folder, then the ones added by their path from anywhere else.
-// Each recording is processed in its own folder, so finished steps are never run again.
-let cmpRuns = [], cmpFound = [], cmpAdded = [];
-function renderCompare() {
-  // keep what was ticked and typed, keyed by folder, across a redraw
-  const kept = {};
-  document.querySelectorAll('#cmpBody tr[data-d]').forEach(tr => kept[tr.dataset.d] = {
-    on: tr.querySelector('input[type=checkbox]').checked,
-    ts: tr.querySelector('.ts').value, te: tr.querySelector('.te').value});
-  const seen = new Set(cmpFound.map(r => r.dir));
-  cmpRuns = [...cmpFound, ...cmpAdded.filter(r => !seen.has(r.dir))];
-  $('cmpBody').innerHTML = cmpRuns.map((r, i) => {
-    const ready = r.steps_done.includes('gene_expression'), k = kept[r.dir];
-    const added = cmpAdded.includes(r);
-    return `<tr data-d="${esc(r.dir)}"><td><input type="checkbox" data-i="${i}" ${(k ? k.on : ready) ? 'checked' : ''}></td>
-      <td>${esc(r.name)}${added ? ` <button class="rm" data-i="${i}" title="remove from this list">✕</button><br><span class="hint">${esc(r.dir)}</span>` : ''}</td>
-      <td><input type="number" class="ts" id="ts${i}" min="0" value="${k ? k.ts : r.roi ? r.roi.t_first : 0}"></td>
-      <td><input type="number" class="te" id="te${i}" min="0" value="${k ? k.te : r.roi ? r.roi.t_last : ''}" placeholder="end"></td>
-      <td>${ready ? '<span class="ok">ready</span>' : '<span class="hint">runs first</span>'}</td></tr>`;
-  }).join('') || '<tr><td colspan="5" class="hint">no recordings in the results folder on the Runs page; add one by its path below</td></tr>';
-}
-async function loadCompare() {
-  const root = $('runsRoot').value.trim();
-  $('cmpOut').textContent = root;
-  if (!$('alnDir').value && root) $('alnDir').value = join(root, '_comparison');
-  try {
-    cmpFound = (await api('/api/runs?root=' + encodeURIComponent(root))).filter(r => r.czi);
-  } catch (e) { cmpFound = []; say('cmpMsg', esc(e.message), 'bad'); }
-  renderCompare();
-  loadCompareStatus();
-}
-$('cmpAddBtn').onclick = async () => {
-  const dir = unquote($('cmpAdd').value).replace(/\/+$/, '');
-  if (!dir.startsWith('/')) return say('cmpMsg', 'give the full path of the run folder, starting with /', 'warn');
-  try {
-    const r = await api('/api/run?dir=' + encodeURIComponent(dir));
-    if (!r.czi) return say('cmpMsg', `${esc(dir)} is not a run of the pipeline: no CZI is recorded in it`, 'bad');
-    if (cmpRuns.some(x => x.dir === r.dir)) return say('cmpMsg', `${esc(r.name)} is already in the list`, 'warn');
-    cmpAdded.push(r);
-    renderCompare();
-    $('cmpAdd').value = '';
-    say('cmpMsg', `added ${esc(r.name)}`, 'ok');
-  } catch (e) { say('cmpMsg', esc(e.message), 'bad'); }
-};
-$('cmpAdd').onkeydown = e => { if (e.key === 'Enter') $('cmpAddBtn').onclick(); };
-$('cmpBody').onclick = e => {
-  const b = e.target.closest('button.rm');
-  if (!b) return;
-  cmpAdded = cmpAdded.filter(r => r !== cmpRuns[+b.dataset.i]);
-  renderCompare();
-};
-$('cmpBtn').onclick = async () => {
-  const recordings = {};
-  for (const cb of document.querySelectorAll('#cmpBody input[type=checkbox]:checked')) {
-    const i = +cb.dataset.i, r = cmpRuns[i];
-    const t_start = +$('ts' + i).value, te = $('te' + i).value;
-    if (te === '') return say('cmpMsg', `give the end frame for ${esc(r.name)}`, 'warn');
-    if (recordings[r.name]) return say('cmpMsg', `two recordings are named ${esc(r.name)}; compare one of them`, 'warn');
-    recordings[r.name] = {czi: r.czi, out: r.dir.replace(/\/[^/]+$/, ''), t_start, t_end: +te,
-                          ...(r.roi ? {roi: join(r.dir, 'roi_selection.json')} : {})};
-  }
-  if (Object.keys(recordings).length < 2) return say('cmpMsg', 'pick at least two recordings', 'warn');
-  try {
-    await api('/api/compare/start', {out: $('runsRoot').value.trim(), recordings,
-                                      device: $('device').value, ladder: $('ladder').value});
-    say('cmpMsg', 'started', 'ok');
-    loadCompareStatus();
-  } catch (e) { say('cmpMsg', esc(e.message), 'bad'); }
-};
-async function loadCompareStatus() {
-  const out = $('runsRoot').value.trim();
-  if (!out) return;
-  try {
-    const d = await api('/api/compare?out=' + encodeURIComponent(out));
-    $('cmpStatus').hidden = d.state === 'none';
-    $('cmpState').outerHTML = badge(d.state).replace('<span', '<span id="cmpState"');
-    $('cmpLog').textContent = d.log;
-    $('cmpFiles').innerHTML = d.files.filter(f => !/\.(json|log)$/.test(f.name)).map(fileTile).join('');
-  } catch (e) { /* folder not created yet */ }
-}
-
-// ── align ──
-// A turn is: mirror left-right if flip, then rotate clockwise -- CSS applies scaleX first.
-// The flip buttons act on the picture as it now looks, so they are rewritten into that form.
-let aln = {dir: '', recs: []};
-const norm = a => ((a + 180) % 360 + 360) % 360 - 180;
-const showMap = path => { $('alnMap').innerHTML = path ? `<a href="/file?path=${encodeURIComponent(path)}" target="_blank">` +
-  `<img src="/file?path=${encodeURIComponent(path)}&v=${Date.now()}"></a>` : ''; };
-function drawTile(i) {
-  const r = aln.recs[i];
-  if (r.error) return;
-  $('alnImg' + i).style.transform = `rotate(${r.rotate}deg) scaleX(${r.flip ? -1 : 1})`;
-  $('alnAng' + i).value = $('alnNum' + i).value = Math.round(r.rotate * 10) / 10;
-}
-async function openAlign() {
-  const dir = unquote($('alnDir').value);
-  try {
-    const d = await api('/api/align?dir=' + encodeURIComponent(dir));
-    aln = {dir, recs: d.recordings};
-    $('alnTiles').innerHTML = aln.recs.map((r, i) => `<div><b>${esc(r.name)}</b> <span class="hint">frame ${r.t}</span>` +
-      (r.error ? `<p class="bad">${esc(r.error)}</p>` :
-      `<div class="frame"><img id="alnImg${i}" src="/api/align/frame?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(r.name)}&t=${r.t}"></div>
-      <div class="row" data-i="${i}"><button data-a="ccw" title="rotate 90° anticlockwise">⟲ 90°</button>
-        <button data-a="cw" title="rotate 90° clockwise">⟳ 90°</button>
-        <button data-a="h" title="mirror left-right">⇋ flip</button><button data-a="v" title="mirror top-bottom">⇵ flip</button>
-        <button data-a="reset">reset</button></div>
-      <div class="row" data-i="${i}"><input type="range" id="alnAng${i}" min="-180" max="180" step="1">
-        <input type="number" id="alnNum${i}" step="1">°</div>`) + '</div>').join('');
-    aln.recs.forEach((r, i) => drawTile(i));
-    $('alnSave').disabled = aln.recs.some(r => r.error);
-    say('alnMsg', d.recordings.some(r => r.error) ? 'a recording has no frame to align; see its tile' : '', 'warn');
-    showMap(d.map);
-  } catch (e) { $('alnTiles').innerHTML = ''; $('alnSave').disabled = true; showMap(null); say('alnMsg', esc(e.message), 'bad'); }
-}
-$('alnOpen').onclick = openAlign;
-$('alnDir').onkeydown = e => { if (e.key === 'Enter') openAlign(); };
-$('alnTiles').onclick = e => {
-  const b = e.target.closest('button[data-a]');
-  if (!b) return;
-  const i = +b.closest('[data-i]').dataset.i, r = aln.recs[i];
-  ({cw: () => { r.rotate = norm(r.rotate + 90); }, ccw: () => { r.rotate = norm(r.rotate - 90); },
-    h: () => { r.flip = !r.flip; r.rotate = norm(-r.rotate); },
-    v: () => { r.flip = !r.flip; r.rotate = norm(180 - r.rotate); },
-    reset: () => { r.flip = false; r.rotate = 0; }})[b.dataset.a]();
-  drawTile(i);
-};
-$('alnTiles').oninput = e => {
-  const row = e.target.closest('[data-i]');
-  if (!row || e.target.value === '') return;
-  const i = +row.dataset.i;
-  aln.recs[i].rotate = norm(+e.target.value);
-  drawTile(i);
-};
-$('alnSave').onclick = async () => {
-  $('alnSave').disabled = true;
-  say('alnMsg', 'drawing the aligned spatial map', 'busy');
-  try {
-    const d = await api('/api/align/save', {dir: aln.dir,
-      alignment: Object.fromEntries(aln.recs.map(r => [r.name, {flip: r.flip, rotate: r.rotate}]))});
-    say('alnMsg', '✓ saved alignment.json', 'ok');
-    showMap(d.map);
-  } catch (e) { say('alnMsg', esc(e.message), 'bad'); }
-  $('alnSave').disabled = false;
-};
-
 // Running jobs update themselves; nothing is polled while the page is in the background.
 setInterval(() => {
   if (document.hidden) return;
   if (!$('runs').hidden) loadRuns();
-  if (!$('compare').hidden) loadCompareStatus();
 }, 5000);
 
 (async () => {
@@ -628,10 +405,7 @@ setInterval(() => {
     if (f.bg_radius) $('bgRadius').value = f.bg_radius;
     $('plots').checked = !!f.plots;
   }
-  roiStatus();
-  // /?align=<comparison folder> opens straight on its alignment
-  const alignDir = new URLSearchParams(location.search).get('align');
-  if (alignDir) { tab('compare'); $('alnDir').value = alignDir; openAlign(); }
+  runStatus();
 })();
 </script>
 </body>

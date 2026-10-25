@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -250,29 +251,35 @@ def test_lab_server():
            'for their owner only, logout')
 
 
-def test_align_endpoints():
-    """The Compare page's alignment: each recording's first window frame, saved turns read
-    back, a mismatched set of names refused, and the aligned map drawn."""
+def comparison_folder(root):
+    """A finished comparison of two recordings, a and b, with 16x16 projections and windows
+    starting at frame 1; its folder."""
     import numpy as np
     import tifffile
     from fixtures import write_recording
     from ms2.cell_activity_compare import compare_recordings
 
-    with tempfile.TemporaryDirectory() as root:
-        recordings = {}
-        for name in ('a', 'b'):
-            signals = np.zeros((12, 4))
-            signals[[0, 1, 4, 5], 1] = 100.0
-            rec = write_recording(os.path.join(root, name), signals)
-            rec['projection'] = os.path.join(root, f'SUM_C2-{name}.tif')
-            tifffile.imwrite(rec['projection'], np.random.default_rng(0).random((4, 16, 16), dtype=np.float32))
-            rec['t_start'] = 1
-            recordings[name] = rec
-        cmp_dir = os.path.join(root, '_comparison')
-        compare_recordings(recordings, cmp_dir)
-        with open(os.path.join(cmp_dir, 'recordings.json'), 'w') as f:
-            json.dump(recordings, f)
+    recordings = {}
+    for name in ('a', 'b'):
+        signals = np.zeros((12, 4))
+        signals[[0, 1, 4, 5], 1] = 100.0
+        rec = write_recording(os.path.join(root, name), signals)
+        rec['projection'] = os.path.join(root, f'SUM_C2-{name}.tif')
+        tifffile.imwrite(rec['projection'], np.random.default_rng(0).random((4, 16, 16), dtype=np.float32))
+        rec['t_start'] = 1
+        recordings[name] = rec
+    cmp_dir = os.path.join(root, '_comparison')
+    compare_recordings(recordings, cmp_dir)
+    with open(os.path.join(cmp_dir, 'recordings.json'), 'w') as f:
+        json.dump(recordings, f)
+    return cmp_dir
 
+
+def test_align_endpoints():
+    """The Compare page's alignment: each recording's first window frame, saved turns read
+    back, a mismatched set of names refused, and the aligned map drawn."""
+    with tempfile.TemporaryDirectory() as root:
+        cmp_dir = comparison_folder(root)
         Handler.app = App([root], root)
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -305,6 +312,216 @@ def test_align_endpoints():
             server.shutdown()
             server.server_close()
     passed('alignment: first frames served, turns saved and read back, aligned map drawn')
+
+
+def test_segments_endpoints():
+    """The Segments page: each recording's window, size and orientation, a full-resolution
+    frame of the window, outlines checked and saved, and read back when it opens again."""
+    with tempfile.TemporaryDirectory() as root:
+        cmp_dir = comparison_folder(root)
+        with open(os.path.join(cmp_dir, 'alignment.json'), 'w') as f:
+            json.dump({'b': {'flip': True, 'rotate': 90}}, f)
+        # a's segments were marked with its ROI: the page starts from them
+        with open(os.path.join(cmp_dir, 'recordings.json')) as f:
+            recordings = json.load(f)
+        from_roi = {'t': 1, 'orientation': {'flip': False, 'rotate': 0}, 'segments': {'4': [[0, 0], [3, 0], [3, 3]]}}
+        recordings['a']['segments'] = from_roi
+        with open(os.path.join(cmp_dir, 'recordings.json'), 'w') as f:
+            json.dump(recordings, f)
+        Handler.app = App([root], root)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+
+        def call(path, body=None):
+            data = None if body is None else json.dumps(body).encode()
+            with urllib.request.urlopen(urllib.request.Request(base + path, data=data)) as r:
+                return r.read()
+
+        def refused(path, body, why):
+            try:
+                call(path, body)
+            except urllib.error.HTTPError as e:
+                assert e.code == 400 and why in e.read().decode(), why
+            else:
+                raise AssertionError(f'{why}: not refused')
+        square = [[1, 1], [8, 1], [8, 8], [1, 8]]
+        try:
+            assert b'segment' in call('/segments?dir=' + cmp_dir)
+            state = json.loads(call('/api/segments?dir=' + cmp_dir))
+            assert state['labels'] == ['2', '3', '4', '5'] and state['segments'] == {'a': from_roi}
+            a, b = state['recordings']
+            assert (a['name'], a['t_start'], a['t_end'], a['width'], a['height']) == ('a', 1, 3, 16, 16), a
+            assert a['orientation'] == {'flip': False, 'rotate': 0}
+            assert b['orientation'] == {'flip': True, 'rotate': 90}
+            from PIL import Image
+            png = call(f'/api/align/frame?dir={cmp_dir}&name=a&t=3&full=1')
+            assert Image.open(io.BytesIO(png)).size == (16, 16)
+            refused(f'/api/align/frame?dir={cmp_dir}&name=a&t=0', None, 'outside')
+            refused('/api/segments/save', {'dir': cmp_dir, 'segments': {'a': {'t': 2, 'segments': {'7': square}}}}, 'not one of')
+            refused('/api/segments/save', {'dir': cmp_dir, 'segments': {'a': {'t': 2, 'segments': {'2': square[:2]}}}}, 'at least 3')
+            refused('/api/segments/save', {'dir': cmp_dir, 'segments': {'c': {'t': 2, 'segments': {}}}}, 'not in this comparison')
+            refused('/api/segments/save', {'dir': cmp_dir, 'segments': {'a': {'t': 9, 'segments': {}}}}, 'outside its window')
+            saved = json.loads(call('/api/segments/save', {'dir': cmp_dir, 'segments': {
+                'b': {'t': 1, 'orientation': {'flip': True, 'rotate': 90}, 'segments': {'3': square}},
+                'a': {'t': 2, 'orientation': {'flip': False, 'rotate': 0}, 'segments': {'5': square, '2': square}}}}))
+            with open(saved['path']) as f:
+                on_disk = json.load(f)
+            assert list(on_disk) == ['a', 'b'] and list(on_disk['a']['segments']) == ['2', '5'], on_disk
+            assert on_disk['b'] == {'t': 1, 'orientation': {'flip': True, 'rotate': 90},
+                                    'segments': {'3': [[1.0, 1.0], [8.0, 1.0], [8.0, 8.0], [1.0, 8.0]]}}
+            assert json.loads(call('/api/segments?dir=' + cmp_dir))['segments'] == on_disk
+        finally:
+            server.shutdown()
+            server.server_close()
+    passed('segments: windows and orientations served, outlines checked, saved in order and read back')
+
+
+def test_segment_activity_endpoints():
+    """The Segment activity card: run on a comparison with segments marked, its figures and
+    tables listed (figures first), and listed again when the card opens; bad input refused."""
+    with tempfile.TemporaryDirectory() as root:
+        cmp_dir = comparison_folder(root)
+        whole = [[0, 0], [16, 0], [16, 12], [0, 12]]
+        with open(os.path.join(cmp_dir, 'segments.json'), 'w') as f:
+            json.dump({n: {'t': 1, 'orientation': {'flip': False, 'rotate': 0}, 'segments': {'2': whole}}
+                       for n in ('a', 'b')}, f)
+        Handler.app = App([root], root)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+
+        def call(path, body=None):
+            data = None if body is None else json.dumps(body).encode()
+            with urllib.request.urlopen(urllib.request.Request(base + path, data=data)) as r:
+                return json.loads(r.read())
+        try:
+            assert call('/api/segments/activity?dir=' + cmp_dir) == {'files': []}
+            for bad in ({'bins': 0}, {'segments': ['7']}, {'cells_per_bin': -2}):
+                try:
+                    call('/api/segments/activity', {'dir': cmp_dir, **bad})
+                except urllib.error.HTTPError as e:
+                    assert e.code == 400, bad
+                else:
+                    raise AssertionError(f'{bad} accepted')
+            names = [f['name'] for f in call('/api/segments/activity', {
+                'dir': cmp_dir, 'bins': 2, 'time_bins': 2, 'segments': ['2']})['files']]
+            assert names == ['segment_2_activity.gif', 'segment_2_activity.png',
+                             'segment_2_cells_per_bin.png', 'segment_2_clusters.png',
+                             'segment_2_intensity.png', 'segment_boxes.png',
+                             'segment_2_cells_per_bin.csv', 'segment_2_clusters_correlation.csv',
+                             'segment_2_correlation.csv', 'segment_2_intensity_correlation.csv',
+                             'segment_activity.csv', 'segment_cells.csv'], names
+            assert [f['name'] for f in call('/api/segments/activity?dir=' + cmp_dir)['files']] == names
+            call('/api/segments/activity', {'dir': cmp_dir, 'cells_per_bin': 4, 'segments': ['2']})
+            with open(os.path.join(cmp_dir, 'segment_activity', 'params.json')) as f:
+                assert json.load(f)['cells_per_bin'] == 4
+        finally:
+            server.shutdown()
+            server.server_close()
+    passed('segment activity: run from the card, results listed figures first, bad input refused')
+
+
+def test_analysis_save_and_load_endpoints():
+    """The analysis page's saved analyses over http: saved under the results folder, listed,
+    loaded back as saved; a name that would leave its folder is refused."""
+    with tempfile.TemporaryDirectory() as root:
+        Handler.app = App([root], root)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+
+        def call(path, body=None):
+            data = None if body is None else json.dumps(body).encode()
+            with urllib.request.urlopen(urllib.request.Request(base + path, data=data)) as r:
+                return json.loads(r.read())
+        state = {'mode': 'compare', 'stage': '13', 'samples': [], 'filters': {'presence': 0.9, 'vol_cv': None}}
+        try:
+            saved = call('/api/analysis/save', {'name': 'stage 13', 'analysis': state})
+            assert saved['path'] == os.path.join(root, 'analyses', 'stage 13', 'analysis.json')
+            assert [r['name'] for r in call('/api/analysis/saved')] == ['stage 13']
+            back = call('/api/analysis/load?name=' + urllib.parse.quote('stage 13'))
+            assert back['filters'] == state['filters'] and back['stage'] == '13'
+            assert call('/api/analysis/export?name=' + urllib.parse.quote('stage 13')) == {
+                'state': 'none', 'log': '', 'files': []}
+            try:                                     # nothing to zip before it is exported
+                call('/api/analysis/zip?name=' + urllib.parse.quote('stage 13'))
+            except urllib.error.HTTPError as e:
+                assert e.code == 400 and b'not been exported' in e.read()
+            else:
+                raise AssertionError('a zip was served for an analysis never exported')
+            try:
+                call('/api/analysis/save', {'name': '../outside', 'analysis': state})
+            except urllib.error.HTTPError as e:
+                assert e.code == 400
+            else:
+                raise AssertionError('a name leaving the analyses folder was saved')
+        finally:
+            server.shutdown()
+            server.server_close()
+    passed('analyses save, list and load back over http; names stay inside their folder')
+
+
+def test_roi_page_saves_the_orientation():
+    """The ROI page's orientation lands beside the ROI, comes back when the page reopens, and
+    sends a finished run's activity step round again to turn its figures."""
+    import numpy as np
+    import tifffile
+    from ms2.viewer.app import Viewer
+
+    with tempfile.TemporaryDirectory() as root:
+        rec = Recording(os.path.join(root, 'rec.czi'), root)
+        os.makedirs(rec.preprocess)
+        tifffile.imwrite(rec.projection, np.zeros((3, 8, 8), dtype=np.float32))
+        open(rec.marker('activity'), 'w').close()
+        Handler.app = App([root], root)
+        v = Viewer(None, None, 0, projection_path=rec.projection)
+        v.roi_out = rec.roi
+        Handler.app.viewers[''] = v
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+
+        def call(path, body=None):
+            data = None if body is None else json.dumps(body).encode()
+            with urllib.request.urlopen(urllib.request.Request(base + path, data=data)) as r:
+                return json.loads(r.read())
+        try:
+            assert call('/roi/meta')['orientation'] is None
+            call('/roi/orientation', {'path': rec.roi, 'flip': True, 'rotate': -58})
+            assert call('/roi/meta')['orientation'] == {'flip': True, 'rotate': -58.0}
+            assert not os.path.exists(rec.marker('activity'))
+            assert not os.path.exists(rec.roi)          # turning the view leaves the ROI alone
+            tri = [[0, 0], [5, 0], [5, 5]]
+            call('/roi/save', {'path': rec.roi, 'roi_first': tri, 't_first': 1, 't_last': 2,
+                               'orientation': {'flip': False, 'rotate': 90},
+                               'segments': {'3': tri, '2': tri}})
+            with open(rec.orientation) as f:
+                assert json.load(f) == {'flip': False, 'rotate': 90.0}
+            assert os.path.exists(rec.roi)
+            # segments on the start frame, at the orientation they were drawn at, in label order
+            marked = call('/roi/meta')['segments']
+            assert marked['t'] == 1 and marked['orientation'] == {'flip': False, 'rotate': 90}, marked
+            assert list(marked['segments']) == ['2', '3'] and marked['segments']['3'] == [[0.0, 0.0], [5.0, 0.0], [5.0, 5.0]]
+            # changed later without the ROI: the ROI file is left as it was
+            before = os.path.getmtime(rec.roi)
+            call('/roi/orientation', {'path': rec.roi, 'flip': True, 'rotate': 0, 't': 2,
+                                      'segments': {'5': tri}})
+            assert call('/roi/meta')['segments'] == {'t': 2, 'orientation': {'flip': True, 'rotate': 0},
+                                                     'segments': {'5': [[0.0, 0.0], [5.0, 0.0], [5.0, 5.0]]}}
+            assert os.path.getmtime(rec.roi) == before
+            try:
+                call('/roi/orientation', {'path': rec.roi, 'flip': True, 'rotate': 0, 't': 2,
+                                          'segments': {'9': tri}})
+            except urllib.error.HTTPError as e:
+                assert e.code == 500
+            else:
+                raise AssertionError('segment 9 saved')
+        finally:
+            server.shutdown()
+            server.server_close()
+    passed('the ROI page saves the orientation and the segments beside the ROI, and redraws '
+           'the activity figures')
 
 
 def test_code_version():

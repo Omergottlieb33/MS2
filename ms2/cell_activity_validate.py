@@ -83,9 +83,10 @@ def check_thresholds(name, rec):
     if value is not None and not (isinstance(value, (int, float)) and 0.0 <= value <= 1.0):
         rows.append(row(name, 'error', 'thresholds',
                         f'max_unstable_frac must be a number in 0..1, got {value!r}'))
-    if 'max_volume_cv' in rec:
+    value = rec.get('max_volume_cv')
+    if value is not None and not (isinstance(value, (int, float)) and value >= 0.0):
         rows.append(row(name, 'error', 'thresholds',
-                        'max_volume_cv was replaced by max_unstable_frac (e.g. 0.2)'))
+                        f'max_volume_cv must be a number of 0 or more, got {value!r}'))
     return rows
 
 

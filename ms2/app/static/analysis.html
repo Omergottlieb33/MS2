@@ -1,0 +1,1440 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS2 analysis</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --panel: #191919; --line: #2c2c2c; --text: #ddd;
+          --dim: #888; --accent: #6cf; --ok: #4caf50; --warn: #e0a030; --bad: #e05050; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px system-ui, -apple-system, sans-serif;
+         height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 18px; flex-wrap: wrap; flex: none; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  a { color: var(--accent); }
+  .hint { color: var(--dim); font-size: 12px; }
+  .layout { flex: 1; display: flex; min-height: 0; }
+  aside { width: 330px; flex: none; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  aside .top { padding: 10px; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
+  #recList { overflow: auto; flex: 1; }
+  .group { padding: 6px 10px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+           background: #151515; position: sticky; top: 0; }
+  .rec { padding: 7px 10px; border-bottom: 1px solid #1e1e1e; cursor: pointer; display: grid; gap: 2px; }
+  .rec:hover { background: #1d2a33; }
+  .rec.off { opacity: .45; cursor: default; }
+  .rec .n { font-weight: 600; }
+  .rec .m { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  main { flex: 1; overflow: auto; padding: 16px; display: grid; gap: 14px; align-content: start; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; display: grid; gap: 10px; }
+  .card h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  .card h2 .k { display: inline-block; width: 20px; height: 20px; border-radius: 50%; background: var(--accent);
+                color: #000; text-align: center; line-height: 20px; font-size: 12px; margin-right: 6px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  input[type=text], input[type=number], select { padding: 5px 8px; background: #111; color: var(--text);
+    border: 1px solid #333; border-radius: 4px; font: 13px ui-monospace, monospace; }
+  input[type=number] { width: 80px; }
+  button { padding: 5px 11px; background: #2c2c2c; color: var(--text); border: 1px solid #3c3c3c; border-radius: 4px;
+           cursor: pointer; font-size: 13px; }
+  button:hover { background: #383838; }
+  button.primary { background: #14435e; border-color: #1d5f85; color: #fff; }
+  .seg { display: inline-flex; border: 1px solid #3c3c3c; border-radius: 4px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button.on { background: #14435e; color: #fff; }
+  .samples { display: grid; gap: 10px; }
+  .sample { border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: grid; gap: 8px; background: #151515; }
+  .sample .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .sample .head b { color: var(--accent); }
+  .frames { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+  .frames > div { display: grid; gap: 4px; min-width: 0; }
+  .frames .box { position: relative; width: 100%; max-width: 260px; aspect-ratio: 1; background: #000;
+                 border-radius: 3px; overflow: hidden; }
+  .frames .box canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  canvas[data-z] { cursor: crosshair; touch-action: none; }
+  .zoomhint { font-size: 11px; color: var(--dim); }
+  .orient { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
+  .orient button { padding: 3px 8px; font-size: 12px; }
+  .orient input[type=range] { width: 160px; }
+  .orient input[type=number] { width: 64px; }
+  input[type=range] { width: 100%; }
+  .chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #2c2c2c; white-space: nowrap; }
+  .chip.ok { background: #1e4620; } .chip.busy { background: #14435e; } .chip.bad { background: #5a1e1e; }
+  .sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .sliders label { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
+  .sliders b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .panel { display: grid; gap: 4px; min-width: 0; }
+  .panel canvas { width: 100%; aspect-ratio: 1; background: #000; border-radius: 3px; }
+  .panel .cap { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .empty { color: var(--dim); font-size: 13px; padding: 6px 0; }
+  .heat { overflow: auto; max-height: 900px; background: #0c0c0c; border: 1px solid #262626; border-radius: 4px; padding: 8px; }
+  .heat canvas { display: block; image-rendering: pixelated; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  table.levels { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  table.levels th, table.levels td { padding: 4px 10px; border-bottom: 1px solid var(--line); text-align: right; }
+  table.levels th:first-child, table.levels td:first-child { text-align: left; }
+  table.levels th { color: var(--dim); font-weight: 500; }
+  .sketches { display: grid; gap: 14px; }
+  .sketch { border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: grid; gap: 8px; background: #151515; }
+  .sketch .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .sketch .pair > div { display: grid; gap: 6px; min-width: 0; }
+  .sketch canvas { width: 100%; max-width: 520px; aspect-ratio: 1; background: #000; border-radius: 3px; cursor: crosshair; }
+  .tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
+  .tools button { padding: 3px 9px; font-size: 12px; }
+  .tools button.on { color: #000; font-weight: 600; }
+  .tools select { font: 12px system-ui; padding: 3px 6px; max-width: 280px; }
+  .maps { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  .maps figure { margin: 0; display: grid; gap: 4px; justify-items: center; }
+  .maps canvas { width: 220px; height: 220px; background: #0c0c0c; image-rendering: pixelated;
+                 border: 2px solid #8a8a8a; box-sizing: content-box; }
+  .maps figcaption { font-size: 12px; color: var(--dim); text-align: center; max-width: 220px; }
+  .scale { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .scale canvas { width: 220px; height: 12px; border-radius: 2px; }
+  .hrows { display: grid; gap: 16px; }
+  .figure { background: #fff; border-radius: 4px; padding: 6px; overflow-x: auto; max-width: 100%; }
+  .figure canvas { display: block; max-width: 100%; height: auto; }
+  button.dl { padding: 3px 9px; font-size: 12px; }
+  .hrow { display: grid; gap: 6px; }
+  .outfiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+  .outfiles a { color: var(--accent); font-size: 12px; word-break: break-all; text-decoration: none; }
+  .outfiles img { width: 100%; display: block; background: #fff; border-radius: 3px; margin-bottom: 4px; }
+  pre.log { background: #0c0c0c; border: 1px solid #262626; border-radius: 4px; padding: 8px; max-height: 220px;
+            overflow: auto; font-size: 12px; white-space: pre-wrap; margin: 0; }
+  #hover { min-height: 18px; font-size: 12px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MS2 analysis</h1>
+  <a href="/">← pipeline</a>
+  <span class="hint" id="who"></span>
+</header>
+
+<div class="layout">
+<aside>
+  <div class="top">
+    <div class="row"><input type="text" id="root" spellcheck="false" style="flex:1" placeholder="results folder">
+      <button id="rootGo">Scan</button></div>
+    <input type="text" id="search" spellcheck="false" placeholder="search recordings">
+    <div class="row"><input type="text" id="addPath" spellcheck="false" style="flex:1" placeholder="or add a result by its path">
+      <button id="addGo">Add</button></div>
+    <span class="hint" id="recMsg"></span>
+  </div>
+  <div id="recList"></div>
+</aside>
+
+<main>
+  <section class="card">
+    <h2><span class="k">1</span>Samples and stages</h2>
+    <div class="row">
+      <div class="seg" id="mode"><button data-m="compare" class="on">Stage comparison</button><button data-m="single">Single recording, several stages</button></div>
+      <label class="row" id="stageRow">Stage <input type="text" id="stage" list="stages" value="12" style="width:70px"></label>
+      <datalist id="stages"><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></datalist>
+      <button id="addStage" hidden>+ add a stage</button>
+    </div>
+    <p class="hint" id="modeHint"></p>
+    <div class="samples" id="samples"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="k">2</span>Cells: tracking filters</h2>
+    <p class="hint">A cell is analysed when it is tracked through enough of its stage window and its
+      segmented volume is stable (volume CV = standard deviation over mean, over its tracked frames).
+      Only these cells are shown when drawing the region and the segments below.</p>
+    <div class="sliders">
+      <label>Tracked through at least <b id="presVal"></b> of the window
+        <input type="range" id="pres" min="0" max="1" step="0.05" value="0.9"></label>
+      <label>Volume CV at most <b id="cvVal"></b>
+        <input type="range" id="cv" min="0.05" max="1" step="0.01" value="0.3"></label>
+    </div>
+    <div class="legend" id="cellCounts"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="k">3</span>Region and segments</h2>
+    <p class="hint">One panel per sample, turned as set above, showing only the cells that pass the
+      tracking filters. Choose what to draw, click around it, then <b>close</b>.
+      <b>ROI</b>: outline the region on the start frame and on the end frame; a cell is analysed when it
+      lies inside either outline on that frame (no outline: all of them). Each cell is outlined by its own
+      segmentation on the frame shown: analysed cells in blue, the others faint grey. Nothing is drawn from
+      earlier work unless you load an ROI or segment file for the sample. <b>2–5</b>: outline each segment on the start frame, around the
+      cells at their average position over the window. The dashed box is what the segment grid is cut from.</p>
+    <div class="row"><span class="hint">Box each segment</span>
+      <div class="seg" id="boxFrom"><button data-b="cells" class="on">around the analysed cells inside it</button><button data-b="outline">around the outline</button></div></div>
+    <div class="legend" id="levelLegend"></div>
+    <div class="sketches" id="sketches"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="k">4</span>Activity clustering</h2>
+    <p class="hint">A cell fires on a frame when its MS2 signal is above the noise floor. Cells whose
+      highest signal stays below the blip height are short bursts / noise; the rest are split into
+      weakly, moderate and highly active by their rate (signal above the floor per tracked frame).
+      <b>Automatic</b> places the two rate cuts where KMeans puts them on all samples' kept cells
+      together; moving a cut takes over by hand.</p>
+    <div class="sliders">
+      <label>Noise floor <b id="floorVal"></b><input type="range" id="floor" min="0" max="60" step="1"></label>
+      <label>Blip height above the floor <b id="peakVal"></b><input type="range" id="npeak" min="0" max="60" step="1"></label>
+      <label>Weakly | moderate active at rate <b id="cut0Val"></b><input type="range" id="cut0" min="0" max="1000" step="1"></label>
+      <label>Moderate | highly active at rate <b id="cut1Val"></b><input type="range" id="cut1" min="0" max="1000" step="1"></label>
+    </div>
+    <div class="row"><button id="autoCuts">Automatic</button><span class="hint" id="cutMsg"></span></div>
+    <table class="levels" id="levelTable"></table>
+    <div class="legend" id="sampleLegend"></div>
+    <div class="row"><span class="hint">Heatmap</span><button id="heatIn">zoom in</button><button id="heatOut">zoom out</button>
+      <button id="heatFit">fit</button><span class="hint" id="heatZoomVal"></span>
+      <button class="dl" data-dl="heatmap">⬇ image</button></div>
+    <div class="heat"><canvas id="heat"></canvas></div>
+    <p class="hint">Rows: every cell above silent, highest level on top (red lines between levels), then
+      by sample, then by rate. Columns: frames from each window's start; grey where a cell is not tracked
+      or its window has ended. Colour: signal on a log scale, the floor and below at the bottom.</p>
+  </section>
+
+  <section class="card">
+    <h2><span class="k">5</span>Level composition and spatial map</h2>
+    <p class="hint">The share of each sample's analysed cells in every activity level, silent cells included,
+      and every sample's analysed cells where they sit, turned as set above and coloured by level
+      (+ = the centre of the analysed cells). Both follow every setting above.</p>
+    <div class="row"><b>Level composition</b><button class="dl" data-dl="levels">⬇ image</button></div>
+    <div class="figure"><canvas id="levelComp"></canvas></div>
+    <div class="row"><b>Aligned spatial map</b><button class="dl" data-dl="spatial">⬇ image</button></div>
+    <div class="figure"><canvas id="spatialMap"></canvas></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="k">6</span>Segment histograms</h2>
+    <p class="hint">Each segment's dashed box is stretched onto one square: centre (0, 0), right-upper corner
+      (1, 1), left-lower (−1, −1), as seen in the turned view. The analysed cells inside the outline are binned
+      at their average position over the window, and every sample's map of the same segment is shown side by
+      side, then their mean.</p>
+    <div class="row">
+      <span class="hint">Segment</span><div class="seg" id="hSeg"></div>
+      <span class="hint">Value</span>
+      <div class="seg" id="hMetric"><button data-m="firing" class="on">share of cells firing</button><button data-m="intensity">mean intensity per cell</button><button data-m="cluster">share in each cluster</button></div>
+    </div>
+    <div class="sliders">
+      <label><span class="row"><span class="seg" id="hMode"><button data-b="grid" class="on">grid</button><button data-b="count">cells per bin</button></span>
+        <b id="hSizeVal"></b></span>
+        <input type="range" id="hSize" min="1" max="16" step="1"></label>
+      <label id="hTimeRow"><span class="row">Time <b id="hTimeVal"></b></span>
+        <input type="range" id="hTime" min="-1" max="10" step="1"></label>
+    </div>
+    <div class="row"><button class="dl" data-dl="histograms">⬇ image of the maps</button></div>
+    <div class="hrows" id="hMaps"></div>
+    <div id="hover" class="hint"></div>
+    <table class="levels" id="hCorr"></table>
+  </section>
+
+  <section class="card">
+    <h2><span class="k">7</span>Save results</h2>
+    <p class="hint">Makes a zip to download to your computer, with these settings. At its top: the segment
+      histograms (segment_activity), the heatmap of all samples, the level composition and the aligned
+      spatial map. In work_product: everything else, the settings, the ROI and segment outlines (as a
+      file, and drawn on each sample's frame), the other figures, the GIFs and the tables. Making it takes a few minutes;
+      the zip downloads by itself when it is ready. Earlier analyses are listed below to reopen.</p>
+    <div class="row"><input type="text" id="saveName" spellcheck="false" placeholder="name, e.g. stage 13 left side" style="flex:1;max-width:360px">
+      <button class="primary" id="exportBtn">Make results zip</button>
+      <a id="zipLink" hidden>⬇ Download the zip</a>
+      <span id="saveMsg"></span></div>
+    <div id="exportBox" hidden>
+      <div class="row"><b id="exportTitle"></b><span class="chip" id="exportState"></span></div>
+      <pre class="log" id="exportLog"></pre>
+      <div class="outfiles" id="exportFiles"></div>
+    </div>
+    <table class="levels" id="savedList"></table>
+  </section>
+
+</main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+const enc = encodeURIComponent;
+
+// Everything the user decides, saved as analysis.json later; kept in this browser meanwhile.
+let state = {mode: 'compare', stage: '12', samples: [], filters: {presence: 0.9, vol_cv: 0.3},
+             cluster: {floor: 20, noise_peak: 10, cuts: [null, null], auto: true}, box_from: 'cells',
+             hist: {seg: '2', metric: 'firing', cluster: 4, mode: 'grid', size: 4, time: -1}};
+let recordings = [];                 // the browser's list
+const data = {};                     // sample key -> {status, cells, traces, timepoints}
+const frames = {};                   // csv|t -> Image
+
+const keyOf = s => `${s.csv}|${s.t0}|${s.t1}`;
+try { const saved = JSON.parse(localStorage.getItem('ms2-analysis-draft')); if (saved && saved.samples) state = {...state, ...saved}; } catch (e) {}
+function persist() { try { localStorage.setItem('ms2-analysis-draft', JSON.stringify(state)); } catch (e) {} }
+
+async function api(path) {
+  const r = await fetch(path);
+  if (r.status === 401) { location.href = '/login'; throw new Error('logged out'); }
+  const d = await r.json().catch(() => ({error: r.statusText}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+
+// ── recording browser ──
+async function scan() {
+  $('recMsg').textContent = 'scanning…';
+  try {
+    const d = await api('/api/analysis/recordings' + ($('root').value ? '?root=' + enc($('root').value.trim()) : ''));
+    recordings = d.recordings;
+    if (!$('root').value) $('root').value = d.roots[0] || '';
+    $('recMsg').textContent = `${recordings.length} results`;
+    drawList();
+  } catch (e) { $('recMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+function drawList() {
+  const q = $('search').value.trim().toLowerCase();
+  const shown = recordings.filter(r => !q || `${r.group} ${r.name} ${r.folder}`.toLowerCase().includes(q));
+  let html = '', group = null;
+  for (const r of shown) {
+    if (r.group !== group) { group = r.group; html += `<div class="group">${esc(group || 'results')}</div>`; }
+    const i = recordings.indexOf(r);
+    html += `<div class="rec ${r.problem ? 'off' : ''}" data-i="${i}" title="${esc(r.csv)}">
+      <span class="n">${esc(r.name)}</span>
+      <span class="m">${esc(r.folder)} · ${r.n_frames ?? '?'} frames · ${r.n_cells ?? '?'} cells measured</span>
+      ${r.problem ? `<span class="m bad">${esc(r.problem)}</span>` : ''}</div>`;
+  }
+  $('recList').innerHTML = html || '<div class="empty" style="padding:10px">no results here</div>';
+}
+$('recList').onclick = e => {
+  const el = e.target.closest('.rec');
+  if (!el || el.classList.contains('off')) return;
+  addSample(recordings[+el.dataset.i]);
+};
+$('search').oninput = drawList;
+$('rootGo').onclick = scan;
+$('addGo').onclick = async () => {
+  try { const r = await api('/api/analysis/resolve?path=' + enc($('addPath').value.trim().replace(/^["']+|["']+$/g, '')));
+        if (r.problem) throw new Error(r.problem);
+        recordings.push({...r, group: 'added'}); drawList(); addSample(r); $('addPath').value = ''; }
+  catch (e) { $('recMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+// ── samples and stages ──
+function addSample(r) {
+  if (state.mode === 'single' && state.samples.length && state.samples[0].csv !== r.csv) {
+    if (!confirmInline(`Single-recording mode analyses one recording: replace ${state.samples[0].name} with ${r.name}?`)) return;
+    state.samples = [];
+  }
+  if (state.mode === 'compare' && state.samples.some(s => s.csv === r.csv)) return;
+  const [t0, t1] = r.roi_window || [0, r.n_frames - 1];
+  state.samples.push({csv: r.csv, name: r.name, n_frames: r.n_frames, stage: state.stage,
+                      width: r.width || 1024, height: r.height || 1024,
+                      orientation: {...(sameRec(r.csv) || {}).orientation || r.orientation || {flip: false, rotate: 0}},
+                      t0: Math.max(0, Math.min(t0, r.n_frames - 1)), t1: Math.max(0, Math.min(t1, r.n_frames - 1))});
+  changed();
+}
+const sameRec = csv => state.samples.find(s => s.csv === csv);
+// The page cannot use confirm(); a second click on the same recording within 4 s confirms.
+let pendingConfirm = null;
+function confirmInline(msg) {
+  if (pendingConfirm && pendingConfirm.msg === msg && Date.now() - pendingConfirm.at < 4000) { pendingConfirm = null; return true; }
+  pendingConfirm = {msg, at: Date.now()};
+  $('modeHint').innerHTML = `<span class="warn">${esc(msg)} Click it again to confirm.</span>`;
+  return false;
+}
+function setMode(m) {
+  state.mode = m;
+  document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  $('stageRow').hidden = m !== 'compare';
+  $('addStage').hidden = m !== 'single';
+  $('modeHint').textContent = m === 'compare'
+    ? 'Pick the recordings of one stage from the list on the left, then set where the stage starts and ends in each.'
+    : 'Pick one recording, then add a stage for every window to compare and name each.';
+  if (m === 'single' && new Set(state.samples.map(s => s.csv)).size > 1) state.samples = state.samples.slice(0, 1);
+  changed();
+}
+document.querySelectorAll('#mode button').forEach(b => b.onclick = () => setMode(b.dataset.m));
+$('stage').oninput = () => { state.stage = $('stage').value.trim(); state.samples.forEach(s => s.stage = state.stage); persist(); };
+$('addStage').onclick = () => {
+  const s = state.samples[state.samples.length - 1];
+  if (!s) return;
+  state.samples.push({...s, stage: String((parseInt(s.stage) || 11) + 1)});
+  changed();
+};
+
+function frameUrl(csv, t, size = 256) { return `/api/analysis/frame?csv=${enc(csv)}&t=${t}&size=${size}`; }
+
+function drawSamples() {
+  $('samples').innerHTML = state.samples.map((s, i) => `<div class="sample" data-i="${i}">
+    <div class="head"><b>${esc(s.name)}</b>
+      <label class="row hint">stage <input type="text" class="stageName" value="${esc(s.stage)}" list="stages" style="width:64px" ${state.mode === 'compare' ? 'disabled' : ''}></label>
+      <span class="hint">frames ${s.t0}–${s.t1} of 0–${s.n_frames - 1}</span>
+      <span class="chip" id="st${i}"></span>
+      <button class="rm" style="margin-left:auto">remove</button></div>
+    <div class="orient">orientation
+      <button data-o="ccw" title="rotate 90° anticlockwise">⟲ 90°</button><button data-o="cw" title="rotate 90° clockwise">⟳ 90°</button>
+      <button data-o="h" title="mirror left-right">⇋ flip</button><button data-o="v" title="mirror top-bottom">⇵ flip</button>
+      <input type="range" class="ang" min="-180" max="180" step="1" value="${Math.round(s.orientation.rotate)}">
+      <input type="number" class="angNum" step="1" value="${Math.round(s.orientation.rotate)}">°
+      <button data-o="reset">reset</button>
+      <span class="otext">${orientText(s.orientation)}</span></div>
+    <div class="frames">
+      <div><span class="hint">stage starts at frame <b class="t0v">${s.t0}</b> <span class="zoomhint">· wheel: zoom, drag: move, double-click: fit</span></span>
+        <div class="box"><canvas class="f0" width="${C}" height="${C}" data-z="th|${i}|0"></canvas></div>
+        <input type="range" class="t0" min="0" max="${s.n_frames - 1}" value="${s.t0}"></div>
+      <div><span class="hint">stage ends at frame <b class="t1v">${s.t1}</b></span>
+        <div class="box"><canvas class="f1" width="${C}" height="${C}" data-z="th|${i}|1"></canvas></div>
+        <input type="range" class="t1" min="0" max="${s.n_frames - 1}" value="${s.t1}"></div>
+    </div></div>`).join('') || '<div class="empty">No samples yet: click recordings in the list on the left.</div>';
+  state.samples.forEach((s, i) => sampleStatus(i));
+  drawThumbs();
+}
+// the start and end frame of every sample, turned and zoomed as set
+function drawThumbs() {
+  state.samples.forEach((s, i) => {
+    const el = document.querySelector(`.sample[data-i="${i}"]`);
+    if (!el) return;
+    el.querySelectorAll('canvas').forEach((cv, j) => drawFrame(cv.getContext('2d'), s, j ? s.t1 : s.t0, cv.dataset.z));
+  });
+}
+$('samples').oninput = e => {
+  const el = e.target.closest('.sample'); if (!el) return;
+  const s = state.samples[+el.dataset.i];
+  if (e.target.classList.contains('stageName')) { s.stage = e.target.value.trim(); persist(); return; }
+  if (e.target.classList.contains('ang') || e.target.classList.contains('angNum')) {
+    if (e.target.value !== '') turn(s, {...s.orientation, rotate: +e.target.value});
+    return;
+  }
+  for (const [cls, k, img, lbl] of [['t0', 't0', '.f0', '.t0v'], ['t1', 't1', '.f1', '.t1v']]) {
+    if (!e.target.classList.contains(cls)) continue;
+    let v = +e.target.value;
+    // the window is start <= end: a slider stops at the other
+    v = k === 't0' ? Math.min(v, s.t1) : Math.max(v, s.t0);
+    e.target.value = v; s[k] = v;
+    el.querySelector(lbl).textContent = v;
+    const cv = el.querySelector(img);
+    drawFrame(cv.getContext('2d'), s, v, cv.dataset.z);
+  }
+};
+$('samples').onchange = e => { if (e.target.type === 'range') changed(); };
+$('samples').onclick = e => {
+  const b = e.target.closest('button[data-o]');
+  if (b) {
+    const s = state.samples[+b.closest('.sample').dataset.i], {flip, rotate} = s.orientation;
+    // the flips act on the picture as it now looks, rewritten as mirror-then-rotate
+    turn(s, {cw: {flip, rotate: rotate + 90}, ccw: {flip, rotate: rotate - 90},
+             h: {flip: !flip, rotate: -rotate}, v: {flip: !flip, rotate: 180 - rotate},
+             reset: {flip: false, rotate: 0}}[b.dataset.o]);
+    return;
+  }
+  if (!e.target.classList.contains('rm')) return;
+  state.samples.splice(+e.target.closest('.sample').dataset.i, 1);
+  changed();
+};
+
+// ── orientation: mirror left-right if flip, then rotate clockwise, about the image centre ──
+const normAngle = a => ((a + 180) % 360 + 360) % 360 - 180;
+const orientText = o => `${o.flip ? 'mirrored, ' : ''}rotated ${Math.round(o.rotate)}°`;
+// One embryo has one orientation: every sample of the recording turns together.
+function turn(s, o) {
+  o = {flip: !!o.flip, rotate: normAngle(o.rotate)};
+  state.samples.forEach((x, i) => {
+    if (x.csv !== s.csv) return;
+    x.orientation = {...o};
+    const el = document.querySelector(`.sample[data-i="${i}"]`);
+    if (!el) return;
+    el.querySelectorAll('canvas').forEach(cv => drawFrame(cv.getContext('2d'), x, cv.dataset.z.endsWith('0') ? x.t0 : x.t1, cv.dataset.z));
+    el.querySelector('.ang').value = el.querySelector('.angNum').value = Math.round(o.rotate);
+    el.querySelector('.otext').textContent = orientText(o);
+  });
+  persist();
+  drawCells();
+}
+
+// ── per-sample cell data, fetched once per window ──
+async function load(s) {
+  const k = keyOf(s);
+  if (data[k]) return data[k];
+  data[k] = {status: 'loading'};
+  try {
+    const d = await api(`/api/analysis/sample?csv=${enc(s.csv)}&t0=${s.t0}&t1=${s.t1}`);
+    data[k] = {status: 'ok', ...d};
+  } catch (e) { data[k] = {status: 'error', error: e.message}; }
+  return data[k];
+}
+function sampleStatus(i) {
+  const s = state.samples[i], d = data[keyOf(s)], el = $('st' + i);
+  if (!el) return;
+  if (!d || d.status === 'loading') { el.className = 'chip busy'; el.textContent = 'loading cells (a minute the first time)'; }
+  else if (d.status === 'error') { el.className = 'chip bad'; el.textContent = d.error; }
+  else { el.className = 'chip ok'; el.textContent = `${d.cells.length} cells tracked in the window`; }
+}
+function changed() {
+  persist();
+  drawSamples();
+  state.samples.forEach((s, i) => load(s).then(() => { sampleStatus(i); drawCells(); }));
+  drawCells();
+}
+
+// ── cells under analysis ──
+// The tracking filters: tracked through enough of the window, with a stable volume.
+const tracked = (c, f) => c.presence >= f.presence && c.vol_cv <= f.vol_cv;
+// A cell is analysed when it passes the tracking filters and lies in the ROI.
+const kept = (s, c, f) => tracked(c, f) && inRoi(s, c);
+function frameImage(csv, t, full = false) {
+  const k = `${csv}|${t}|${full ? 'full' : 512}`;
+  if (!frames[k]) {
+    frames[k] = new Image();
+    frames[k].onload = () => { drawThumbs(); drawSketches(); };
+    frames[k].src = frameUrl(csv, t, full ? 0 : 512);
+  }
+  return frames[k];
+}
+function drawCells() {
+  const f = state.filters;
+  $('presVal').textContent = Math.round(f.presence * 100) + '%';
+  $('cvVal').textContent = f.vol_cv >= 1 ? 'any (off)' : f.vol_cv.toFixed(2);
+  $('cellCounts').innerHTML = state.samples.map((s, i) => {
+    const d = data[keyOf(s)];
+    if (!d || d.status !== 'ok') return `<span>${esc(s.name)} · ${esc(s.stage)}: loading</span>`;
+    const n = d.cells.filter(c => tracked(c, f)).length;
+    return `<span><i style="background:${sampleColor(i)}"></i>${esc(s.name)} · ${esc(s.stage)}: ${n} of ${d.cells.length} measured cells pass</span>`;
+  }).join('');
+  clusterChanged();
+}
+$('pres').oninput = () => { state.filters.presence = +$('pres').value; persist(); drawCells(); };
+$('cv').oninput = () => { state.filters.vol_cv = +$('cv').value >= 1 ? Infinity : +$('cv').value; persist(); drawCells(); };
+
+// ── drawing on a turned frame: image pixels <-> canvas pixels (512 x 512) ──
+const C = 512;
+// zoom per canvas, keyed by its data-z: canvas pixel = (x, y) + z * turned pixel
+const zooms = {};
+const zoomOf = key => zooms[key] || {z: 1, x: 0, y: 0};
+function view(s, zkey) {
+  const W = s.width || 1024, H = s.height || 1024, k = C / Math.max(W, H);
+  const o = s.orientation || {flip: false, rotate: 0}, a = o.rotate * Math.PI / 180, zm = zoomOf(zkey);
+  return {W, H, k, cx: W * k / 2, cy: H * k / 2, flip: o.flip, cos: Math.cos(a), sin: Math.sin(a), a,
+          z: zm.z, zx: zm.x, zy: zm.y};
+}
+// mirrored left-right if flip, then rotated clockwise, about the image centre, centred on the
+// canvas, then zoomed
+function toCanvas(v, x, y) {
+  let dx = x * v.k - v.cx, dy = y * v.k - v.cy;
+  if (v.flip) dx = -dx;
+  return [v.zx + v.z * (C / 2 + dx * v.cos - dy * v.sin), v.zy + v.z * (C / 2 + dx * v.sin + dy * v.cos)];
+}
+function toImage(v, px, py) {
+  px = (px - v.zx) / v.z; py = (py - v.zy) / v.z;
+  const ux = px - C / 2, uy = py - C / 2;
+  let dx = ux * v.cos + uy * v.sin, dy = -ux * v.sin + uy * v.cos;
+  if (v.flip) dx = -dx;
+  return [(dx + v.cx) / v.k, (dy + v.cy) / v.k];
+}
+function drawFrame(g, s, t, zkey) {
+  const v = view(s, zkey);
+  // zoomed in, the full-resolution frame, once it has arrived
+  let img = frameImage(s.csv, t);
+  if (v.z > 1.5) { const full = frameImage(s.csv, t, true); if (full.complete && full.naturalWidth) img = full; }
+  g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#000'; g.fillRect(0, 0, C, C);
+  if (img.complete && img.naturalWidth) {
+    g.save(); g.translate(v.zx, v.zy); g.scale(v.z, v.z);
+    g.translate(C / 2, C / 2); g.rotate(v.a); g.scale(v.flip ? -1 : 1, 1); g.translate(-v.cx, -v.cy);
+    g.imageSmoothingEnabled = v.z < 3;
+    g.globalAlpha = 0.8; g.drawImage(img, 0, 0, v.W * v.k, v.H * v.k); g.restore();
+  }
+  return v;
+}
+function drawPoly(g, v, pts, color, closed, fill) {
+  if (!pts || !pts.length) return;
+  g.beginPath();
+  pts.forEach(([x, y], i) => { const [px, py] = toCanvas(v, x, y); i ? g.lineTo(px, py) : g.moveTo(px, py); });
+  if (closed) { g.closePath(); if (fill) { g.fillStyle = fill; g.fill(); } }
+  g.strokeStyle = color; g.lineWidth = 2; g.stroke();
+  if (!closed) pts.forEach(([x, y]) => { const [px, py] = toCanvas(v, x, y); g.fillStyle = '#fff'; g.fillRect(px - 2.5, py - 2.5, 5, 5); });
+}
+function inside(pts, x, y) {
+  let hit = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) hit = !hit;
+  }
+  return hit;
+}
+// canvas pixel under a click, whatever size the canvas is shown at
+function clickPoint(canvas, e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * canvas.width / r.width, (e.clientY - r.top) * canvas.height / r.height];
+}
+// An outline being drawn: {pts, closed}.  Closed ones are kept in the sample; open ones here.
+const drafts = {};
+const draft = key => drafts[key] || (drafts[key] = {pts: [], closed: false});
+
+// ── zoom: the wheel zooms about the cursor, a drag moves, a double-click fits ──
+function redrawZoomed(key) { key.startsWith('th|') ? drawThumbs() : drawSketches(); }
+let drag = null, dragged = false;
+document.addEventListener('wheel', e => {
+  const cv = e.target.closest && e.target.closest('canvas[data-z]');
+  if (!cv) return;
+  e.preventDefault();
+  const key = cv.dataset.z, zm = {...zoomOf(key)}, [px, py] = clickPoint(cv, e);
+  const z = Math.max(1, Math.min(16, zm.z * Math.exp(-e.deltaY * 0.0015)));
+  // keep the point under the cursor still
+  zm.x = px - (px - zm.x) * (z / zm.z); zm.y = py - (py - zm.y) * (z / zm.z); zm.z = z;
+  if (z === 1) { zm.x = 0; zm.y = 0; }
+  zooms[key] = zm; redrawZoomed(key);
+}, {passive: false});
+document.addEventListener('mousedown', e => {
+  const cv = e.target.closest && e.target.closest('canvas[data-z]');
+  if (!cv) return;
+  drag = {cv, key: cv.dataset.z, start: clickPoint(cv, e), from: {...zoomOf(cv.dataset.z)}, moved: false};
+  dragged = false;
+});
+document.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const [px, py] = clickPoint(drag.cv, e), dx = px - drag.start[0], dy = py - drag.start[1];
+  if (!drag.moved && Math.hypot(dx, dy) < 4) return;          // a click, so far
+  drag.moved = true;
+  if (drag.from.z === 1) return;                               // nothing to move at full view
+  zooms[drag.key] = {...drag.from, x: drag.from.x + dx, y: drag.from.y + dy};
+  redrawZoomed(drag.key);
+});
+document.addEventListener('mouseup', () => { if (drag) dragged = drag.moved; drag = null; });
+document.addEventListener('dblclick', e => {
+  const cv = e.target.closest && e.target.closest('canvas[data-z^="th|"]');
+  if (!cv) return;
+  delete zooms[cv.dataset.z]; redrawZoomed(cv.dataset.z);
+});
+
+// ── region of interest: inside the start-frame outline at the start, or the end one at the end ──
+function inRoi(s, c) {
+  const r = s.roi || {};
+  if (!r.first && !r.last) return true;
+  return !!(r.first && c.at_start && inside(r.first, ...c.at_start)) ||
+         !!(r.last && c.at_end && inside(r.last, ...c.at_end));
+}
+
+// ── one panel per sample: draw the ROI and the segments over the cells passing the tracking filters ──
+const SEG_LABELS = ['2', '3', '4', '5'];
+const SEG_COLORS = {'2': '#e8a33d', '3': '#4caf50', '4': '#6cf', '5': '#e87ba4'};
+const ROI_COLOR = '#e0e0e0';
+const tool = {};        // sample key -> 'roi' or a segment label
+const roiView = {};     // sample key -> 'first' (start frame) or 'last' (end frame)
+// The upright box of a segment in the turned view, in canvas pixels: around the analysed cells
+// inside the outline (fewer than 2: around the outline), or around the outline itself.
+function segmentBox(v, pts, cells) {
+  let use = pts.map(([x, y]) => toCanvas(v, x, y));
+  if (state.box_from === 'cells') {
+    const mine = cells.filter(c => inside(pts, c.cell.x, c.cell.y)).map(c => toCanvas(v, c.cell.x, c.cell.y));
+    if (mine.length >= 2) use = mine;
+  }
+  const xs = use.map(p => p[0]), ys = use.map(p => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+// A cell as a thin ring, so the nucleus under it stays visible; it grows with the zoom.
+function ring(g, v, p, color, r, width) {
+  const [px, py] = toCanvas(v, ...p);
+  g.strokeStyle = color; g.lineWidth = width; g.beginPath(); g.arc(px, py, r * Math.sqrt(v.z), 0, 2 * Math.PI); g.stroke();
+}
+const IN_ROI = '#4fc3f7', OUT_ROI = 'rgba(170,170,170,.55)';
+const IN_RGB = [79, 195, 247, 255], OUT_RGB = [170, 170, 170, 150];
+
+// A frame's segmentation (labels projected over z), decoded once: its boundary pixels and the
+// label each belongs to.
+const labelImages = {};
+function labelImage(csv, t) {
+  const k = `${csv}|${t}`;
+  if (labelImages[k]) return labelImages[k];
+  const entry = labelImages[k] = {ready: false};
+  const img = new Image();
+  img.onload = () => {
+    const W = img.naturalWidth, H = img.naturalHeight, cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
+    const px = g.getImageData(0, 0, W, H).data, lab = new Uint16Array(W * H);
+    for (let i = 0; i < W * H; i++) lab[i] = px[4 * i] * 256 + px[4 * i + 1];
+    const idx = [];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x, l = lab[i];
+      if (!l) continue;
+      // a boundary pixel: a 4-neighbour belongs to something else
+      if (x === 0 || y === 0 || x === W - 1 || y === H - 1 || lab[i - 1] !== l || lab[i + 1] !== l || lab[i - W] !== l || lab[i + W] !== l) idx.push(i);
+    }
+    Object.assign(entry, {ready: true, W, H, idx: Int32Array.from(idx), lab, off: document.createElement('canvas')});
+    entry.off.width = W; entry.off.height = H;
+    drawSketches();
+  };
+  img.onerror = () => { entry.failed = true; };
+  img.src = `/api/analysis/labels?csv=${enc(csv)}&t=${t}`;
+  return entry;
+}
+// The chosen cells' outlines, painted at image resolution and drawn turned and zoomed like the frame.
+function drawOutlines(g, s, v, labels, colour) {
+  const img = new ImageData(labels.W, labels.H), out = img.data;
+  for (const i of labels.idx) {
+    const c = colour.get(labels.lab[i]);
+    if (!c) continue;
+    out[4 * i] = c[0]; out[4 * i + 1] = c[1]; out[4 * i + 2] = c[2]; out[4 * i + 3] = c[3];
+  }
+  labels.off.getContext('2d').putImageData(img, 0, 0);
+  g.save(); g.translate(v.zx, v.zy); g.scale(v.z, v.z);
+  g.translate(C / 2, C / 2); g.rotate(v.a); g.scale(v.flip ? -1 : 1, 1); g.translate(-v.cx, -v.cy);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(labels.off, 0, 0, v.W * v.k, v.H * v.k);
+  g.restore();
+}
+
+// The ROI and segment files that exist for a recording, offered per sample; nothing is loaded
+// unless one is picked.
+const fileLists = {};
+async function fillFileLists(s, el) {
+  if (!el) return;
+  if (!fileLists[s.csv]) fileLists[s.csv] = api('/api/analysis/files?csv=' + enc(s.csv)).catch(e => ({error: e.message}));
+  const d = await fileLists[s.csv];
+  const short = p => p.split('/').slice(-4).join('/');
+  if (d.error) { el.querySelector('.loadRoi').innerHTML = `<option value="">${esc(d.error)}</option>`; return; }
+  el.querySelector('.loadRoi').innerHTML = `<option value="">load ROI from a file… (${d.rois.length})</option>` +
+    d.rois.map((r, j) => `<option value="${j}">${esc(short(r.path))} · frames ${r.t_first}–${r.t_last}</option>`).join('');
+  el.querySelector('.loadSeg').innerHTML = `<option value="">load segments from a file… (${d.segments.length})</option>` +
+    d.segments.map((r, j) => `<option value="${j}">${esc(short(r.path))}${r.name ? ' · ' + esc(r.name) : ''}</option>`).join('');
+}
+$('sketches').onchange = async e => {
+  const sel = e.target;
+  if (!sel.classList.contains('loadRoi') && !sel.classList.contains('loadSeg')) return;
+  const el = sel.closest('.sketch'), s = state.samples[+el.dataset.i], d = await fileLists[s.csv];
+  if (sel.value === '') return;
+  const file = sel.classList.contains('loadRoi') ? d.rois[+sel.value] : d.segments[+sel.value];
+  try {
+    const got = await api(`/api/analysis/file?path=${enc(file.path)}${file.name ? '&name=' + enc(file.name) : ''}`);
+    if (got.kind === 'roi') s.roi = {first: got.roi_first || null, last: got.roi_last || null};
+    else s.segments = Object.fromEntries(Object.entries(got.segments).filter(([l]) => SEG_LABELS.includes(l)));
+    persist();
+    el.querySelector('.cnt').textContent = `loaded ${file.path}`;
+  } catch (err) { el.querySelector('.cnt').textContent = err.message; }
+  sel.value = '';
+  drawCells();
+};
+function drawSketches(cells) {
+  cells = cells || analysed();
+  const host = $('sketches'), sig = state.samples.map(keyOf).join();
+  if (host.dataset.k !== sig) {
+    host.dataset.k = sig;
+    host.innerHTML = state.samples.map((s, i) => `<div class="sketch" data-i="${i}"><b style="color:var(--accent)">${esc(s.name)} · stage ${esc(s.stage)}</b>
+      <div class="tools"><span>draw</span><span class="pick"></span>
+        <span class="frameToggle"></span>
+        <button data-a="close">close</button><button data-a="undo">undo</button><button data-a="clear">clear</button>
+        <button data-a="fit">fit</button>
+        <button class="dl" data-dl="panel">⬇ image</button>
+        <select class="loadRoi"><option value="">load ROI from a file…</option></select>
+        <select class="loadSeg"><option value="">load segments from a file…</option></select></div>
+      <canvas width="${C}" height="${C}" data-z="sk|${i}"></canvas><span class="hint cnt"></span></div>`).join('')
+      || '<div class="empty">Add samples above.</div>';
+    state.samples.forEach((s, i) => fillFileLists(s, host.querySelector(`.sketch[data-i="${i}"]`)));
+  }
+  $('levelLegend').innerHTML = `<span><i style="background:${IN_ROI}"></i>analysed (passes the filters, inside the ROI)</span>` +
+    `<span><i style="background:#aaa"></i>passes the filters, outside the ROI</span>` +
+    `<span class="zoomhint">each cell is outlined by its own segmentation on the frame shown</span>` +
+    `<span class="zoomhint">wheel: zoom · drag: move · fit: whole frame</span>`;
+  const f = state.filters;
+  state.samples.forEach((s, i) => {
+    const el = host.querySelector(`.sketch[data-i="${i}"]`), d = data[keyOf(s)];
+    if (!el) return;
+    const k = keyOf(s), segs = s.segments || {}, roi = s.roi || {};
+    const t = tool[k] = tool[k] || 'roi', w = roiView[k] = roiView[k] || 'first';
+    el.querySelector('.pick').innerHTML = ['roi', ...SEG_LABELS].map(l => {
+      const col = l === 'roi' ? ROI_COLOR : SEG_COLORS[l], done = l === 'roi' ? (roi.first || roi.last) : segs[l];
+      return `<button data-t="${l}" class="${l === t ? 'on' : ''}" style="border:2px solid ${col};${l === t ? 'background:' + col : ''}">${l === 'roi' ? 'ROI' : l}${done ? ' ✓' : ''}</button>`;
+    }).join(' ');
+    el.querySelector('.frameToggle').innerHTML = t === 'roi'
+      ? `<span class="seg"><button data-w="first" class="${w === 'first' ? 'on' : ''}">start frame ${s.t0}</button><button data-w="last" class="${w === 'last' ? 'on' : ''}">end frame ${s.t1}</button></span>` : '';
+    // the ROI is tested on its own frame; segments on the window's average positions
+    const onFrame = t === 'roi' ? (w === 'first' ? s.t0 : s.t1) : s.t0;
+    const canvas = el.querySelector('canvas'), g = canvas.getContext('2d'), v = drawFrame(g, s, onFrame, canvas.dataset.z);
+    const level = new Map(cells.filter(x => x.si === i).map(x => [x.cell.cell, x.level]));
+    let shown = 0, inRegion = 0;
+    // each cell outlined by its own segmentation on the frame shown; rings until that arrives
+    const labels = labelImage(s.csv, onFrame), colour = new Map();
+    const useStart = !(t === 'roi' && w === 'last');
+    if (d && d.status === 'ok') for (const c of d.cells) {
+      if (!tracked(c, f)) continue;
+      const p = t === 'roi' ? (w === 'first' ? c.at_start : c.at_end) : [c.x, c.y];
+      if (!p) continue;
+      shown++;
+      const on = level.has(c.cell); inRegion += on;
+      const lab = useStart ? c.label_start : c.label_end;
+      if (labels.ready && lab) colour.set(lab, on ? IN_RGB : OUT_RGB);
+      else if (on) ring(g, v, p, IN_ROI, 4, 1.6); else ring(g, v, p, OUT_ROI, 3, 1);
+    }
+    if (labels.ready) drawOutlines(g, s, v, labels, colour);
+    // the ROI outlines, the one on the frame shown solid
+    for (const ww of ['first', 'last']) if (roi[ww] && (t !== 'roi' || ww === w)) {
+      g.globalAlpha = t === 'roi' ? 1 : 0.5;
+      drawPoly(g, v, roi[ww], ROI_COLOR, true, t === 'roi' ? 'rgba(255,255,255,.06)' : null);
+      g.globalAlpha = 1;
+    }
+    const mine = cells.filter(x => x.si === i), counts = [];
+    for (const l of SEG_LABELS) {
+      if (!segs[l]) continue;
+      drawPoly(g, v, segs[l], SEG_COLORS[l], true);
+      const [x0, y0, x1, y1] = segmentBox(v, segs[l], mine);
+      g.setLineDash([5, 4]); g.strokeStyle = '#fff'; g.lineWidth = 1; g.strokeRect(x0, y0, x1 - x0, y1 - y0); g.setLineDash([]);
+      g.fillStyle = SEG_COLORS[l]; g.font = 'bold 18px system-ui'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(l, (x0 + x1) / 2, (y0 + y1) / 2);
+      counts.push(`${l}: ${mine.filter(x => inside(segs[l], x.cell.x, x.cell.y)).length}`);
+    }
+    const dr = drafts[draftKey(s, t, w)];
+    if (dr && dr.pts.length) drawPoly(g, v, dr.pts, t === 'roi' ? ROI_COLOR : SEG_COLORS[t], false);
+    el.querySelector('.cnt').textContent =
+      `${shown} cells pass the tracking filters on this view · ${inRegion} in the ROI` +
+      (counts.length ? ` · segment cells ${counts.join(', ')}` : '');
+  });
+  drawHist(cells);
+}
+const draftKey = (s, t, w) => t === 'roi' ? `roi|${keyOf(s)}|${w}` : `seg|${keyOf(s)}|${t}`;
+$('sketches').onclick = e => {
+  const el = e.target.closest('.sketch'); if (!el) return;
+  const s = state.samples[+el.dataset.i], k = keyOf(s);
+  if (e.target.dataset.t) { tool[k] = e.target.dataset.t; drawSketches(); return; }
+  if (e.target.dataset.w) { roiView[k] = e.target.dataset.w; drawSketches(); return; }
+  if (e.target.dataset.a === 'fit') { delete zooms[`sk|${el.dataset.i}`]; drawSketches(); return; }
+  const t = tool[k] || 'roi', w = roiView[k] || 'first', key = draftKey(s, t, w), dr = draft(key);
+  s.roi = s.roi || {first: null, last: null};
+  s.segments = s.segments || {};
+  // where a closed outline is kept: the ROI per frame, a segment per label
+  const get = () => t === 'roi' ? s.roi[w] : s.segments[t];
+  const put = pts => { if (t === 'roi') s.roi[w] = pts; else if (pts) s.segments[t] = pts; else delete s.segments[t]; };
+  if (e.target.tagName === 'CANVAS') {
+    if (get()) return;                           // clear (or undo) a closed outline to change it
+    if (dragged) return;                         // the end of a drag, not a point
+    dr.pts.push(toImage(view(s, e.target.dataset.z), ...clickPoint(e.target, e)).map(v => Math.round(v * 10) / 10));
+  } else if (e.target.dataset.a === 'close') {
+    if (dr.pts.length < 3) return;
+    put(dr.pts); delete drafts[key];
+    if (t !== 'roi') tool[k] = SEG_LABELS.find(l => !s.segments[l]) || t;     // on to the next segment
+  } else if (e.target.dataset.a === 'undo') {
+    if (get()) { dr.pts = get().slice(0, -1); put(null); } else dr.pts.pop();
+  } else if (e.target.dataset.a === 'clear') {
+    put(null); delete drafts[key];
+  } else return;
+  persist();
+  if (t === 'roi') drawCells(); else drawSketches();       // the ROI changes which cells are analysed
+};
+document.querySelectorAll('#boxFrom button').forEach(b => b.onclick = () => {
+  state.box_from = b.dataset.b; persist();
+  document.querySelectorAll('#boxFrom button').forEach(x => x.classList.toggle('on', x === b));
+  drawSketches();
+});
+
+// ── segment histograms, by the rules of ms2/cell_activity_segments.py ──
+// Python's round(): halves to the even neighbour, as the binning there does
+const roundEven = x => { const f = Math.floor(x), d = x - f; return d > 0.5 || (d === 0.5 && f % 2) ? f + 1 : f; };
+// numpy.array_split sizes: n split into k runs, the first n % k one longer
+const splitSizes = (n, k) => Array.from({length: k}, (_, i) => Math.floor(n / k) + (i < n % k ? 1 : 0));
+function gridBins(uv, n) {
+  const ids = uv.map(([u, v]) => {
+    const ix = Math.min(n - 1, Math.max(0, Math.floor((u + 1) / 2 * n))), iy = Math.min(n - 1, Math.max(0, Math.floor((v + 1) / 2 * n)));
+    return iy * n + ix;
+  });
+  const rects = [];
+  for (let k = 0; k < n * n; k++) {
+    const by = Math.floor(k / n), bx = k % n;
+    rects.push([bx, by, -1 + 2 * bx / n, -1 + 2 * (bx + 1) / n, -1 + 2 * by / n, -1 + 2 * (by + 1) / n]);
+  }
+  return {ids, rects};
+}
+// equal_count_bins: columns of equal count by u, each split into rows of equal count by v
+function equalCountBins(uv, target) {
+  const n = uv.length;
+  if (!n) return {ids: [], rects: [[0, 0, -1, 1, -1, 1]]};
+  const nBins = Math.max(1, roundEven(n / target));
+  const rowsPerCol = splitSizes(nBins, Math.max(1, roundEven(Math.sqrt(nBins))));
+  const ids = new Array(n).fill(0), rects = [];
+  const cuts = (idx, axis, shares) => {
+    const order = idx.slice().sort((a, b) => uv[a][axis] - uv[b][axis] || 0);
+    const total = shares.reduce((a, b) => a + b, 0);
+    let acc = 0;
+    const bounds = [0, ...shares.map(sh => (acc += sh, roundEven(acc / total * idx.length)))];
+    const runs = [];
+    for (let r = 0; r < shares.length; r++) if (bounds[r + 1] > bounds[r]) runs.push(order.slice(bounds[r], bounds[r + 1]));
+    const edges = [-1];
+    for (let r = 1; r < runs.length; r++) edges.push((uv[runs[r - 1][runs[r - 1].length - 1]][axis] + uv[runs[r][0]][axis]) / 2);
+    edges.push(1);
+    return {runs, edges};
+  };
+  const all = Array.from({length: n}, (_, i) => i), cols = cuts(all, 0, rowsPerCol);
+  cols.runs.forEach((col, c) => {
+    const rows = cuts(col, 1, new Array(rowsPerCol[c]).fill(1));
+    rows.runs.forEach((row, r) => {
+      for (const i of row) ids[i] = rects.length;
+      rects.push([c, r, cols.edges[c], cols.edges[c + 1], rows.edges[r], rows.edges[r + 1]]);
+    });
+  });
+  return {ids, rects};
+}
+// One sample's segment: its analysed cells inside the outline, at (u, v) on the box's square
+function segmentCells(si, label, cells) {
+  const s = state.samples[si], pts = (s.segments || {})[label];
+  if (!pts) return null;
+  const v = view(s), mine = cells.filter(x => x.si === si && inside(pts, x.cell.x, x.cell.y));
+  const [x0, y0, x1, y1] = segmentBox(v, pts, cells.filter(x => x.si === si));
+  return mine.map(x => {
+    const [px, py] = toCanvas(v, x.cell.x, x.cell.y);
+    // up is +1 although canvas y points down
+    return {...x, uv: [x1 > x0 ? 2 * (px - x0) / (x1 - x0) - 1 : 0, y1 > y0 ? -(2 * (py - y0) / (y1 - y0) - 1) : 0]};
+  });
+}
+// A bin's value: share firing, mean intensity per cell (above the floor), or share in a cluster;
+// over the whole window (j = null) or at window frame j.  NaN for a bin with nothing to measure.
+function binValue(members, metric, j, floor, cluster) {
+  if (metric === 'cluster') return members.length ? members.filter(x => x.level === cluster).length / members.length : NaN;
+  let num = 0, den = 0;
+  for (const x of members) {
+    const tr = j === null ? x.trace : [x.trace[j] ?? null];
+    if (metric === 'intensity' && j === null) {
+      if (x.desc.tracked) { num += x.desc.total; den++; }
+      continue;
+    }
+    for (const sig of tr) {
+      if (sig === null || sig === undefined) continue;
+      den++;
+      num += metric === 'firing' ? (sig > floor ? 1 : 0) : Math.max(sig - floor, 0);
+    }
+  }
+  return den ? num / den : NaN;
+}
+// every bin's rectangle filled with its value on a res x res raster, rows up from v = -1
+function paint(rects, values, res) {
+  const m = new Float64Array(res * res).fill(NaN), edge = w => Math.min(res, Math.max(0, Math.round((w + 1) / 2 * res)));
+  rects.forEach(([, , u0, u1, v0, v1], b) => {
+    if (!Number.isFinite(values[b])) return;
+    const ya = edge(v0), yb = Math.max(edge(v1), ya + 1), xa = edge(u0), xb = Math.max(edge(u1), xa + 1);
+    for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) m[y * res + x] = values[b];
+  });
+  return m;
+}
+function pearson(a, b) {
+  const xs = [], ys = [];
+  for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i]) && Number.isFinite(b[i])) { xs.push(a[i]); ys.push(b[i]); }
+  if (xs.length < 3) return {r: NaN, n: xs.length};
+  const mx = xs.reduce((p, q) => p + q, 0) / xs.length, my = ys.reduce((p, q) => p + q, 0) / ys.length;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < xs.length; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2; }
+  return {r: sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : NaN, n: xs.length};
+}
+let histMaps = [];          // what is drawn, for the hover readout
+function drawHist(cells) {
+  const h = state.hist, c = state.cluster;
+  // controls
+  $('hSeg').innerHTML = SEG_LABELS.map(l => `<button data-l="${l}" class="${l === h.seg ? 'on' : ''}">${l}</button>`).join('');
+  document.querySelectorAll('#hMetric button').forEach(b => b.classList.toggle('on', b.dataset.m === h.metric));
+  document.querySelectorAll('#hMode button').forEach(b => b.classList.toggle('on', b.dataset.b === h.mode));
+  $('hSize').max = h.mode === 'grid' ? 16 : 20; $('hSize').value = h.size;
+  $('hSizeVal').textContent = h.mode === 'grid' ? `${h.size} × ${h.size} bins` : `about ${h.size} cells per bin`;
+  const timed = h.metric !== 'cluster' && h.time >= 0;
+  // a cluster is a whole-window label: no time slider for it
+  $('hTimeRow').hidden = h.metric === 'cluster';
+  $('hTime').value = h.time;
+  $('hTimeVal').textContent = h.time < 0 ? 'whole window' : `${h.time * 10}% of each window`;
+  // one row of maps per value shown: the metric, or in cluster mode every cluster in its colour
+  const res = h.mode === 'grid' ? h.size : 100;
+  const rowsSpec = h.metric === 'cluster'
+    ? LEVEL_NAMES.map((name, l) => ({title: name, level: l, colour: x => ramp(x, CLUSTER_COLOURS[l]),
+                                     legend: `share of the bin's cells ${name}`}))
+    : [{title: null, colour: viridis, legend: {firing: 'share of the bin\'s cells firing',
+        intensity: 'mean intensity per cell, AU above the floor' + (timed ? '' : ' summed over the window')}[h.metric]}];
+  histMaps = [];
+  rowsSpec.forEach((row, ri) => {
+    const mine = [];
+    state.samples.forEach((s, si) => {
+      const members = segmentCells(si, h.seg, cells);
+      if (!members) return;
+      const {ids, rects} = h.mode === 'grid' ? gridBins(members.map(x => x.uv), h.size) : equalCountBins(members.map(x => x.uv), h.size);
+      const n = (s.t1 - s.t0) + 1, j = timed ? Math.floor(h.time / 10 * (n - 1) + 0.5) : null;
+      const byBin = rects.map(() => []);
+      members.forEach((x, i) => byBin[ids[i]].push(x));
+      const values = byBin.map(m => binValue(m, h.metric, j, c.floor, row.level));
+      mine.push({row: ri, name: `${s.name} · ${s.stage}`, si, rects, values, counts: byBin.map(m => m.length),
+                 raster: paint(rects, values, res), frame: j === null ? null : s.t0 + j, cells: members.length});
+    });
+    if (mine.length) {
+      const mean = new Float64Array(res * res).fill(NaN);
+      for (let p = 0; p < mean.length; p++) {
+        const vals = mine.map(m => m.raster[p]).filter(Number.isFinite);
+        if (vals.length) mean[p] = vals.reduce((a, b) => a + b, 0) / vals.length;
+      }
+      mine.push({row: ri, name: 'mean of samples', raster: mean, mean: true});
+    }
+    // shares run 0..1; intensity 0..the highest bin
+    row.vmax = h.metric === 'intensity' ? Math.max(1e-9, ...mine.flatMap(m => Array.from(m.raster).filter(Number.isFinite))) : 1;
+    histMaps.push(...mine);
+  });
+  if (!histMaps.length) {
+    $('hMaps').innerHTML = `<div class="empty">Outline segment ${esc(h.seg)} in a sample above to see its histogram.</div>`;
+    $('hCorr').innerHTML = '';
+    return;
+  }
+  $('hMaps').innerHTML = rowsSpec.map((row, ri) => `<div class="hrow">
+      <div class="scale">${row.title ? `<b style="color:rgb(${hexRgb(CLUSTER_COLOURS[row.level]).join(',')})">${esc(row.title)}</b>` : ''}
+        <span>0</span><canvas width="220" height="12" data-scale="${ri}"></canvas><span>${row.vmax.toFixed(h.metric === 'intensity' ? 0 : 2)}</span>
+        <span>${esc(row.legend)} · hatched: no cells</span></div>
+      <div class="maps">${histMaps.map((m, i) => m.row !== ri ? '' : `<figure><canvas width="220" height="220" data-h="${i}"></canvas>
+        <figcaption>${esc(m.name)}${m.mean ? '' : ` · ${m.cells} cells${m.frame !== null ? ` · frame ${m.frame}` : ''}`}</figcaption></figure>`).join('')}</div>
+    </div>`).join('');
+  rowsSpec.forEach((row, ri) => {
+    const sc = $('hMaps').querySelector(`canvas[data-scale="${ri}"]`).getContext('2d');
+    for (let x = 0; x < 220; x++) { const [r, g, b] = row.colour(x / 219); sc.fillStyle = `rgb(${r},${g},${b})`; sc.fillRect(x, 0, 1, 12); }
+  });
+  histMaps.forEach((m, i) => {
+    const row = rowsSpec[m.row];
+    const g = $('hMaps').querySelector(`canvas[data-h="${i}"]`).getContext('2d'), img = new ImageData(res, res);
+    for (let y = 0; y < res; y++) for (let x = 0; x < res; x++) {
+      const val = m.raster[y * res + x], o = 4 * ((res - 1 - y) * res + x);       // top row is v = +1
+      if (!Number.isFinite(val)) continue;            // left clear: the hatching shows through
+      const [r, gg, b] = row.colour(val / row.vmax);
+      img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = b; img.data[o + 3] = 255;
+    }
+    const off = document.createElement('canvas'); off.width = res; off.height = res; off.getContext('2d').putImageData(img, 0, 0);
+    g.fillStyle = hatch(g); g.fillRect(0, 0, 220, 220);
+    g.imageSmoothingEnabled = false; g.drawImage(off, 0, 0, 220, 220);
+    // the bins' edges: uneven ones per sample, the grid's on every map
+    g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 0.6;
+    if (h.mode === 'grid') for (let k = 1; k < h.size; k++) {
+      const p = k * 220 / h.size;
+      g.beginPath(); g.moveTo(p, 0); g.lineTo(p, 220); g.moveTo(0, p); g.lineTo(220, p); g.stroke();
+    } else if (!m.mean) {
+      for (const [, , u0, u1, v0, v1] of m.rects) g.strokeRect((u0 + 1) * 110, (1 - v1) * 110, (u1 - u0) * 110, (v1 - v0) * 110);
+    }
+  });
+  // pairwise r between samples' maps, over the pixels both hold cells in; a column per row
+  const per = rowsSpec.map((_, ri) => histMaps.filter(m => m.row === ri && !m.mean)), first = per[0], lines = [];
+  for (let a = 0; a < first.length; a++) for (let b = a + 1; b < first.length; b++) {
+    const rs = per.map(list => pearson(list[a].raster, list[b].raster));
+    lines.push(`<tr><td>${esc(first[a].name)}</td><td>${esc(first[b].name)}</td><td>${rs[0].n}</td>` +
+      rs.map(({r}) => `<td>${Number.isFinite(r) ? r.toFixed(2) : '—'}</td>`).join('') + '</tr>');
+  }
+  $('hCorr').innerHTML = lines.length ? `<tr><th>sample</th><th>sample</th><th>${h.mode === 'grid' ? 'bins' : 'raster pixels'} compared</th>` +
+    rowsSpec.map(row => `<th>r${row.title ? ' · ' + esc(row.title) : ''}</th>`).join('') + '</tr>' + lines.join('') : '';
+}
+// Bins with no cells are hatched, so no colour scale can mistake them for a value.
+function hatch(g) {
+  const t = document.createElement('canvas'); t.width = t.height = 8;
+  const h = t.getContext('2d');
+  h.fillStyle = '#101010'; h.fillRect(0, 0, 8, 8);
+  h.strokeStyle = '#4a4a4a'; h.lineWidth = 1.2; h.beginPath(); h.moveTo(0, 8); h.lineTo(8, 0); h.stroke();
+  return g.createPattern(t, 'repeat');
+}
+// cluster rows: from near-black at 0 to the cluster's colour at 1
+const CLUSTER_COLOURS = ['#bdbdbd', '#bc8f6f', '#4fc3f7', '#66bb6a', '#ef5350'];
+const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function ramp(x, hex) {
+  x = Math.max(0, Math.min(1, x));
+  const lo = [24, 24, 28], hi = hexRgb(hex);
+  return lo.map((v, i) => v + (hi[i] - v) * x);
+}
+$('hSeg').onclick = e => { if (e.target.dataset.l) { state.hist.seg = e.target.dataset.l; persist(); drawHist(analysed()); } };
+$('hMetric').onclick = e => { if (e.target.dataset.m) { state.hist.metric = e.target.dataset.m; persist(); drawHist(analysed()); } };
+$('hMode').onclick = e => {
+  if (!e.target.dataset.b) return;
+  state.hist.mode = e.target.dataset.b; state.hist.size = state.hist.mode === 'grid' ? 4 : 4; persist(); drawHist(analysed());
+};
+$('hSize').oninput = () => { state.hist.size = +$('hSize').value; persist(); drawHist(analysed()); };
+$('hTime').oninput = () => { state.hist.time = +$('hTime').value; persist(); drawHist(analysed()); };
+$('hMaps').onmousemove = e => {
+  const cv = e.target.closest('canvas[data-h]'); if (!cv) { $('hover').textContent = ''; return; }
+  // measured inside the border
+  const m = histMaps[+cv.dataset.h], r = cv.getBoundingClientRect();
+  const u = (e.clientX - r.left - cv.clientLeft) / cv.clientWidth * 2 - 1, v = 1 - (e.clientY - r.top - cv.clientTop) / cv.clientHeight * 2;
+  const res = Math.round(Math.sqrt(m.raster.length));
+  const px = Math.min(res - 1, Math.floor((u + 1) / 2 * res)), py = Math.min(res - 1, Math.floor((v + 1) / 2 * res));
+  const val = m.raster[py * res + px], fmt = x => Number.isFinite(x) ? (state.hist.metric === 'intensity' ? x.toFixed(1) : x.toFixed(2)) : 'no cells';
+  let extra = '';
+  if (!m.mean) {
+    const b = m.rects.findIndex(([, , u0, u1, v0, v1]) => u >= u0 && u <= u1 && v >= v0 && v <= v1);
+    if (b >= 0) extra = ` · ${m.counts[b]} cells in this bin`;
+  }
+  const what = state.hist.metric === 'cluster' ? ` · ${LEVEL_NAMES[m.row]}` : '';
+  $('hover').textContent = `${m.name}${what} · (u ${u.toFixed(2)}, v ${v.toFixed(2)}) · ${fmt(val)}${extra}`;
+};
+$('hMaps').onmouseleave = () => { $('hover').textContent = ''; };
+
+// ── level composition and aligned spatial map, drawn as the export draws them ──
+// ms2/cell_activity_compare.py's LEVEL_PLOT_COLORS: neutral greys below active, a blue ramp above
+const LEVEL_FIG = ['#d3d1cb', '#9a988f', '#86b6ef', '#2a78d6', '#104281'];
+const turnText = o => `${o.flip ? 'mirrored, ' : ''}rotated ${Math.round(o.rotate)}°`;
+function drawLevelComposition(cells) {
+  const cv = $('levelComp'), g = cv.getContext('2d'), n = state.samples.length;
+  const left = 60, top = 52, plotH = 280, barW = 46, gap = 34, legendW = 170;
+  cv.width = left + n * (barW + gap) + legendW; cv.height = top + plotH + 90;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = '#0b0b0b'; g.font = '13px system-ui'; g.textAlign = 'left';
+  g.fillText(`${state.mode === 'single' ? (state.samples[0] || {}).name || '' : 'Stage ' + state.stage} - Level composition`, left, 20);
+  // axis and grid
+  g.strokeStyle = '#e6e5e1'; g.fillStyle = '#52514e'; g.font = '11px system-ui'; g.textAlign = 'right';
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const y = top + plotH * (1 - f);
+    g.beginPath(); g.moveTo(left, y); g.lineTo(left + n * (barW + gap), y); g.stroke();
+    g.fillText(f.toFixed(2), left - 6, y + 4);
+  }
+  g.save(); g.translate(16, top + plotH / 2); g.rotate(-Math.PI / 2); g.textAlign = 'center';
+  g.fillText('fraction of cells', 0, 0); g.restore();
+  state.samples.forEach((s, si) => {
+    const mine = cells.filter(x => x.si === si), x0 = left + gap / 2 + si * (barW + gap);
+    let y = top + plotH;
+    for (let l = 0; l < LEVEL_FIG.length; l++) {
+      const h = mine.length ? plotH * mine.filter(x => x.level === l).length / mine.length : 0;
+      g.fillStyle = LEVEL_FIG[l]; g.fillRect(x0, y - h, barW, h);
+      if (h > 0) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.strokeRect(x0, y - h, barW, h); }
+      y -= h;
+    }
+    g.fillStyle = '#52514e'; g.textAlign = 'center'; g.font = '11px system-ui';
+    g.fillText(`n=${mine.length}`, x0 + barW / 2, top - 6);
+    g.save(); g.translate(x0 + barW / 2, top + plotH + 10); g.rotate(-Math.PI / 6); g.textAlign = 'right';
+    g.fillStyle = '#0b0b0b'; g.fillText(state.mode === 'single' ? `${s.name} · ${s.stage}` : s.name, 0, 0); g.restore();
+  });
+  // legend: every level, silent first
+  const lx = left + n * (barW + gap) + 16;
+  LEVEL_NAMES.forEach((name, l) => {
+    const ly = top + 8 + (LEVEL_NAMES.length - 1 - l) * 20;
+    g.fillStyle = LEVEL_FIG[l]; g.fillRect(lx, ly - 9, 12, 12);
+    g.fillStyle = '#0b0b0b'; g.textAlign = 'left'; g.font = '12px system-ui'; g.fillText(name, lx + 18, ly + 1);
+  });
+}
+// the spatial map's groups: silent (short bursts included), weakly, moderate, high
+const MAP_LEVELS = [0, 2, 3, 4];
+const mapLevel = l => l === 1 ? 0 : l;
+
+function drawSpatialMap(cells) {
+  const cv = $('spatialMap'), g = cv.getContext('2d'), panel = 300, head = 72;
+  const groups = state.samples.map((s, si) => {
+    const v = view(s), mine = cells.filter(x => x.si === si);
+    const pts = mine.map(x => toCanvas(v, x.cell.x, x.cell.y));
+    const cx = pts.reduce((t, p) => t + p[0], 0) / Math.max(pts.length, 1), cy = pts.reduce((t, p) => t + p[1], 0) / Math.max(pts.length, 1);
+    return {s, mine, pts: pts.map(([x, y]) => [x - cx, y - cy])};
+  });
+  // one scale for every panel, so the embryos compare in size
+  const half = Math.max(1, ...groups.flatMap(gr => gr.pts.map(([x, y]) => Math.max(Math.abs(x), Math.abs(y))))) * 1.05;
+  cv.width = Math.max(1, groups.length) * panel; cv.height = panel + head + 40;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = '#0b0b0b'; g.font = '13px system-ui'; g.textAlign = 'left';
+  g.fillText(`${state.mode === 'single' ? (state.samples[0] || {}).name || '' : 'Stage ' + state.stage} - Aligned spatial map`, 10, 18);
+  groups.forEach((gr, i) => {
+    const ox = i * panel + panel / 2, oy = head + panel / 2, k = (panel / 2 - 10) / half;
+    g.textAlign = 'center'; g.fillStyle = '#0b0b0b'; g.font = '12px system-ui';
+    const active = gr.mine.filter(x => x.level >= 2).length;
+    g.fillText(state.mode === 'single' ? `${gr.s.name} · ${gr.s.stage}` : gr.s.name, ox, head - 18);
+    g.fillStyle = '#52514e'; g.font = '11px system-ui';
+    g.fillText(`active ${active}/${gr.mine.length} · ${turnText(gr.s.orientation)}`, ox, head - 4);
+    // highest levels on top, as the export stacks them; short bursts are not in the active
+    // heatmap, so they show as silent
+    gr.mine.map((x, j) => [mapLevel(x.level), gr.pts[j]]).sort((a, b) => a[0] - b[0]).forEach(([l, [px, py]]) => {
+      g.fillStyle = LEVEL_FIG[l]; g.beginPath();
+      g.arc(ox + px * k, oy + py * k, l >= 2 ? 3.2 : 2.4, 0, 2 * Math.PI); g.fill();
+    });
+    g.strokeStyle = '#0b0b0b'; g.lineWidth = 1.2; g.beginPath();
+    g.moveTo(ox - 7, oy); g.lineTo(ox + 7, oy); g.moveTo(ox, oy - 7); g.lineTo(ox, oy + 7); g.stroke();
+  });
+  // legend
+  let lx = 10;
+  g.font = '11px system-ui'; g.textAlign = 'left';
+  MAP_LEVELS.forEach(l => {
+    const name = LEVEL_NAMES[l];
+    g.fillStyle = LEVEL_FIG[l]; g.beginPath(); g.arc(lx + 5, cv.height - 18, 4, 0, 2 * Math.PI); g.fill();
+    g.fillStyle = '#0b0b0b'; g.fillText(name, lx + 13, cv.height - 14); lx += g.measureText(name).width + 34;
+  });
+}
+
+// ── every figure downloads as a PNG ──
+function downloadCanvas(canvas, name) {
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = name.replace(/[^A-Za-z0-9._-]+/g, '_') + '.png';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+// the segment histograms as one picture: a row per value shown, its maps side by side, titled
+function histogramsImage() {
+  const rows = [...$('hMaps').querySelectorAll('.hrow')];
+  const W = Math.max(...rows.map(r => r.querySelectorAll('canvas[data-h]').length)) * 240 + 20, rowH = 290;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = 40 + rows.length * rowH;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = '#0b0b0b'; g.font = '14px system-ui';
+  g.fillText(`Segment ${state.hist.seg} · ${$('hSizeVal').textContent}`, 10, 24);
+  rows.forEach((r, i) => {
+    const y = 40 + i * rowH, title = r.querySelector('.scale').textContent.replace(/\s+/g, ' ').trim();
+    g.fillStyle = '#0b0b0b'; g.font = '12px system-ui'; g.fillText(title, 10, y + 14);
+    r.querySelectorAll('figure').forEach((f, j) => {
+      g.drawImage(f.querySelector('canvas'), 10 + j * 240, y + 24, 220, 220);
+      g.fillStyle = '#52514e'; g.font = '11px system-ui'; g.fillText(f.querySelector('figcaption').textContent, 10 + j * 240, y + 262);
+    });
+  });
+  return cv;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('button.dl');
+  if (!b) return;
+  const tag = state.mode === 'single' ? ((state.samples[0] || {}).name || 'analysis') : `stage${state.stage}`;
+  const kind = b.dataset.dl;
+  if (kind === 'heatmap') downloadCanvas($('heat'), `${tag}_heatmap_active_pooled`);
+  else if (kind === 'levels') downloadCanvas($('levelComp'), `${tag}_level_composition`);
+  else if (kind === 'spatial') downloadCanvas($('spatialMap'), `${tag}_spatial_map_aligned`);
+  else if (kind === 'histograms') downloadCanvas(histogramsImage(), `${tag}_segment_${state.hist.seg}_${state.hist.metric}`);
+  else if (kind === 'panel') {
+    const el = b.closest('.sketch'), s = state.samples[+el.dataset.i];
+    downloadCanvas(el.querySelector('canvas'), `${s.name}_stage${s.stage}_region_and_segments`);
+  }
+});
+
+// ── save, load and export ──
+// The page's whole state, outlines included; infinity (no volume-CV ceiling) is saved as null.
+const snapshot = () => JSON.parse(JSON.stringify(state));
+async function post(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (r.status === 401) { location.href = '/login'; throw new Error('logged out'); }
+  const d = await r.json().catch(() => ({error: r.statusText}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+const say = (id, html, cls = '') => { $(id).innerHTML = `<span class="${cls}">${html}</span>`; };
+async function listSaved() {
+  try {
+    const rows = await api('/api/analysis/saved');
+    $('savedList').innerHTML = rows.length ? '<tr><th>saved analysis</th><th>saved</th><th>samples</th><th></th></tr>' + rows.map(r =>
+      `<tr><td>${esc(r.name)}</td><td>${esc((r.saved || '').replace('T', ' '))}</td>
+       <td style="text-align:left">${esc(r.samples.join(', '))}</td>
+       <td><button data-load="${esc(r.name)}">load</button> <button data-show="${esc(r.name)}">results</button>
+           <a href="${zipUrl(r.name)}">zip</a></td></tr>`).join('') : '';
+  } catch (e) { say('saveMsg', esc(e.message), 'bad'); }
+}
+let exportTimer = null, downloadWhenDone = null;
+const zipUrl = name => '/api/analysis/zip?name=' + enc(name);
+$('exportBtn').onclick = async () => {
+  const name = $('saveName').value.trim();
+  if (!name) return say('saveMsg', 'give the results a name first', 'warn');
+  try { await post('/api/analysis/export', {name, analysis: snapshot()});
+        downloadWhenDone = name; $('zipLink').hidden = true;
+        say('saveMsg', 'making the results; the zip downloads when they are ready', 'busy'); listSaved(); watchExport(name); }
+  catch (e) { say('saveMsg', esc(e.message), 'bad'); }
+};
+async function watchExport(name) {
+  clearTimeout(exportTimer);
+  try {
+    const d = await api('/api/analysis/export?name=' + enc(name));
+    $('exportBox').hidden = false;
+    $('exportTitle').textContent = name;
+    // exported outside the page (no job record) still counts when its files are there
+    const state_ = d.state === 'none' && d.files.length ? 'done' : d.state;
+    const label = {running: 'exporting', done: 'exported', failed: 'export failed', none: 'not exported yet', stopped: 'stopped'}[state_] || state_;
+    $('exportState').className = 'chip ' + ({running: 'busy', done: 'ok', failed: 'bad'}[state_] || '');
+    $('exportState').textContent = label;
+    $('exportLog').textContent = d.log || '';
+    $('exportLog').scrollTop = $('exportLog').scrollHeight;
+    $('exportFiles').innerHTML = d.files.map(f => /\.(png|gif)$/i.test(f.name)
+      ? `<a href="/file?path=${enc(f.path)}" target="_blank"><img loading="lazy" src="/file?path=${enc(f.path)}&v=${Date.now()}">${esc(f.name)}</a>`
+      : `<a href="/file?path=${enc(f.path)}" target="_blank" download>⬇ ${esc(f.name)}</a>`).join('');
+    const ready = state_ === 'done' && d.files.some(f => f.name === 'cells.csv');
+    $('zipLink').hidden = !ready; $('zipLink').href = zipUrl(name);
+    if (d.state === 'running') exportTimer = setTimeout(() => watchExport(name), 3000);
+    else if (ready) {
+      say('saveMsg', '✓ results ready', 'ok');
+      if (downloadWhenDone === name) { downloadWhenDone = null; location.href = zipUrl(name); }
+    } else if (d.state === 'failed') say('saveMsg', 'making the results failed: see the log', 'bad');
+  } catch (e) { say('saveMsg', esc(e.message), 'bad'); }
+}
+$('savedList').onclick = async e => {
+  const load = e.target.dataset.load, show = e.target.dataset.show;
+  if (show) { $('saveName').value = show; watchExport(show); return; }
+  if (!load) return;
+  try {
+    const a = await api('/api/analysis/load?name=' + enc(load));
+    state = {...state, ...a, filters: {...a.filters, vol_cv: a.filters.vol_cv ?? Infinity}};
+    state.samples.forEach(s => s.orientation = s.orientation || {flip: false, rotate: 0});
+    $('saveName').value = load;
+    $('stage').value = state.stage;
+    $('pres').value = state.filters.presence;
+    $('cv').value = Number.isFinite(state.filters.vol_cv) ? state.filters.vol_cv : 1;
+    document.querySelectorAll('#boxFrom button').forEach(x => x.classList.toggle('on', x.dataset.b === (state.box_from || 'cells')));
+    fittedFor = null;
+    setMode(state.mode);              // redraws everything from the loaded state
+    say('saveMsg', `loaded ${esc(load)}`, 'ok');
+    watchExport(load);
+  } catch (err) { say('saveMsg', esc(err.message), 'bad'); }
+};
+
+// ── activity clustering, by the rules of ms2/cell_activity.py ──
+const LEVEL_NAMES = ['silent', 'short burst / noise', 'weakly active', 'moderate active', 'high active'];
+const SAMPLE_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const sampleColor = i => SAMPLE_COLORS[i] || '#8c8a83';
+
+// activity_descriptors: signal above the floor, untracked frames counting as nothing
+function describe(trace, floor) {
+  let total = 0, peak = 0, tracked = 0, frames = 0;
+  for (const v of trace) {
+    if (v === null) continue;
+    tracked++;
+    const a = v > floor ? v - floor : 0;
+    total += a; if (a > peak) peak = a; if (a > 0) frames++;
+  }
+  return {total, peak, frames, tracked, rate: tracked ? total / tracked : 0};
+}
+function levelOf(d, c) {
+  if (d.peak <= 0) return 0;
+  if (d.peak < c.noise_peak) return 1;
+  return 2 + (c.cuts[0] !== null && d.rate >= c.cuts[0]) + (c.cuts[1] !== null && d.rate >= c.cuts[1]);
+}
+// Every kept cell of every sample, described and levelled with the current settings.
+function analysed() {
+  const c = state.cluster, f = state.filters, out = [];
+  state.samples.forEach((s, si) => {
+    const d = data[keyOf(s)];
+    if (!d || d.status !== 'ok') return;
+    d.cells.forEach((cell, j) => {
+      if (!kept(s, cell, f)) return;
+      const desc = describe(d.traces[j], c.floor);
+      out.push({si, cell, trace: d.traces[j], desc, level: levelOf(desc, c)});
+    });
+  });
+  return out;
+}
+
+// The cut sliders run on log(1 + rate), as the ladder is fitted, up to the highest rate.
+let rateMax = 1;
+const toRate = v => Math.expm1(v / 1000 * Math.log1p(rateMax));
+const toSlider = r => r === null ? 0 : Math.round(Math.log1p(r) / Math.log1p(rateMax) * 1000);
+let autoTimer = null, autoSeq = 0, fittedFor = null;
+// what the automatic cuts depend on: refit only when one of these changes
+const fitInputs = () => JSON.stringify([state.samples.map(keyOf), state.filters, state.cluster.floor,
+  state.cluster.noise_peak, state.samples.map(s => (data[keyOf(s)] || {}).status)]);
+function clusterChanged() {
+  const c = state.cluster, cells = analysed();
+  rateMax = Math.max(1, ...cells.filter(x => x.desc.peak >= c.noise_peak).map(x => x.desc.rate));
+  $('floor').value = c.floor; $('floorVal').textContent = c.floor + ' AU';
+  $('npeak').value = c.noise_peak; $('peakVal').textContent = c.noise_peak + ' AU';
+  c.cuts.forEach((cut, i) => {
+    $('cut' + i).value = toSlider(cut);
+    $('cut' + i + 'Val').textContent = cut === null ? '—' : cut.toFixed(2);
+  });
+  $('cutMsg').textContent = c.auto ? 'cuts placed automatically (KMeans)' : 'cuts set by hand';
+  drawLevels(cells);
+  drawHeatmap(cells);
+  drawLevelComposition(cells);
+  drawSpatialMap(cells);
+  drawSketches(cells);
+  if (c.auto && fitInputs() !== fittedFor) {     // refit once the sliders settle
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => fitCuts(cells), 300);
+  }
+}
+async function fitCuts(cells) {
+  const c = state.cluster, seq = ++autoSeq;
+  if (!cells.length) return;
+  try {
+    const r = await fetch('/api/analysis/ladder', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rate: cells.map(x => x.desc.rate), peak: cells.map(x => x.desc.peak), noise_peak: c.noise_peak})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    if (seq !== autoSeq || !c.auto) return;          // a newer fit or a hand-set cut won
+    fittedFor = fitInputs();
+    c.cuts = d.cuts; persist();
+    clusterChanged();
+  } catch (e) { $('cutMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+$('floor').oninput = () => { state.cluster.floor = +$('floor').value; persist(); clusterChanged(); };
+$('npeak').oninput = () => { state.cluster.noise_peak = +$('npeak').value; persist(); clusterChanged(); };
+for (const i of [0, 1]) $('cut' + i).oninput = () => {
+  const c = state.cluster;
+  c.auto = false;
+  c.cuts[i] = toRate(+$('cut' + i).value);
+  // the cuts keep their order: weakly below moderate below high
+  if (i === 0 && c.cuts[1] !== null && c.cuts[0] > c.cuts[1]) c.cuts[0] = c.cuts[1];
+  if (i === 1 && c.cuts[0] !== null && c.cuts[1] < c.cuts[0]) c.cuts[1] = c.cuts[0];
+  persist(); clusterChanged();
+};
+$('autoCuts').onclick = () => { state.cluster.auto = true; fittedFor = null; persist(); clusterChanged(); };
+
+function drawLevels(cells) {
+  const rows = state.samples.map((s, si) => {
+    const mine = cells.filter(x => x.si === si), n = mine.length;
+    const counts = LEVEL_NAMES.map((_, l) => mine.filter(x => x.level === l).length);
+    const active = counts[2] + counts[3] + counts[4];
+    return `<tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${sampleColor(si)};margin-right:6px"></i>${esc(s.name)} · ${esc(s.stage)}</td><td>${n}</td>` +
+      counts.map(k => `<td>${k}</td>`).join('') + `<td>${n ? Math.round(100 * active / n) : 0}%</td></tr>`;
+  }).join('');
+  $('levelTable').innerHTML = `<tr><th>sample</th><th>cells</th>${LEVEL_NAMES.map(l => `<th>${l}</th>`).join('')}<th>active</th></tr>` + rows;
+  $('sampleLegend').innerHTML = state.samples.map((s, si) => `<span><i style="background:${sampleColor(si)}"></i>${esc(s.name)} · ${esc(s.stage)}</span>`).join('');
+}
+
+// viridis, sampled at 9 stops and interpolated
+const VIRIDIS = [[68,1,84],[71,44,122],[59,81,139],[44,113,142],[33,144,141],[39,173,129],[92,200,99],[170,220,50],[253,231,37]];
+function viridis(x) {
+  x = Math.max(0, Math.min(1, x)) * (VIRIDIS.length - 1);
+  const i = Math.min(Math.floor(x), VIRIDIS.length - 2), f = x - i, a = VIRIDIS[i], b = VIRIDIS[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+// heatmap zoom: every frame column and cell row drawn this many times larger; the box scrolls
+let heatZoom = 1;
+$('heatIn').onclick = () => { heatZoom = Math.min(16, heatZoom * 2); drawHeatmap(analysed()); };
+$('heatOut').onclick = () => { heatZoom = Math.max(1, heatZoom / 2); drawHeatmap(analysed()); };
+$('heatFit').onclick = () => { heatZoom = 1; drawHeatmap(analysed()); };
+function drawHeatmap(cells) {
+  const c = state.cluster, canvas = $('heat'), g = canvas.getContext('2d');
+  const rows = cells.filter(x => x.level > 0)
+    .sort((a, b) => b.level - a.level || a.si - b.si || b.desc.rate - a.desc.rate);
+  if (!rows.length) { canvas.width = 600; canvas.height = 30; g.fillStyle = '#888'; g.font = '13px system-ui';
+                      g.fillText('No cell above silent with these settings.', 8, 20); return; }
+  const width = Math.max(...rows.map(x => x.trace.length));
+  let vmax = c.floor + 1;
+  for (const x of rows) for (const v of x.trace) if (v !== null && v > vmax) vmax = v;
+  const lo = Math.log(Math.max(c.floor, 1)), span = Math.log(vmax) - lo || 1;
+  // one pixel per cell and frame, then scaled up without smoothing
+  const img = new ImageData(width, rows.length);
+  rows.forEach((x, r) => {
+    for (let j = 0; j < width; j++) {
+      const v = j < x.trace.length ? x.trace[j] : null, o = 4 * (r * width + j);
+      const rgb = v === null ? [52, 52, 52] : viridis((Math.log(Math.max(v, c.floor, 1)) - lo) / span);
+      img.data[o] = rgb[0]; img.data[o + 1] = rgb[1]; img.data[o + 2] = rgb[2]; img.data[o + 3] = 255;
+    }
+  });
+  const off = document.createElement('canvas'); off.width = width; off.height = rows.length;
+  off.getContext('2d').putImageData(img, 0, 0);
+  const strip = 14, colW = Math.max(4, Math.floor(900 / width)) * heatZoom,
+        rowH = Math.max(0.6, Math.min(4, 760 / rows.length)) * heatZoom;
+  $('heatZoomVal').textContent = heatZoom === 1 ? '' : `× ${heatZoom}`;
+  const H = Math.ceil(rows.length * rowH), labelW = 150;
+  canvas.width = strip + 4 + width * colW + labelW; canvas.height = H + 38;
+  g.fillStyle = '#0c0c0c'; g.fillRect(0, 0, canvas.width, canvas.height);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(off, strip + 4, 0, width * colW, H);
+  rows.forEach((x, r) => { g.fillStyle = sampleColor(x.si); g.fillRect(0, r * rowH, strip, Math.ceil(rowH)); });
+  // level boundaries and labels
+  g.font = '12px system-ui'; g.textBaseline = 'middle';
+  let start = 0;
+  for (let r = 1; r <= rows.length; r++) {
+    if (r < rows.length && rows[r].level === rows[start].level) continue;
+    if (start > 0) { g.fillStyle = '#e53935'; g.fillRect(0, start * rowH - 1, strip + 4 + width * colW, 2); }
+    g.fillStyle = '#ddd';
+    g.fillText(`${LEVEL_NAMES[rows[start].level]} · ${r - start}`, strip + 10 + width * colW, (start + r) / 2 * rowH);
+    start = r;
+  }
+  g.fillStyle = '#888'; g.textBaseline = 'alphabetic';
+  for (let j = 0; j < width; j += Math.max(1, Math.round(width / 10)))
+    g.fillText(String(j), strip + 4 + j * colW, H + 16);
+  g.fillText('frames from the window start', strip + 4, H + 33);
+}
+
+(async () => {
+  try {
+    const c = await api('/api/config');
+    if (c.lab) $('who').textContent = 'logged in as ' + c.user;
+    $('root').value = c.out_root || '';
+  } catch (e) {}
+  state.samples.forEach(s => s.orientation = s.orientation || {flip: false, rotate: 0});
+  // outlines are never brought back from an earlier session: draw them, or load them from a file
+  state.samples.forEach(s => { delete s.roi; delete s.segments; });
+  state.hist = {seg: '2', metric: 'firing', cluster: 4, mode: 'grid', size: 4, time: -1, ...(state.hist || {})};
+  document.querySelectorAll('#boxFrom button').forEach(x => x.classList.toggle('on', x.dataset.b === (state.box_from || 'cells')));
+  $('pres').value = state.filters.presence;
+  $('cv').value = Number.isFinite(state.filters.vol_cv) ? state.filters.vol_cv : 1;
+  if (!Number.isFinite(state.filters.vol_cv)) state.filters.vol_cv = Infinity;
+  $('stage').value = state.stage;
+  setMode(state.mode);
+  scan();
+  listSaved();
+})();
+</script>
+</body>
+</html>
