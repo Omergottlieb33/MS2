@@ -76,6 +76,76 @@ look changes.
 Not handled: there is no GPU queue, so two runs on one GPU can run out of memory (the GPU
 list shows free memory). Uploads and runs are never deleted automatically.
 
+### The analysis page on its own
+
+`--analysis-only FOLDERS_FILE` serves just the Analysis page: no pipeline, no file browser.
+It asks only for the password. It shows the results under the folders listed in
+`FOLDERS_FILE`, one per line, with `#` for comments. The file is read on every request, so
+adding or removing a folder takes effect at once. Everyone shares the analyses saved in
+`--out-root`. As with lab mode, the password travels as plain http: lab network and VPN only.
+
+The page runs from its own checkout, which follows `main`, so pushing a change to the
+analysis code updates it within five minutes. Never run it from your working copy. Set it up
+once:
+
+```bash
+git clone -b main git@github.com:Omergottlieb33/MS2.git ~/ms2_analysis_page
+echo /zjbd/zd1/shechtmanlab/omer/MS2/outputs > ~/ms2_analysis_folders.txt
+mkdir -p ~/ms2_analysis_saves
+```
+
+The clone must fetch without a prompt, so use a deploy key or an ssh key with no passphrase.
+Save these three files in `~/.config/systemd/user/`. `WorkingDirectory` makes Python import
+`ms2` from the checkout, whatever the environment has installed.
+
+`ms2-analysis.service`:
+
+```ini
+[Unit]
+Description=MS2 analysis page
+
+[Service]
+WorkingDirectory=%h/ms2_analysis_page
+ExecStart=/zjbd/zd1/shechtmanlab/conda_envs/ms2/bin/python -m ms2.app.server --host 0.0.0.0 --port 8780 --analysis-only %h/ms2_analysis_folders.txt --password-file %h/.ms2_password --out-root %h/ms2_analysis_saves
+Restart=on-failure
+KillMode=process
+
+[Install]
+WantedBy=default.target
+```
+
+`ms2-analysis-update.service`:
+
+```ini
+[Unit]
+Description=Bring the MS2 analysis page up to date with main
+
+[Service]
+Type=oneshot
+ExecStart=%h/ms2_analysis_page/launchers/update_analysis_page.sh main
+```
+
+`ms2-analysis-update.timer`:
+
+```ini
+[Unit]
+Description=Check for MS2 analysis page updates every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+Then `systemctl --user enable --now ms2-analysis ms2-analysis-update.timer`. Each update
+check fetches `main`. If `main` has new commits, the script fast-forwards the checkout and
+restarts the page. `journalctl --user -u ms2-analysis-update` shows each update, and any
+failure: the script never overwrites local
+edits or follows a rewritten branch, so it stops instead. A new Python dependency is not
+installed by the update. Install it into the environment yourself.
+
 ### What a run does
 
 `ms2 run` (`ms2/pipeline.py`) takes one recording through six steps, each into

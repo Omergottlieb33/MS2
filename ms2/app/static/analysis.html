@@ -110,7 +110,7 @@
 <body>
 <header>
   <h1>MS2 analysis</h1>
-  <a href="/">← pipeline</a>
+  <a href="/" id="toPipeline">← pipeline</a>
   <span class="hint" id="who"></span>
 </header>
 
@@ -1420,7 +1420,9 @@ function drawHeatmap(cells) {
   try {
     const c = await api('/api/config');
     if (c.lab) $('who').textContent = 'logged in as ' + c.user;
-    $('root').value = c.out_root || '';
+    if (c.analysis_only) $('toPipeline').remove();
+    // analysis-only: out_root holds the saved analyses; empty scans every listed folder
+    $('root').value = c.analysis_only ? '' : c.out_root || '';
   } catch (e) {}
   state.samples.forEach(s => s.orientation = s.orientation || {flip: false, rotate: 0});
   // outlines are never brought back from an earlier session: draw them, or load them from a file

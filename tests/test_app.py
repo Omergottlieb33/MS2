@@ -251,6 +251,68 @@ def test_lab_server():
            'for their owner only, logout')
 
 
+def test_analysis_only_server():
+    """--analysis-only: the password alone logs in, only the Analysis page is served, and the
+    folders it may read come from a file read again on every request."""
+    with tempfile.TemporaryDirectory() as root:
+        a, b, saves = (os.path.join(root, n) for n in ('a', 'b', 'saves'))
+        for d in (a, b, saves):
+            os.makedirs(d)
+        for d in (a, b):
+            with open(os.path.join(d, 'x.txt'), 'w') as f:
+                f.write(d)
+        listed = os.path.join(root, 'folders.txt')
+        with open(listed, 'w') as f:
+            f.write(f'# shared results\n{a}\n')
+        Handler.app = App([root], saves, password='pw', roots_file=listed)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_address[1]}'
+
+        def request(path, cookie=None, method='GET', data=None):
+            req = urllib.request.Request(base + path, data=data, method=method)
+            if cookie:
+                req.add_header('Cookie', cookie)
+            return urllib.request.urlopen(req)
+
+        def refused(code, path, cookie=None, method='GET', data=None):
+            try:
+                request(path, cookie, method, data)
+            except urllib.error.HTTPError as e:
+                assert e.code == code, (path, e.code)
+            else:
+                raise AssertionError(f'{path} not refused')
+        try:
+            with request('/api/login') as r:
+                assert json.loads(r.read()) == {'ask_name': False}
+            with request('/') as r:                 # to the analysis page, then to the form
+                assert r.url.endswith('/login')
+            refused(403, '/api/login', None, 'POST', json.dumps({'password': 'no'}).encode())
+            with request('/api/login', method='POST', data=json.dumps({'password': 'pw'}).encode()) as r:
+                cookie = r.headers['Set-Cookie'].split(';')[0]
+            with request('/', cookie) as r:
+                assert r.url.endswith('/analysis') and b'MS2 analysis' in r.read()
+            for path in ('/api/runs?root=' + a, '/api/ls?path=' + a, '/view', '/roi'):
+                refused(404, path, cookie)
+            refused(404, '/api/run/start', cookie, 'POST', b'{}')
+            cfg = json.loads(request('/api/config', cookie).read())
+            assert cfg['analysis_only'] and cfg['data_roots'] == [os.path.realpath(a)], cfg
+            assert request('/file?path=' + os.path.join(a, 'x.txt'), cookie).read() == a.encode()
+            refused(403, '/file?path=' + os.path.join(b, 'x.txt'), cookie)
+            with open(listed, 'a') as f:            # a folder added while the page runs
+                f.write(f'{b}  # later\n')
+            assert request('/file?path=' + os.path.join(b, 'x.txt'), cookie).read() == b.encode()
+            saved = json.loads(request('/api/analysis/save', cookie, 'POST', json.dumps(
+                {'name': 's', 'analysis': {'samples': []}}).encode()).read())
+            assert saved['path'] == os.path.join(saves, 'analyses', 's', 'analysis.json'), saved
+            assert request('/file?path=' + saved['path'], cookie).read()   # exported files show
+        finally:
+            server.shutdown()
+            server.server_close()
+    passed('analysis-only server: password alone, nothing but the Analysis page, folders read '
+           'from their file on every request, analyses saved in the shared folder')
+
+
 def comparison_folder(root):
     """A finished comparison of two recordings, a and b, with 16x16 projections and windows
     starting at frame 1; its folder."""

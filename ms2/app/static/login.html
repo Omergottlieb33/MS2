@@ -25,22 +25,30 @@
 <body>
 <form id="f">
   <h1>MS2 pipeline</h1>
+  <div id="named">
   <p>Your name picks your own folder for uploads and results.</p>
   <label for="name">Your name</label>
   <input id="name" autocomplete="username" autofocus required pattern="[A-Za-z0-9][A-Za-z0-9_\-]*"
          title="letters, digits, - or _">
+  </div>
   <label for="password">Lab password</label>
   <input id="password" type="password" autocomplete="current-password" required>
   <button>Log in</button>
   <div class="bad" id="msg"></div>
 </form>
 <script>
+fetch('/api/login').then(r => r.json()).then(d => {
+  if (d.ask_name) return;             // the analysis page alone: the password is enough
+  document.getElementById('named').remove();
+  document.querySelector('h1').textContent = 'MS2 analysis';
+  document.getElementById('password').focus();
+}).catch(() => {});
 document.getElementById('f').onsubmit = async e => {
   e.preventDefault();
   const msg = document.getElementById('msg');
   msg.textContent = '';
   const r = await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: document.getElementById('name').value,
+    body: JSON.stringify({name: document.getElementById('name')?.value,
                           password: document.getElementById('password').value})});
   if (r.ok) location.href = '/';
   else msg.textContent = (await r.json().catch(() => ({}))).error || r.statusText;

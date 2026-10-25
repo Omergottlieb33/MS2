@@ -16,6 +16,12 @@ log in with their name and the lab password, upload a CZI from their own compute
 download the results as a zip.  Each name gets its own folder, DIR/<name>, with uploads/ and
 runs/ in it, and may write nothing outside it.  --data-root folders, if given, may be read
 too: pasting a server path opens that file in the browser.
+
+    ms2 app --analysis-only FOLDERS_FILE --password-file FILE --out-root DIR --host 0.0.0.0
+
+serves the Analysis page alone, behind the password only, over the result folders listed in
+FOLDERS_FILE (one per line, read again on every request, so editing it needs no restart).
+Everyone shares the analyses saved in DIR.
 """
 import argparse
 import glob
@@ -54,12 +60,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 class App:
-    def __init__(self, data_roots, out_root, workspace=None, password=None, read_roots=()):
+    def __init__(self, data_roots, out_root, workspace=None, password=None, read_roots=(),
+                 roots_file=None):
         self.data_roots = [os.path.realpath(r) for r in data_roots]
         self.read_roots = [os.path.realpath(r) for r in read_roots]   # lab mode: open, not write
         self.out_root = out_root
         self.workspace = workspace and os.path.realpath(workspace)
         self.password = password
+        self.roots_file = roots_file        # analysis-only mode: its folders replace data_roots
         # per user ('' when the app is someone's own): the New-analysis form, kept while they
         # are on the ROI page, and the recording their viewer pages show
         self.forms = {}
@@ -67,6 +75,8 @@ class App:
         self.version = code_version()
 
     def roots(self, user=''):
+        if self.roots_file:
+            return read_roots_file(self.roots_file)
         return [os.path.join(self.workspace, user)] if self.workspace else self.data_roots
 
     def out(self, user=''):
@@ -77,10 +87,12 @@ class App:
         return any(real == r or real.startswith(r + os.sep) for r in roots or self.roots(user))
 
     def check_read(self, path, user=''):
-        """A file to open in the browser: the user's own folders, or the read-only ones."""
+        """A file to open in the browser: the user's own folders, their results folder, or the
+        read-only ones."""
         if not os.path.isabs(path):
             raise ValueError(f'{path} is not a full path; it should start with /')
-        if not (self.allowed(path, user) or self.read_roots and self.allowed(path, roots=self.read_roots)):
+        if not (self.allowed(path, user, self.roots(user) + [os.path.realpath(self.out(user))])
+                or self.read_roots and self.allowed(path, roots=self.read_roots)):
             raise PermissionError(f'{path} is outside the folders this page may open: '
                                   f'{", ".join(self.roots(user) + self.read_roots)}')
 
@@ -94,7 +106,7 @@ class App:
 
     def login(self, name, password):
         """The user's folder name, or None if the name or the password is refused."""
-        name = (name or '').strip().lower()
+        name = 'visitor' if self.roots_file else (name or '').strip().lower()   # password only
         if not USER_NAME.fullmatch(name) \
                 or not hmac.compare_digest((password or '').encode(), self.password.encode()):
             return None
@@ -124,6 +136,22 @@ COOKIE = 'ms2login'
 PAGES = ('/', '/view', '/roi', '/segments', '/analysis')        # opened by hand: sent to the login form, not refused
 USER_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,39}')   # becomes a folder name
 PATH_FIELDS = ('czi', 'out', 'dir', 'path', 'root')
+ANALYSIS_PATHS = ('/analysis', '/login', '/file', '/api/login', '/api/logout', '/api/config')
+
+
+def analysis_path(path):
+    """What analysis-only mode serves: the Analysis page and what it calls."""
+    return path in ANALYSIS_PATHS or path.startswith(('/api/analysis/', '/static/'))
+
+
+def read_roots_file(path):
+    """The folders listed in path, one per line; # starts a comment."""
+    with open(path) as f:
+        lines = [line.split('#')[0].strip() for line in f]
+    roots = [os.path.realpath(line) for line in lines if line]
+    if not roots:
+        raise FileNotFoundError(f'{path} lists no folders')
+    return roots
 
 
 def clean_paths(fields):
@@ -375,13 +403,23 @@ class Handler(viewer.Handler):
         self.app.viewers[self.user] = v
 
     def authorized(self, path):
-        """In lab mode, every request but the login form's needs the login cookie."""
+        """In lab mode, every request but the login form's needs the login cookie.  In
+        analysis-only mode, the rest of the app is not there at all."""
+        if self.app.roots_file and not analysis_path(path):
+            if path == '/':
+                self.send_response(302)
+                self.send_header('Location', '/analysis')
+                self.end_headers()
+            else:
+                self.send_error(404)
+            return False
         if self.app.password is None:
             return True
         user = self.app.user_of(self.headers.get('Cookie'))
         if user is not None:
             self.user = user
-            os.makedirs(os.path.join(self.app.workspace, user, 'runs'), exist_ok=True)
+            if self.app.workspace:
+                os.makedirs(os.path.join(self.app.workspace, user, 'runs'), exist_ok=True)
             return True
         if path in ('/login', '/api/login'):
             return True
@@ -504,6 +542,8 @@ class Handler(viewer.Handler):
             elif url.path == '/login':
                 with open(os.path.join(STATIC, 'login.html'), 'rb') as f:
                     self._send(f.read(), 'text/html; charset=utf-8')
+            elif url.path == '/api/login':
+                self._json({'ask_name': not a.roots_file})      # the form asks for a name or not
             elif url.path.startswith('/open/'):
                 # the path is in the URL itself, so a page's relative links (its images,
                 # scripts) resolve to their files next to it
@@ -517,7 +557,8 @@ class Handler(viewer.Handler):
             elif url.path == '/api/config':
                 self._json({'data_roots': a.roots(self.user), 'out_root': a.out(self.user),
                             'gpus': gpus(), 'form': a.forms.get(self.user, {}),
-                            'lab': bool(a.workspace), 'user': self.user, 'version': a.version})
+                            'lab': bool(a.workspace), 'user': self.user, 'version': a.version,
+                            'analysis_only': bool(a.roots_file)})
             elif url.path == '/api/ls':
                 self.check(q['path'])
                 self._json({'path': os.path.realpath(q['path']),
@@ -574,7 +615,7 @@ class Handler(viewer.Handler):
                 self.end_headers()          # no length: the zip is written as it is made
                 zip_results(q['dir'], self.wfile)
             elif url.path == '/file':
-                self.check(q['path'])
+                a.check_read(q['path'], self.user)
                 kind = mimetypes.guess_type(q['path'])[0] or 'application/octet-stream'
                 with open(q['path'], 'rb') as f:
                     self._send(f.read(), kind)
@@ -732,9 +773,16 @@ def main():
     p.add_argument('--workspace', help='lab mode: one page for everyone, with a folder per user '
                                        'here for their uploads and runs (needs --password-file)')
     p.add_argument('--password-file', help='file holding the lab password, asked at login')
+    p.add_argument('--analysis-only', metavar='FOLDERS_FILE',
+                   help='serve the Analysis page alone, over the result folders listed in this '
+                        'file, one per line (needs --password-file and --out-root)')
+    p.add_argument('--host', default='127.0.0.1',
+                   help='address to listen on; 0.0.0.0 to be reached from other computers')
     args = p.parse_args()
     if args.workspace and not args.password_file:
         p.error('--workspace needs --password-file: the name people log in with picks their folder')
+    if args.analysis_only and not (args.password_file and args.out_root):
+        p.error('--analysis-only needs --password-file, and --out-root for the saved analyses')
     password = None
     if args.password_file:
         with open(args.password_file) as f:
@@ -744,14 +792,20 @@ def main():
     roots = args.data_root or [os.path.expanduser('~')]
     # lab mode reads the --data-root folders only when they are given, never a default home
     Handler.app = App(roots, args.out_root or roots[0], args.workspace, password,
-                      read_roots=(args.data_root or []) if args.workspace else [])
+                      read_roots=(args.data_root or []) if args.workspace else [],
+                      roots_file=args.analysis_only and os.path.realpath(args.analysis_only))
+    if args.analysis_only:
+        read_roots_file(args.analysis_only)     # a missing or empty list fails here, not at login
     warm_up()
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
     except OSError:
         sys.exit(f'port {args.port} is in use -- another ms2 app is running, or pick another '
                  f'port with --port (and the same port in your launcher settings)')
-    if args.workspace:
+    if args.analysis_only:
+        print(f'ms2 analysis page on port {args.port}, listening on {args.host}   '
+              f'(result folders listed in {args.analysis_only})', flush=True)
+    elif args.workspace:
         print(f'ms2 app (lab mode) on port {args.port}, listening on {args.host}   '
               f'(user folders in {Handler.app.workspace})', flush=True)
     else:
