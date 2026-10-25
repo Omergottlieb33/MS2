@@ -1,0 +1,238 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Segments</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111; color: #ddd; height: 100vh;
+         font: 13px system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; }
+  header, .bar, footer { padding: 8px 16px; background: #191919; display: flex; align-items: center;
+                         gap: 12px; flex: none; flex-wrap: wrap; }
+  header { border-bottom: 1px solid #2c2c2c; }
+  .bar { background: #161616; border-bottom: 1px solid #2c2c2c; }
+  footer { border-top: 1px solid #2c2c2c; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  .hint { color: #888; font-size: 12px; }
+  a { color: #6cf; }
+  .stage { flex: 1; position: relative; overflow: hidden; cursor: crosshair; min-height: 0; }
+  .wrap { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  .wrap img { display: block; user-select: none; -webkit-user-drag: none; }
+  .wrap svg { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  button { padding: 4px 10px; background: #2c2c2c; color: #ddd; border: 1px solid #3c3c3c;
+           border-radius: 4px; cursor: pointer; font-size: 12px; }
+  button:hover { background: #383838; }
+  button.primary { background: #14435e; border-color: #1d5f85; color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  .seg { border-width: 2px; min-width: 64px; }
+  .seg.on { color: #000; font-weight: 600; }
+  #rec { font-weight: 600; color: #6cf; }
+  .warn { color: #e0a030; } .ok { color: #4caf50; } .bad { color: #e05050; }
+  input[type=range] { width: 220px; vertical-align: middle; }
+  #msg { flex: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Segments</h1>
+  <span><span id="rec">…</span> <span class="hint" id="pos"></span></span>
+  <span class="hint">Pick a segment, click around it, then <b>close</b> · wheel zoom, right-drag pan ·
+    a segment the image does not hold can be left out</span>
+  <span style="margin-left:auto"><a href="/">← app</a></span>
+</header>
+
+<div class="bar">
+  <span>segment</span><span id="segBtns"></span>
+  <button data-a="close">close</button>
+  <button data-a="undo">undo</button>
+  <button data-a="clear">clear</button>
+  <button data-a="fit">fit</button>
+  <span style="margin-left:12px">frame <input type="range" id="frame" step="1"> <b id="tLabel"></b></span>
+  <span class="hint" id="turn"></span>
+</div>
+
+<div class="stage" id="stage">
+  <div class="wrap" id="wrap"><img id="img"><svg id="svg"></svg></div>
+</div>
+
+<footer>
+  <button id="prev">← previous</button>
+  <button id="next" class="primary">next recording →</button>
+  <span id="msg"></span>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+const COLORS = {'2': '#e8a33d', '3': '#4caf50', '4': '#6cf', '5': '#e87ba4'};
+const dir = new URLSearchParams(location.search).get('dir') || '';
+let labels = [], recs = [], cur = 0, active = null;
+let view = {x: 0, y: 0, k: 1};
+
+// One recording's work: the frame it is drawn on and {label: {pts, closed}} in image pixels.
+const rec = () => recs[cur];
+const say = (html, cls = '') => { $('msg').innerHTML = `<span class="${cls}">${html}</span>`; };
+
+// The picture turns about its centre as the comparison turns it: mirrored left-right if flip,
+// then rotated clockwise.  Vertices stay in image pixels, the coordinates of cells.csv.
+function apply() {
+  const r = rec(), cx = r.width / 2, cy = r.height / 2, o = r.orientation;
+  $('wrap').style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k}) ` +
+    `translate(${cx}px, ${cy}px) rotate(${o.rotate}deg) scaleX(${o.flip ? -1 : 1}) translate(${-cx}px, ${-cy}px)`;
+  draw();
+}
+function toImage(e) {
+  const r = rec(), cx = r.width / 2, cy = r.height / 2, a = r.orientation.rotate * Math.PI / 180;
+  const box = $('stage').getBoundingClientRect();
+  const dx = (e.clientX - box.left - view.x) / view.k - cx, dy = (e.clientY - box.top - view.y) / view.k - cy;
+  const ux = Math.cos(a) * dx + Math.sin(a) * dy, uy = -Math.sin(a) * dx + Math.cos(a) * dy;
+  return [cx + (r.orientation.flip ? -ux : ux), cy + uy];
+}
+function fit() {
+  const r = rec(), a = r.orientation.rotate * Math.PI / 180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+  const st = $('stage'), bw = r.width * c + r.height * s, bh = r.width * s + r.height * c;
+  const k = Math.min(st.clientWidth / bw, st.clientHeight / bh);
+  view = {k, x: st.clientWidth / 2 - k * r.width / 2, y: st.clientHeight / 2 - k * r.height / 2};
+  apply();
+}
+
+function draw() {
+  const r = rec(), s = 1 / view.k, o = r.orientation;
+  let h = '';
+  for (const label of labels) {
+    const seg = r.segs[label];
+    if (!seg.pts.length) continue;
+    const col = COLORS[label] || '#fff', on = label === active, pts = seg.pts.map(q => q.join(',')).join(' ');
+    h += seg.closed
+      ? `<polygon points="${pts}" fill="${col}" fill-opacity="${on ? .25 : .15}" stroke="${col}" stroke-width="${(on ? 2.5 : 1.5) * s}"/>`
+      : `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="${2 * s}"/>`;
+    if (on && !seg.closed) {
+      h += seg.pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="${3.5 * s}" fill="#fff" stroke="#111" stroke-width="${s}"/>`).join('');
+      if (seg.pts.length > 1) {
+        const [a, b] = [seg.pts[seg.pts.length - 1], seg.pts[0]];
+        h += `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${col}" stroke-width="${1.5 * s}" stroke-dasharray="${5 * s},${4 * s}" opacity=".6"/>`;
+      }
+    }
+    if (seg.closed) {
+      // the label sits upright on screen: undo the picture's turn around its own anchor
+      const cx = seg.pts.reduce((t, p) => t + p[0], 0) / seg.pts.length, cy = seg.pts.reduce((t, p) => t + p[1], 0) / seg.pts.length;
+      h += `<text transform="translate(${cx},${cy}) scale(${s * (o.flip ? -1 : 1)},${s}) rotate(${-o.rotate})"
+              text-anchor="middle" dominant-baseline="central" font-size="22" font-weight="700"
+              fill="${col}" stroke="#000" stroke-width="3" paint-order="stroke">${esc(label)}</text>`;
+    }
+  }
+  $('svg').setAttribute('width', r.width);
+  $('svg').setAttribute('height', r.height);
+  $('svg').innerHTML = h;
+  $('segBtns').innerHTML = labels.map(l => {
+    const seg = r.segs[l], col = COLORS[l] || '#fff', on = l === active;
+    return `<button class="seg${on ? ' on' : ''}" data-l="${esc(l)}" style="border-color:${col};${on ? 'background:' + col : ''}">` +
+      `${esc(l)}${seg.closed ? ' ✓' : seg.pts.length ? ' …' : ''}</button>`;
+  }).join(' ');
+}
+
+function show(i) {
+  cur = i;
+  const r = rec();
+  $('rec').textContent = r.name;
+  $('pos').textContent = `recording ${i + 1} of ${recs.length}`;
+  $('turn').textContent = `shown ${r.orientation.flip ? 'mirrored, ' : ''}rotated ${r.orientation.rotate}°`;
+  $('frame').min = r.t_start; $('frame').max = r.t_end; $('frame').value = r.t;
+  $('prev').disabled = i === 0;
+  $('next').textContent = i === recs.length - 1 ? 'save segments' : 'next recording →';
+  active = labels.find(l => !r.segs[l].closed) || labels[0];
+  setFrame(r.t);
+  fitted = false;
+}
+let fitted = false;
+function setFrame(t) {
+  rec().t = t;
+  $('tLabel').textContent = 't' + t;
+  $('img').src = `/api/align/frame?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(rec().name)}&t=${t}&full=1`;
+}
+$('img').onload = () => { if (!fitted) { fit(); fitted = true; } else draw(); };
+$('frame').oninput = () => setFrame(+$('frame').value);
+
+$('segBtns').onclick = e => {
+  const b = e.target.closest('button[data-l]');
+  if (b) { active = b.dataset.l; draw(); }
+};
+document.querySelectorAll('button[data-a]').forEach(b => b.onclick = () => {
+  const seg = rec().segs[active];
+  ({close: () => { if (seg.pts.length >= 3) { seg.closed = true; active = labels.find(l => !rec().segs[l].closed) || active; } },
+    undo: () => { seg.closed = false; seg.pts.pop(); },
+    clear: () => { seg.pts = []; seg.closed = false; },
+    fit})[b.dataset.a]();
+  draw();
+});
+
+const stage = $('stage');
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  const box = stage.getBoundingClientRect(), mx = e.clientX - box.left, my = e.clientY - box.top;
+  const k = Math.max(0.05, Math.min(40, view.k * Math.exp(-e.deltaY * 0.0015)));
+  view.x = mx - (mx - view.x) * (k / view.k);
+  view.y = my - (my - view.y) * (k / view.k);
+  view.k = k;
+  apply();
+}, {passive: false});
+let drag = null;
+stage.addEventListener('contextmenu', e => e.preventDefault());
+stage.addEventListener('mousedown', e => { if (e.button === 2) drag = {x: e.clientX - view.x, y: e.clientY - view.y}; });
+addEventListener('mousemove', e => { if (drag) { view.x = e.clientX - drag.x; view.y = e.clientY - drag.y; apply(); } });
+addEventListener('mouseup', () => { drag = null; });
+stage.addEventListener('click', e => {
+  const seg = rec().segs[active], [x, y] = toImage(e);
+  if (seg.closed || x < 0 || y < 0 || x > rec().width || y > rec().height) return;
+  seg.pts.push([x, y]);
+  draw();
+});
+addEventListener('resize', fit);
+
+// An outline left open is neither a segment nor nothing: ask for it to be closed or cleared.
+const unfinished = r => labels.filter(l => r.segs[l].pts.length && !r.segs[l].closed);
+
+$('prev').onclick = () => { if (cur > 0) { show(cur - 1); say(''); } };
+$('next').onclick = async () => {
+  const open = unfinished(rec());
+  if (open.length) return say(`close or clear segment ${open.join(', ')} first`, 'warn');
+  if (cur < recs.length - 1) { show(cur + 1); say(''); return; }
+  const segments = Object.fromEntries(recs.map(r => [r.name, {t: r.t, orientation: r.orientation,
+    segments: Object.fromEntries(labels.filter(l => r.segs[l].closed).map(l => [l, r.segs[l].pts]))}]));
+  say('saving', '');
+  try {
+    const res = await fetch('/api/segments/save', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                   body: JSON.stringify({dir, segments})});
+    const d = await res.json().catch(() => ({error: res.statusText}));
+    if (!res.ok) throw new Error(d.error || res.statusText);
+    const n = recs.reduce((t, r) => t + labels.filter(l => r.segs[l].closed).length, 0);
+    say(`✓ saved ${n} segments of ${recs.length} recordings → ${esc(d.path)}`, 'ok');
+  } catch (e) { say(esc(e.message), 'bad'); }
+};
+
+(async () => {
+  if (!dir) return say('open this page from the Compare tab: no comparison folder given', 'bad');
+  try {
+    const res = await fetch('/api/segments?dir=' + encodeURIComponent(dir));
+    if (res.status === 401) { location.href = '/login'; return; }
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+    labels = d.labels;
+    const broken = d.recordings.filter(r => r.error);
+    if (broken.length) return say(broken.map(r => `${esc(r.name)}: ${esc(r.error)}`).join('<br>'), 'bad');
+    recs = d.recordings.map(r => {
+      const saved = d.segments[r.name] || {};
+      const t = saved.t != null && saved.t >= r.t_start && saved.t <= r.t_end ? saved.t : r.t_start;
+      return {...r, t, segs: Object.fromEntries(labels.map(l => {
+        const pts = (saved.segments || {})[l];
+        return [l, {pts: pts ? pts.map(p => [...p]) : [], closed: !!pts}];
+      }))};
+    });
+    show(0);
+    if (Object.keys(d.segments).length) say('segments saved earlier are loaded; change them or go on', 'hint');
+  } catch (e) { say(esc(e.message), 'bad'); }
+})();
+</script>
+</body>
+</html>

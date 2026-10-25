@@ -1,4 +1,4 @@
-"""src/cell_activity_calibration.py: a brighter recording puts the same floor lower in its
+"""ms2/cell_activity_calibration.py: a brighter recording puts the same floor lower in its
 own background, which is the whole point of the diagnostic."""
 import os
 import shutil
@@ -8,7 +8,7 @@ import numpy as np
 
 from fixtures import passed, write_recording
 
-from src.cell_activity_calibration import calibration_row, run_calibration
+from ms2.cell_activity_calibration import calibration_row, run_calibration
 
 # Same cells, one recording imaged BRIGHTER by a known factor and nothing else changed
 BRIGHTER = 3.0

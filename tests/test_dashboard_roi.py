@@ -1,8 +1,8 @@
 """ROI validation and physical-to-pixel centroid regression tests."""
 import unittest
 import numpy as np
-from src.tracking_dashboard import validate_roi
-from src.tracklet_quality import diagnostics, settings_checked
+from ms2.tracking_dashboard import validate_roi
+from ms2.tracklet_quality import diagnostics, settings_checked
 
 class RoiTests(unittest.TestCase):
     def setUp(self):

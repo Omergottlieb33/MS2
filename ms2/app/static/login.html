@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS2 pipeline</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --panel: #191919; --line: #2c2c2c; --text: #ddd;
+          --dim: #888; --accent: #6cf; --bad: #e05050; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px system-ui, -apple-system, sans-serif; }
+  form { max-width: 340px; margin: 12vh auto 0; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 6px; padding: 20px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p { color: var(--dim); font-size: 12px; margin: 0 0 14px; }
+  label { display: block; margin: 10px 0 4px; color: var(--dim); font-size: 12px; }
+  input { width: 100%; padding: 7px 8px; background: #111; color: var(--text); border: 1px solid #333;
+          border-radius: 4px; font-size: 14px; }
+  button { margin-top: 16px; width: 100%; padding: 8px; background: #14435e; border: 1px solid #1d5f85;
+           color: #fff; border-radius: 4px; cursor: pointer; font-size: 14px; }
+  .bad { color: var(--bad); min-height: 18px; margin-top: 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>MS2 pipeline</h1>
+  <div id="named">
+  <p>Your name picks your own folder for uploads and results.</p>
+  <label for="name">Your name</label>
+  <input id="name" autocomplete="username" autofocus required pattern="[A-Za-z0-9][A-Za-z0-9_\-]*"
+         title="letters, digits, - or _">
+  </div>
+  <label for="password">Lab password</label>
+  <input id="password" type="password" autocomplete="current-password" required>
+  <button>Log in</button>
+  <div class="bad" id="msg"></div>
+</form>
+<script>
+fetch('/api/login').then(r => r.json()).then(d => {
+  if (d.ask_name) return;             // the analysis page alone: the password is enough
+  document.getElementById('named').remove();
+  document.querySelector('h1').textContent = 'MS2 analysis';
+  document.getElementById('password').focus();
+}).catch(() => {});
+document.getElementById('f').onsubmit = async e => {
+  e.preventDefault();
+  const msg = document.getElementById('msg');
+  msg.textContent = '';
+  const r = await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: document.getElementById('name')?.value,
+                          password: document.getElementById('password').value})});
+  if (r.ok) location.href = '/';
+  else msg.textContent = (await r.json().catch(() => ({}))).error || r.statusText;
+};
+</script>
+</body>
+</html>

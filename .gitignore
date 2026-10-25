@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# MS2 project
+outputs/
+*.db
+metadata.toml
+.vscode/settings.json

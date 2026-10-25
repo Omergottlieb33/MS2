@@ -5,8 +5,8 @@ The repo has no test framework, so the tests are plain scripts of asserts run as
     python tests/test_cell_activity.py
 
 Each builds what it needs here: an expression matrix named like
-src/gene_expression/expression_matrix.py writes it, a tracklets json keyed the way
-src/cell_activity.py reads it, and mask npz files named the way cell_tracking.py's
+ms2/gene_expression/expression_matrix.py writes it, a tracklets json keyed the way
+ms2/cell_activity.py reads it, and mask npz files named the way ms2/tracking.py's
 get_masks_paths expects.
 """
 import json
@@ -18,7 +18,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.gene_expression.expression_matrix import FIXED_NAME  # noqa: E402
+from ms2.gene_expression.expression_matrix import FIXED_NAME  # noqa: E402
 
 
 def write_recording(out_dir, signals, n_frames=None, name=FIXED_NAME, masks=True):

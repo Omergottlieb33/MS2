@@ -8,9 +8,9 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import numpy as np
-from src.tracking_evaluation import (DEFAULTS, association_edges, boundary, features,
+from ms2.tracking_evaluation import (DEFAULTS, association_edges, boundary, features,
     fraction, load_rows, map_labels, score_dataset, stability, stress_suite)
-from src.tracking_dashboard import handler_for
+from ms2.tracking_dashboard import handler_for
 
 class EvaluationTests(unittest.TestCase):
     def setUp(self):

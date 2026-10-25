@@ -1,4 +1,4 @@
-"""src/cell_activity_validate.py: a good config is clean, and each corruption is caught."""
+"""ms2/cell_activity_validate.py: a good config is clean, and each corruption is caught."""
 import copy
 import os
 import shutil
@@ -8,7 +8,7 @@ import numpy as np
 
 from fixtures import passed, report_checks, write_recording
 
-from src.cell_activity_validate import raise_on_errors, validate_config
+from ms2.cell_activity_validate import raise_on_errors, validate_config
 
 def make_signals(n_cells=12, n_frames=6, gap_every=0):
     """n_cells x n_frames of plausible ellipse sums.  Cell 2 is never tracked over the first
@@ -74,6 +74,25 @@ def test_out_of_range_min_presence(tmp):
     report = validate_config({'A': rec})
     assert ('thresholds', 'A') in report_checks(report, 'error'), report.to_string()
     passed('min_presence outside 0..1 is an error')
+
+
+def test_out_of_range_max_unstable_frac(tmp):
+    rec = write_recording(os.path.join(tmp, 'unstable'), SIGNALS)
+    rec['max_unstable_frac'] = 20
+    report = validate_config({'A': rec})
+    assert ('thresholds', 'A') in report_checks(report, 'error'), report.to_string()
+    passed('max_unstable_frac outside 0..1 is an error')
+
+
+def test_max_volume_cv(tmp):
+    """The analysis page's volume CV filter is accepted; a negative or non-number one is not."""
+    rec = write_recording(os.path.join(tmp, 'volume_cv'), SIGNALS)
+    rec['max_volume_cv'] = 0.3
+    assert ('thresholds', 'A') not in report_checks(validate_config({'A': rec}), 'error')
+    rec['max_volume_cv'] = -1
+    report = validate_config({'A': rec})
+    assert ('thresholds', 'A') in report_checks(report, 'error'), report.to_string()
+    passed('max_volume_cv is a filter again; out-of-range values are errors')
 
 
 def test_no_cell_survives_min_presence(tmp):

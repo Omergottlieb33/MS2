@@ -1,0 +1,412 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS2 pipeline</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --panel: #191919; --line: #2c2c2c; --text: #ddd;
+          --dim: #888; --accent: #6cf; --ok: #4caf50; --warn: #e0a030; --bad: #e05050; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px system-ui, -apple-system, sans-serif; }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+               padding: 6px 2px; margin-right: 16px; font-size: 14px; color: var(--dim); }
+  nav button.on { color: var(--text); border-color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  section[hidden] { display: none; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+          padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  .card h2 .n { display: inline-block; width: 20px; height: 20px; border-radius: 50%;
+                background: var(--accent); color: #000; text-align: center; line-height: 20px;
+                font-size: 12px; margin-right: 6px; }
+  .hint { color: var(--dim); font-size: 12px; margin: 4px 0 0; }
+  label { display: block; margin: 8px 0 4px; color: var(--dim); font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=text], input[type=number], select {
+    padding: 6px 8px; background: #111; color: var(--text); border: 1px solid #333;
+    border-radius: 4px; font: 13px ui-monospace, monospace; }
+  input[type=text] { flex: 1; min-width: 200px; }
+  input[type=number] { width: 90px; }
+  button { padding: 6px 12px; background: #2c2c2c; color: var(--text); border: 1px solid #3c3c3c;
+           border-radius: 4px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #383838; }
+  button.primary { background: #14435e; border-color: #1d5f85; color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  .browser { margin-top: 8px; border: 1px solid #333; border-radius: 4px; max-height: 300px;
+             overflow: auto; background: #111; }
+  .browser div { padding: 4px 10px; cursor: pointer; font: 13px ui-monospace, monospace; }
+  .browser div:hover { background: #222; }
+  .browser .cur { color: var(--dim); cursor: default; position: sticky; top: 0; background: #161616; }
+  .msg { margin-top: 8px; min-height: 18px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr.sel td { background: #1d2a33; }
+  tbody tr { cursor: pointer; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #2c2c2c; white-space: nowrap; }
+  .badge.running { background: #14435e; } .badge.done { background: #1e4620; }
+  .badge.failed { background: #5a1e1e; } .badge.stopped, .badge.paused { background: #4a3a10; }
+  .steps { display: flex; gap: 3px; }
+  .steps span { width: 14px; height: 8px; border-radius: 2px; background: #333; }
+  .steps span.d { background: var(--ok); } .steps span.r { background: var(--accent); }
+  pre { background: #0c0c0c; border: 1px solid #262626; border-radius: 4px; padding: 10px;
+        max-height: 320px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin: 8px 0 0; }
+  .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
+  .files a { color: var(--accent); font-size: 12px; word-break: break-all; text-decoration: none; }
+  .files img { width: 100%; display: block; background: #fff; border-radius: 3px; margin-bottom: 4px; }
+  .about { line-height: 1.55; }
+  .about img { width: 100%; display: block; border-radius: 4px; margin: 10px 0; }
+  .about ol { padding-left: 20px; } .about li { margin: 4px 0; }
+  .about code { font-size: 12px; color: var(--dim); }
+  a { color: var(--accent); }
+  details summary { cursor: pointer; color: var(--dim); margin-top: 10px; }
+  .busy::after { content: ' …'; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>MS2 pipeline <span class="hint" id="ver"></span></h1>
+  <nav>
+    <button data-tab="new" class="on">New analysis</button>
+    <button data-tab="runs">Runs &amp; results</button>
+    <button data-tab="about">About</button>
+  </nav>
+  <a href="/analysis" style="font-weight:600">Analysis →</a>
+  <span class="hint" id="who"></span>
+  <button id="logout" hidden>Log out</button>
+</header>
+
+<main>
+<!-- ───────────── New analysis ───────────── -->
+<section id="new">
+  <div class="card">
+    <h2><span class="n">1</span>Recording</h2>
+    <label>CZI file</label>
+    <div class="row" id="uploadRow" hidden><input type="file" id="cziFile" accept=".czi">
+      <span id="uploadMsg"></span></div>
+    <div class="row"><input type="text" id="czi" spellcheck="false" placeholder="/path/to/embryo.czi">
+      <button id="browseBtn">Browse…</button></div>
+    <div class="browser" id="browser" hidden></div>
+    <label>Results folder (the recording gets its own sub-folder here)</label>
+    <div class="row"><input type="text" id="out" spellcheck="false"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="n">2</span>Run</h2>
+    <p class="hint">The run segments and tracks every nucleus and measures the MS2 signal of every
+      cell tracked for 10 frames or more. Choosing the stage, the region, the cells and the segments
+      is done afterwards, on the <a href="/analysis">analysis page</a>.</p>
+    <label>Processor</label>
+    <select id="device"></select>
+    <details>
+      <summary>Advanced settings</summary>
+      <div class="row">
+        <div><label>MS2 spot prominence</label><input type="number" id="prominence" value="18" step="1"></div>
+        <div><label>Background radius (px)</label><input type="number" id="bgRadius" value="5" step="1"></div>
+        <div><label>&nbsp;</label><label style="color:var(--text)"><input type="checkbox" id="plots"> per-cell figures (slow)</label></div>
+      </div>
+    </details>
+    <div class="row" style="margin-top:12px"><button class="primary" id="runBtn">Start analysis</button></div>
+    <div class="msg" id="runMsg"></div>
+  </div>
+</section>
+
+<!-- ───────────── Runs ───────────── -->
+<section id="runs" hidden>
+  <div class="card">
+    <div class="row"><label style="margin:0">Results folder</label>
+      <input type="text" id="runsRoot" spellcheck="false"><button id="runsRefresh">Refresh</button></div>
+    <table>
+      <thead><tr><th>Recording</th><th>Status</th><th>Steps</th><th>ROI frames</th><th>Started</th></tr></thead>
+      <tbody id="runsBody"></tbody>
+    </table>
+    <div class="msg" id="runsMsg"></div>
+  </div>
+  <div class="card">
+    <h2>Open a file on the server</h2>
+    <div class="row"><input type="text" id="openPath" spellcheck="false"
+        placeholder="/zjbd/zd1/shechtmanlab/.../dashboard.html"><button id="openBtn">Open</button></div>
+    <p class="hint" id="openHint">Paste the full path of a page, picture or PDF; it opens in a new tab.</p>
+  </div>
+  <div class="card" id="detail" hidden>
+    <h2 id="dTitle"></h2>
+    <div class="row">
+      <button id="dView">Open viewer</button>
+      <button id="dDash">Tracking dashboard</button>
+      <button id="dResume">Resume</button>
+      <button id="dStop">Stop</button>
+      <button id="dZip">Download results</button>
+      <span id="dMsg"></span>
+    </div>
+    <p class="hint" id="dSteps"></p>
+    <details id="dLogWrap" open><summary>Log</summary><pre id="dLog"></pre></details>
+    <div class="files" id="dFiles"></div>
+  </div>
+</section>
+
+<!-- ───────────── About ───────────── -->
+<section id="about" hidden>
+  <div class="card about">
+    <h2>What this does</h2>
+    <p>MS2 turns a live-imaging recording of an embryo (a Zeiss <code>.czi</code> with an MS2 channel
+      and a cell channel) into how strongly each cell transcribes over time. Everything runs on the
+      lab's GPU server; your browser only shows the page.</p>
+    <img src="/static/explainer.webp?v=2" alt="The pipeline step by step on one recording">
+    <p class="hint">One of the lab's recordings through time, every step side by side: the raw cells,
+      the segmentation, the tracks, the MS2 spots, and the cells grouped by activity.</p>
+    <h2>The steps</h2>
+    <ol>
+      <li><b>Preprocess</b>: splits the two channels and removes the MS2 background.</li>
+      <li><b>Segment</b>: finds every nucleus in 3D with Cellpose, frame by frame (the slow step, on the GPU).</li>
+      <li><b>Track</b>: follows each cell from frame to frame.</li>
+      <li><b>Unify</b>: splits cells that were merged and drops fragments, so each cell is one track.</li>
+      <li><b>Gene expression</b>: finds the MS2 transcription spots and measures them in their cell over time.</li>
+      <li><b>Activity</b>: groups the cells from silent to highly active.</li>
+    </ol>
+    <p>A finished step is kept: a stopped run picks up where it left off.</p>
+    <h2>Using this page</h2>
+    <ol>
+      <li><b>New analysis</b>: choose a CZI and start. Every tracked cell is measured.</li>
+      <li><b>Runs &amp; results</b>: follow the steps and the log, open the viewer, and download the results.</li>
+      <li><b><a href="/analysis">Analysis</a></b>: pick finished recordings, choose each stage's frames, the
+        region, the cells, the activity levels and the segments, and compare them; save and export.</li>
+    </ol>
+    <h2>Version</h2>
+    <p id="verInfo"></p>
+  </div>
+</section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const STEPS = ['preprocess', 'segment', 'track', 'unify', 'gene_expression', 'activity'];
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+const recName = czi => czi.split('/').pop().replace(/\.czi$/i, '');
+const join = (a, b) => a.replace(/\/+$/, '') + '/' + b;
+let config = {}, runs = [], selected = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} :
+    {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (r.status === 401) location.href = '/login';       // logged out, or the password changed
+  const d = await r.json().catch(() => ({error: r.statusText}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+const say = (el, html, cls = '') => { $(el).innerHTML = `<span class="${cls}">${html}</span>`; };
+
+// ── tabs ──
+function tab(name) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('main section').forEach(s => s.hidden = s.id !== name);
+  if (name === 'runs') loadRuns();
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => tab(b.dataset.tab));
+
+// ── new analysis ──
+async function browse(path) {
+  const box = $('browser');
+  box.hidden = false;
+  try {
+    const d = await api('/api/ls?path=' + encodeURIComponent(path));
+    const up = config.data_roots.includes(d.path) ? '' : `<div data-p="${esc(d.parent)}" data-d="1">⬆ ..</div>`;
+    box.innerHTML = `<div class="cur">${esc(d.path)}</div>` + up + d.entries.map(e =>
+      `<div data-p="${esc(e.path)}" data-d="${e.dir ? 1 : ''}">${e.dir ? '📁' : '🎞'} ${esc(e.name)}</div>`).join('') +
+      (d.entries.length ? '' : '<div class="cur">no folders or .czi files here</div>');
+  } catch (e) { box.innerHTML = `<div class="cur bad">${esc(e.message)}</div>`; }
+}
+$('browser').onclick = e => {
+  const t = e.target.closest('[data-p]');
+  if (!t) return;
+  if (t.dataset.d) return browse(t.dataset.p);
+  $('czi').value = t.dataset.p;
+  $('browser').hidden = true;
+  runStatus();
+};
+$('browseBtn').onclick = () => {
+  const cur = $('czi').value;
+  browse(cur ? cur.replace(/\/[^/]*\.czi$/i, '') || config.data_roots[0] : config.data_roots[0]);
+};
+$('czi').onchange = runStatus;
+
+// Lab mode: the CZI comes from the user's computer.  XMLHttpRequest, not fetch, for the progress.
+$('cziFile').onchange = () => {
+  const file = $('cziFile').files[0];
+  if (!file) return;
+  const xhr = new XMLHttpRequest();
+  xhr.open('PUT', '/api/upload?name=' + encodeURIComponent(file.name));
+  xhr.upload.onprogress = e => say('uploadMsg', `uploading ${Math.floor(100 * e.loaded / e.total)}%`, 'busy');
+  xhr.onload = () => {
+    let d = {};
+    try { d = JSON.parse(xhr.responseText); } catch (e) { d = {error: xhr.statusText}; }
+    if (xhr.status === 401) { location.href = '/login'; return; }
+    if (xhr.status !== 200) return say('uploadMsg', esc(d.error || xhr.statusText), 'bad');
+    say('uploadMsg', '✓ uploaded', 'ok');
+    $('czi').value = d.path;
+    runStatus();
+  };
+  xhr.onerror = () => say('uploadMsg', 'the upload broke off; try again', 'bad');
+  say('uploadMsg', 'uploading 0%', 'busy');
+  xhr.send(file);
+};
+$('out').onchange = runStatus;
+
+// Pasted paths often come quoted (Windows' "Copy as path"); the quotes are not part of the name.
+const unquote = s => s.trim().replace(/^["']+|["']+$/g, '').trim();
+const form = () => ({czi: unquote($('czi').value), out: unquote($('out').value), device: $('device').value,
+  prominence: +$('prominence').value, bg_radius: +$('bgRadius').value, plots: $('plots').checked,
+  use_roi: false});      // the region is chosen on the analysis page, after the run
+
+async function runStatus() {
+  const f = form();
+  if (!f.czi.toLowerCase().endsWith('.czi') || !f.out) return;
+  try {
+    const d = await api('/api/run?dir=' + encodeURIComponent(join(f.out, recName(f.czi))));
+    if (d.state === 'running') say('runMsg', `${esc(d.name)} is already running — see Runs`, 'warn');
+  } catch (e) { /* not run yet */ }
+}
+
+$('runBtn').onclick = async () => {
+  const f = form();
+  if (!f.czi || !f.out) return say('runMsg', 'choose a CZI file and a results folder first', 'warn');
+  $('runBtn').disabled = true;
+  try {
+    const d = await api('/api/run/start', f);
+    $('runsRoot').value = f.out;
+    selected = d.dir;
+    tab('runs');
+    say('runMsg', 'started', 'ok');
+  } catch (e) { say('runMsg', esc(e.message), 'bad'); }
+  $('runBtn').disabled = false;
+};
+
+// ── runs ──
+const stepDots = (done, state) => '<span class="steps">' + STEPS.map(s => {
+  const d = done.includes(s), r = !d && state === 'running' && STEPS.find(x => !done.includes(x)) === s;
+  return `<span class="${d ? 'd' : r ? 'r' : ''}" title="${s}"></span>`;
+}).join('') + '</span>';
+// Runs started outside the app have no job: their markers say how far they got.
+const runState = r => r.state !== 'none' || !r.steps_done.length ? r.state
+  : r.steps_done.length === STEPS.length ? 'done' : 'paused';
+const badge = s => `<span class="badge ${s}">${{none: 'not started', running: 'running', done: 'finished',
+  failed: 'failed', stopped: 'stopped', paused: 'paused'}[s] || s}</span>`;
+const when = iso => iso ? new Date(iso).toLocaleString() : '';
+
+async function loadRuns() {
+  const root = $('runsRoot').value.trim();
+  if (!root) return;
+  try {
+    const found = await api('/api/runs?root=' + encodeURIComponent(root));
+    if (root !== $('runsRoot').value.trim()) return;     // a reply for a folder no longer shown
+    runs = found;
+    $('runsBody').innerHTML = runs.map(r => `<tr data-d="${esc(r.dir)}" class="${r.dir === selected ? 'sel' : ''}">
+      <td>${esc(r.name)}</td><td>${badge(runState(r))}</td><td>${stepDots(r.steps_done, r.state)}</td>
+      <td>${r.roi ? r.roi.t_first + '–' + r.roi.t_last : '—'}</td><td>${when(r.started)}</td></tr>`).join('');
+    $('runsMsg').innerHTML = runs.length ? '' : '<span class="hint">no recordings in this folder yet</span>';
+    if (selected) loadDetail();
+  } catch (e) { say('runsMsg', esc(e.message), 'bad'); }
+}
+$('runsRefresh').onclick = loadRuns;
+$('runsRoot').onchange = loadRuns;
+$('runsBody').onclick = e => {
+  const tr = e.target.closest('tr');
+  if (!tr) return;
+  selected = tr.dataset.d;
+  document.querySelectorAll('#runsBody tr').forEach(r => r.classList.toggle('sel', r === tr));
+  loadDetail();
+};
+
+const fileTile = f => /\.(png|gif|jpe?g|svg)$/i.test(f.name)
+  ? `<a href="/file?path=${encodeURIComponent(f.path)}" target="_blank"><img loading="lazy" src="/file?path=${encodeURIComponent(f.path)}">${esc(f.name)}</a>`
+  : `<a href="/file?path=${encodeURIComponent(f.path)}" target="_blank" ${/\.html$/.test(f.name) ? '' : 'download'}>⬇ ${esc(f.name)}</a>`;
+
+async function loadDetail() {
+  try {
+    const d = await api('/api/run?dir=' + encodeURIComponent(selected));
+    $('detail').hidden = false;
+    $('dTitle').innerHTML = `${esc(d.name)} &nbsp;${badge(runState(d))}`;
+    $('dSteps').innerHTML = STEPS.map(s => d.steps_done.includes(s) ? `<span class="ok">✓ ${s}</span>` : s).join(' &nbsp;→&nbsp; ');
+    const atEnd = $('dLog').scrollTop + $('dLog').clientHeight >= $('dLog').scrollHeight - 5;
+    $('dLog').textContent = d.log || '(no log yet)';
+    if (atEnd) $('dLog').scrollTop = $('dLog').scrollHeight;
+    const unified = d.steps_done.includes('unify');
+    $('dStop').hidden = d.state !== 'running';
+    $('dResume').hidden = d.state === 'running' || d.steps_done.length === STEPS.length || !d.czi;
+    $('dView').disabled = !unified;
+    $('dDash').disabled = !unified || d.dashboard === 'running';
+    $('dDash').textContent = d.dashboard === 'running' ? 'Building dashboard…' : 'Tracking dashboard';
+    $('dZip').hidden = !config.lab;
+    $('dZip').disabled = !d.results.length;
+    $('dFiles').innerHTML = d.results.map(fileTile).join('');
+  } catch (e) { say('dMsg', esc(e.message), 'bad'); }
+}
+
+async function action(path, body, msg) {
+  try { const d = await api(path, body); if (msg) say('dMsg', msg, 'ok'); return d; }
+  catch (e) { say('dMsg', esc(e.message), 'bad'); }
+}
+$('dView').onclick = async () => { const d = await action('/api/view', {dir: selected}); if (d) location.href = d.url; };
+$('dStop').onclick = async () => { if (confirm('Stop this run? Finished steps are kept.')) { await action('/api/run/stop', {dir: selected}, 'stopped'); loadRuns(); } };
+$('dResume').onclick = async () => {
+  const r = runs.find(x => x.dir === selected);
+  const out = selected.replace(/\/[^/]+$/, '');
+  await action('/api/run/start', {...form(), czi: r.czi, out}, 'resumed — finished steps are skipped');
+  loadRuns();
+};
+$('openBtn').onclick = () => {
+  const p = unquote($('openPath').value);
+  if (!p.startsWith('/')) return say('openHint', 'give the full path, starting with /', 'warn');
+  window.open('/open' + p.split('/').map(encodeURIComponent).join('/'), '_blank');
+};
+$('openPath').onkeydown = e => { if (e.key === 'Enter') $('openBtn').onclick(); };
+$('dZip').onclick = () => { location.href = '/api/download?dir=' + encodeURIComponent(selected); };
+$('dDash').onclick = async () => { await action('/api/dashboard', {dir: selected}, 'building the dashboard; it appears below when done'); loadDetail(); };
+
+// Running jobs update themselves; nothing is polled while the page is in the background.
+setInterval(() => {
+  if (document.hidden) return;
+  if (!$('runs').hidden) loadRuns();
+}, 5000);
+
+(async () => {
+  config = await api('/api/config');
+  const v = config.version || {};
+  if (v.commit) {
+    $('ver').textContent = 'commit ' + v.commit + (v.modified ? ' · modified' : '');
+    $('ver').title = v.full;
+    $('verInfo').innerHTML = `Commit <a href="https://github.com/Omergottlieb33/MS2/commit/${esc(v.full)}" target="_blank">${esc(v.full)}</a>
+      on branch <b>${esc(v.branch)}</b>, ${esc(new Date(v.date).toLocaleString())}` +
+      (v.modified ? '<br><span class="warn">The server runs this commit plus changes not yet committed.</span>' : '');
+  } else $('verInfo').textContent = 'Not from a git checkout: version unknown.';
+  $('device').innerHTML = config.gpus.map(g => `<option value="${esc(g.id)}">${esc(g.label)}</option>`).join('');
+  $('out').value = config.out_root;
+  $('runsRoot').value = config.out_root;
+  if (config.lab) {                  // everything lives in the user's own folder on the server
+    $('who').textContent = 'logged in as ' + config.user;
+    $('logout').hidden = false;
+    $('logout').onclick = async () => { await api('/api/logout', {}); location.href = '/login'; };
+    $('uploadRow').hidden = false;
+    $('browseBtn').hidden = true;
+    for (const id of ['czi', 'out', 'runsRoot']) $(id).readOnly = true;
+    $('czi').placeholder = 'choose a CZI file above';
+  }
+  const f = config.form || {};
+  if (f.czi) {                       // back from drawing the ROI: restore what was filled in
+    $('czi').value = f.czi; $('out').value = f.out;
+    if (f.device) $('device').value = f.device;
+    if (f.prominence) $('prominence').value = f.prominence;
+    if (f.bg_radius) $('bgRadius').value = f.bg_radius;
+    $('plots').checked = !!f.plots;
+  }
+  runStatus();
+})();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-"""src/cell_activity.py: the onset measured against the cell's own life, the number of
+"""ms2/cell_activity.py: the onset measured against the cell's own life, the number of
 activity levels (three by default, or the data's by silhouette), and a blip threshold that may
 differ per recording."""
 import numpy as np
@@ -6,7 +6,7 @@ import pandas as pd
 
 from fixtures import passed
 
-from src.cell_activity import (NOISE_FLOOR, activity_descriptors, activity_levels,
+from ms2.cell_activity import (NOISE_FLOOR, activity_descriptors, activity_levels,
                                classify_cells)
 
 
@@ -83,6 +83,20 @@ def test_a_scalar_noise_peak_still_works():
     levels = classify_cells(desc, noise_peak=10.0)
     assert levels[0] == 1 and (levels[1:] >= 2).all(), levels
     passed('the scalar threshold path is unchanged')
+
+
+def test_silent_cells_stay_silent_at_a_blip_height_of_zero():
+    """With no blip height, every cell that fired is ranked -- but a cell that never rose above
+    the floor is still silent, not the bottom of the ladder."""
+    import pandas as pd
+    from ms2.cell_activity import classify_cells, ladder_cuts, levels_from_cuts
+    desc = pd.DataFrame({'peak': [0, 0, 0, 2, 5, 30, 60, 90, 120],
+                         'rate': [0, 0, 0, 0.1, 0.3, 4, 9, 30, 50]})
+    levels = classify_cells(desc, score='rate', noise_peak=0)
+    assert (levels[:3] == 0).all(), levels                   # silent, not weakly active
+    assert (levels[3:] >= 2).all(), levels                   # everything that fired is ranked
+    assert (levels_from_cuts(desc, ladder_cuts(desc, levels), noise_peak=0) == levels).all()
+    passed('a blip height of 0 ranks every cell that fired, and leaves silent cells silent')
 
 
 def main():

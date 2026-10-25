@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ms2"
+version = "0.1.0"
+description = "MS2 live-imaging pipeline: CZI to segmented, tracked cells and their transcription activity"
+requires-python = ">=3.11"
+# Dependencies come from environment.yml: torch has to be the CUDA build, which pip
+# resolution here would happily replace with the CPU one.
+dependencies = []
+
+[project.scripts]
+ms2 = "ms2.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ms2*"]
+
+[tool.setuptools.package-data]
+"ms2.viewer" = ["static/*"]
+"ms2.app" = ["static/*"]
+ms2 = ["tracking_dashboard_static/*"]

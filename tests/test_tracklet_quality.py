@@ -1,7 +1,7 @@
 """Checks for the four single-track dashboard diagnostics."""
 import unittest
 import numpy as np
-from src.tracklet_quality import diagnostics, frame_properties, neighborhoods, settings_checked
+from ms2.tracklet_quality import diagnostics, frame_properties, neighborhoods, settings_checked
 
 class QualityTests(unittest.TestCase):
     def score(self, rows, props):
