@@ -108,40 +108,51 @@ def cell_positions(props, tracklets, cells, timepoints):
     return w['positions'], w['unstable_frac']
 
 
-def cell_window(props, tracklets, cells, timepoints):
+def cell_window(props, tracklets, cells, timepoints, t_mid=None):
     """Per cell over its tracked window frames: mean (y, x), the share of frames whose volume
     is VOLUME_JUMP times off its median, its volume CV (std / mean), and its (x, y) on the
-    window's first and last frame (NaN where untracked there) -- what an ROI drawn on those
-    frames tests."""
+    window's first and last frame and on frame t_mid (NaN where untracked there, or no t_mid)
+    -- what an ROI drawn on those frames tests."""
     n = len(cells)
     out = {'positions': np.empty((n, 2)), 'unstable_frac': np.empty(n), 'vol_cv': np.empty(n),
-           'at_start': np.full((n, 2), np.nan), 'at_end': np.full((n, 2), np.nan)}
+           'at_start': np.full((n, 2), np.nan), 'at_end': np.full((n, 2), np.nan),
+           'at_mid': np.full((n, 2), np.nan)}
+    frames = [('at_start', timepoints[0]), ('at_end', timepoints[-1])]
+    if t_mid is not None:
+        frames.append(('at_mid', int(t_mid)))
     for i, cell in enumerate(cells):
         track = tracklets[cell[len('cell_'):]]
         p = np.array([props[t][track[t]] for t in timepoints if track[t] > 0])
         out['positions'][i] = p[:, 1:3].mean(axis=0)
         out['unstable_frac'][i] = (np.abs(np.log(p[:, 3] / np.median(p[:, 3]))) > np.log(VOLUME_JUMP)).mean()
         out['vol_cv'][i] = p[:, 3].std() / p[:, 3].mean()
-        for key, t in (('at_start', timepoints[0]), ('at_end', timepoints[-1])):
+        for key, t in frames:
             if track[t] > 0 and track[t] in props.get(t, {}):
                 _, y, x, _ = props[t][track[t]]
                 out[key][i] = x, y
     return out
 
 
-def in_roi(rec, at_start, at_end):
-    """Which cells an ROI drawn on the window's first and last frame takes in: inside the
-    first outline on the first frame or the last one on the last (the pipeline's rule, see
-    ms2/roi_selection.py).  Every cell when the recording has no outline."""
-    first, last = rec.get('roi_first'), rec.get('roi_last')
-    if not first and not last:
+def in_roi(rec, at_start, at_end, at_mid=None):
+    """Which cells an ROI drawn on the window's first and last frame, and the analysis page's
+    middle frame, takes in: inside any outline on its own frame (the pipeline's rule for the
+    first and last, see ms2/roi_selection.py).  Every cell when the recording has no outline."""
+    first, mid, last = rec.get('roi_first'), rec.get('roi_mid'), rec.get('roi_last')
+    if not first and not mid and not last:
         return np.ones(len(at_start), dtype=bool)
     hit = np.zeros(len(at_start), dtype=bool)
-    for outline, xy in ((first, at_start), (last, at_end)):
-        if outline:
+    for outline, xy in ((first, at_start), (mid, at_mid), (last, at_end)):
+        if outline and xy is not None:
             ok = ~np.isnan(xy[:, 0])
-            hit[ok] |= Path(np.asarray(outline, dtype=float)).contains_points(xy[ok])
+            for polygon in outline_polygons(outline):
+                hit[ok] |= Path(np.asarray(polygon, dtype=float)).contains_points(xy[ok])
     return hit
+
+
+def outline_polygons(outline):
+    """An ROI outline as a list of polygons: one outline [[x, y], ...], or several -- the
+    analysis page's ROI made from its segments, [[[x, y], ...], ...] -- taken together."""
+    return outline if isinstance(outline[0][0], (list, tuple)) else [outline]
 
 
 def radial_position(positions):
@@ -192,7 +203,7 @@ def measure_recording(name, rec, cache_dir):
     with open(rec['tracklets']) as f:
         tracklets = json.load(f)
     props = cell_properties(rec['masks_dir'], os.path.join(cache_dir, f'{name}_cell_properties.pkl'))
-    w = cell_window(props, tracklets, cells, timepoints)
+    w = cell_window(props, tracklets, cells, timepoints, rec.get('t_mid'))
     # the filters the analysis page sets, in its order: stable volume, then the ROI
     keep = np.ones(len(cells), dtype=bool)
     if rec.get('max_unstable_frac') is not None:
@@ -201,8 +212,8 @@ def measure_recording(name, rec, cache_dir):
     if rec.get('max_volume_cv') is not None:
         keep &= w['vol_cv'] <= rec['max_volume_cv']
         print(f'{name}: max_volume_cv {rec["max_volume_cv"]} keeps {keep.sum()}/{len(keep)} cells')
-    if rec.get('roi_first') or rec.get('roi_last'):
-        keep &= in_roi(rec, w['at_start'], w['at_end'])
+    if rec.get('roi_first') or rec.get('roi_mid') or rec.get('roi_last'):
+        keep &= in_roi(rec, w['at_start'], w['at_end'], w['at_mid'])
         print(f'{name}: the ROI keeps {keep.sum()}/{len(keep)} cells')
     signals, present = signals[keep], present[keep]
     positions, unstable_frac, vol_cv = w['positions'][keep], w['unstable_frac'][keep], w['vol_cv'][keep]
@@ -216,6 +227,10 @@ def measure_recording(name, rec, cache_dir):
     # blip threshold has to travel with the row rather than be passed as one number
     table['noise_peak'] = rec.get('noise_peak', NOISE_PEAK)
     table['y'], table['x'], table['r_norm'] = positions[:, 0], positions[:, 1], r_norm
+    # on the window's first, middle and last frame (NaN where untracked there): what segments
+    # drawn on those frames test, as the ROI does
+    for key, name in (('at_start', 'start'), ('at_mid', 'mid'), ('at_end', 'end')):
+        table[f'x_{name}'], table[f'y_{name}'] = w[key][keep][:, 0], w[key][keep][:, 1]
     table['unstable_frac'] = unstable_frac
     table['volume_cv'] = vol_cv
     table['shell'] = pd.qcut(r_norm, len(SHELLS), labels=SHELLS).astype(str)

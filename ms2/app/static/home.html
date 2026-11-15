@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS2</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --panel: #191919; --line: #2c2c2c; --text: #ddd;
+          --dim: #888; --accent: #6cf; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px system-ui, -apple-system, sans-serif; }
+  header { display: flex; justify-content: flex-end; gap: 12px; align-items: center; padding: 10px 16px;
+           color: var(--dim); font-size: 12px; }
+  header button { background: none; border: 1px solid #333; color: var(--text); border-radius: 4px;
+                  padding: 4px 10px; cursor: pointer; }
+  main { max-width: 720px; margin: 12vh auto 0; padding: 0 16px; text-align: center; }
+  h1 { font-size: 34px; margin: 0 0 8px; letter-spacing: .5px; }
+  .sub { color: var(--dim); margin: 0 0 40px; }
+  .ways { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .ways a { display: block; text-decoration: none; color: var(--text); background: var(--panel);
+            border: 1px solid var(--line); border-radius: 8px; padding: 26px 20px; text-align: left; }
+  .ways a:hover { border-color: var(--accent); }
+  .ways b { display: block; font-size: 18px; color: var(--accent); margin-bottom: 8px; }
+  .ways span { color: var(--dim); font-size: 13px; line-height: 1.45; }
+  .demo { width: 100%; display: block; margin: 28px 0 40px; border-radius: 8px; border: 1px solid var(--line); }
+  @media (max-width: 560px) { .ways { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header><span id="who"></span><button id="logout">Log out</button></header>
+<main>
+  <h1>MS2</h1>
+  <p class="sub">Segment, track and measure the MS2 signal of every cell in a recording, then analyse it.</p>
+  <div class="ways">
+    <a href="/pipeline"><b>Run pipeline</b>
+      <span>Upload a CZI recording and run it. Its results and by-products are kept in your folder on
+        the server, by date.</span></a>
+    <a href="/analysis"><b>Analysis</b>
+      <span>Choose the stage frames, the region, the cells and the segments, over the lab's recordings
+        and everyone's runs.</span></a>
+  </div>
+  <img class="demo" src="/static/pipeline.gif" alt="The pipeline on one recording: segmentation, tracking, one cell's MS2 signal and activity, and the activity heatmap">
+</main>
+<script>
+fetch('/api/config').then(r => r.json()).then(c => {
+  if (c.user) document.getElementById('who').textContent = 'logged in as ' + c.user;
+}).catch(() => {});
+document.getElementById('logout').onclick = async () => {
+  await fetch('/api/logout', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+  location.href = '/login';
+};
+</script>
+</body>
+</html>

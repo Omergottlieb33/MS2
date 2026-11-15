@@ -93,6 +93,9 @@ class GlobalPeakStrategy(PeakStrategy):
             for (peak_x, peak_y), slice_score in zip(pts_sel, sc_sel):
                 gaussian_params, covariance_matrix = self._gaussian_fit(ms2_projection[y1:y2, x1:x2],
                                                                          (peak_x - x1, peak_y - y1))
+                # a fit that did not converge leaves its parameters NaN, which the choice of a
+                # frame's peak already handles, rather than stopping the whole run
+                gaussian_params = gaussian_params or {}
                 records.append({
                     'timepoint': timepoint,
                     'x': int(peak_x),

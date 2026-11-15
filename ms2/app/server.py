@@ -17,6 +17,14 @@ download the results as a zip.  Each name gets its own folder, DIR/<name>, with 
 runs/ in it, and may write nothing outside it.  --data-root folders, if given, may be read
 too: pasting a server path opens that file in the browser.
 
+    ms2 app --workspace DIR --password-file FILE --analysis-folders FOLDERS_FILE
+            --analysis-saves SAVES --host 0.0.0.0
+
+is the joint lab site: a home page with two ways in, Run pipeline and Analysis, behind one
+login (name and password).  A run goes to DIR/<name>/<DDMMYY>/<recording>/, its uploaded CZI
+inside; the Analysis page shows the result folders listed in FOLDERS_FILE and everyone's runs in
+DIR, and keeps the analyses in SAVES for all.
+
     ms2 app --analysis-only FOLDERS_FILE --password-file FILE --out-root DIR --host 0.0.0.0
 
 serves the Analysis page alone, behind the password only, over the result folders listed in
@@ -61,13 +69,18 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 class App:
     def __init__(self, data_roots, out_root, workspace=None, password=None, read_roots=(),
-                 roots_file=None):
+                 roots_file=None, analysis_folders=None, analysis_saves=None):
         self.data_roots = [os.path.realpath(r) for r in data_roots]
         self.read_roots = [os.path.realpath(r) for r in read_roots]   # lab mode: open, not write
         self.out_root = out_root
         self.workspace = workspace and os.path.realpath(workspace)
         self.password = password
         self.roots_file = roots_file        # analysis-only mode: its folders replace data_roots
+        # the joint site (lab mode with these): the Analysis page also shows the folders listed in
+        # analysis_folders, and everyone's runs in the workspace, and keeps the analyses in
+        # analysis_saves, shared
+        self.analysis_folders = analysis_folders
+        self.analysis_saves = analysis_saves
         # per user ('' when the app is someone's own): the New-analysis form, kept while they
         # are on the ROI page, and the recording their viewer pages show
         self.forms = {}
@@ -80,7 +93,31 @@ class App:
         return [os.path.join(self.workspace, user)] if self.workspace else self.data_roots
 
     def out(self, user=''):
-        return os.path.join(self.workspace, user, 'runs') if self.workspace else self.out_root
+        """Where a new run goes: in lab mode the user's folder for today, <name>/<DDMMYY>, each
+        recording a folder in it holding its CZI, results and by-products."""
+        if self.workspace:
+            return os.path.join(self.workspace, user, time.strftime('%d%m%y'))
+        return self.out_root
+
+    def runs_root(self, user=''):
+        """Where a user's runs are listed from: all of their dated folders in lab mode."""
+        return os.path.join(self.workspace, user) if self.workspace else self.out_root
+
+    def analysis_roots(self, user=''):
+        """The folders the Analysis page lists results from: the listed ones on the joint site,
+        else the user's own."""
+        if self.analysis_folders:
+            return read_roots_file(self.analysis_folders)
+        return self.roots(user)
+
+    def analysis_readable(self, user=''):
+        """What the Analysis page may open: the listed folders and, picked from its browser,
+        everyone's runs in the workspace."""
+        return self.analysis_roots(user) + ([self.workspace] if self.analysis_folders else [])
+
+    def saves(self, user=''):
+        """Where analyses are saved: shared on the joint site."""
+        return self.analysis_saves or self.out(user)
 
     def allowed(self, path, user='', roots=None):
         real = os.path.realpath(path)
@@ -91,10 +128,13 @@ class App:
         read-only ones."""
         if not os.path.isabs(path):
             raise ValueError(f'{path} is not a full path; it should start with /')
-        if not (self.allowed(path, user, self.roots(user) + [os.path.realpath(self.out(user))])
+        mine = self.roots(user) + [os.path.realpath(self.out(user))]
+        if self.analysis_folders:           # the joint site: the analysed folders, everyone's runs
+            mine += self.analysis_readable(user)
+        if not (self.allowed(path, user, mine)
                 or self.read_roots and self.allowed(path, roots=self.read_roots)):
             raise PermissionError(f'{path} is outside the folders this page may open: '
-                                  f'{", ".join(self.roots(user) + self.read_roots)}')
+                                  f'{", ".join(mine + self.read_roots)}')
 
     def check(self, *paths, user=''):
         for p in paths:
@@ -113,7 +153,11 @@ class App:
         return name
 
     def _sign(self, name):
-        return hmac.new(self.password.encode(), name.encode(), hashlib.sha256).hexdigest()
+        # Browsers send a host's cookies to all of its ports: signed with the kind of site, a
+        # password-only Analysis page's 'visitor' is not taken as a name by a lab site on the same
+        # host and password.
+        kind = 'analysis-only' if self.roots_file else 'lab'
+        return hmac.new(self.password.encode(), f'{kind}:{name}'.encode(), hashlib.sha256).hexdigest()
 
     def cookie(self, name):
         """The login cookie's value: the name, signed with the lab password.  Changing the
@@ -133,7 +177,7 @@ class App:
 
 
 COOKIE = 'ms2login'
-PAGES = ('/', '/view', '/roi', '/segments', '/analysis')        # opened by hand: sent to the login form, not refused
+PAGES = ('/', '/pipeline', '/view', '/roi', '/segments', '/analysis')   # opened by hand: sent to the login form, not refused
 USER_NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,39}')   # becomes a folder name
 PATH_FIELDS = ('czi', 'out', 'dir', 'path', 'root')
 ANALYSIS_PATHS = ('/analysis', '/login', '/file', '/api/login', '/api/logout', '/api/config')
@@ -318,6 +362,7 @@ def frame_png(frame, size=512):
 
 
 _resolved = {}
+_emitters = {}          # a result's accepted MS2 emitters, read while its matrix is unchanged
 KMEANS_LOCK = threading.Lock()
 
 
@@ -419,7 +464,7 @@ class Handler(viewer.Handler):
         if user is not None:
             self.user = user
             if self.app.workspace:
-                os.makedirs(os.path.join(self.app.workspace, user, 'runs'), exist_ok=True)
+                os.makedirs(os.path.join(self.app.workspace, user), exist_ok=True)
             return True
         if path in ('/login', '/api/login'):
             return True
@@ -463,17 +508,27 @@ class Handler(viewer.Handler):
         q = clean_paths({k: v[0] for k, v in parse_qs(url.query).items()})
         a = self.app
         try:
-            if url.path == '/':
+            if url.path == '/' and a.workspace:
+                # the lab site opens on its home page: run the pipeline, or analyse
+                with open(os.path.join(STATIC, 'home.html'), 'rb') as f:
+                    self._send(f.read(), 'text/html; charset=utf-8')
+            elif url.path in ('/', '/pipeline'):
                 with open(os.path.join(STATIC, 'index.html'), 'rb') as f:
                     self._send(f.read(), 'text/html; charset=utf-8')
             elif url.path == '/analysis':
                 with open(os.path.join(STATIC, 'analysis.html'), 'rb') as f:
                     self._send(f.read(), 'text/html; charset=utf-8')
             elif url.path == '/api/analysis/recordings':
-                roots = [q['root']] if q.get('root') else a.roots(self.user) + a.read_roots
+                roots = [q['root']] if q.get('root') else a.analysis_roots(self.user) + a.read_roots
                 for r in roots:
                     a.check_read(r, self.user)
-                self._json({'roots': roots, 'recordings': analysis.discover(roots)})
+                # only results whose MS2 was measured on every cell
+                self._json({'roots': roots, 'recordings': analysis.discover(roots, all_cells_only=True)})
+            elif url.path == '/api/analysis/browse':
+                # the joint site's folder browser: everyone's runs, never above the workspace
+                if not a.analysis_folders:
+                    raise ValueError('there is no shared runs folder to browse here')
+                self._json(analysis.browse(q.get('path') or a.workspace, a.workspace))
             elif url.path == '/api/analysis/resolve':
                 # a result added by its path: the matrix, or the folder holding it
                 path = q['path']
@@ -483,6 +538,9 @@ class Handler(viewer.Handler):
                     if not found:
                         raise FileNotFoundError(f'no gene expression results in {path}')
                     path = found[0]
+                if not analysis.measured_all_cells(path):
+                    raise ValueError(f'{path} was measured on an ROI\'s cells only; the analysis page '
+                                     f'takes results measured on every cell')
                 self._json(analysis.recording_info(analysis_recording(path)))
             elif url.path == '/api/analysis/sample':
                 a.check_read(q['csv'], self.user)
@@ -490,29 +548,37 @@ class Handler(viewer.Handler):
                 if not rec['tracklets'] or not rec['masks_dir']:
                     raise FileNotFoundError(f'the tracks or masks of {q["csv"]} were not found')
                 self._json(analysis.sample_data(rec, int(q['t0']), int(q['t1']),
-                                                os.path.join(a.out(self.user), 'analyses')))
+                                                os.path.join(a.saves(self.user), 'analyses'),
+                                                int(q['tm']) if q.get('tm') else None))
             elif url.path == '/api/analysis/labels':
                 a.check_read(q['csv'], self.user)
                 rec = analysis_recording(q['csv'])
                 a.check_read(rec['masks_dir'], self.user)
                 self._send(analysis.label_png(rec['masks_dir'], int(q['t'])), 'image/png', cache=True)
+            elif url.path == '/api/analysis/emitters':
+                a.check_read(q['csv'], self.user)
+                key = (os.path.abspath(q['csv']), os.path.getmtime(q['csv']))
+                if key not in _emitters:
+                    _emitters[key] = analysis.emitters(q['csv'])
+                self._json(_emitters[key])
             elif url.path == '/api/analysis/files':
                 a.check_read(q['csv'], self.user)
-                roots = [q['root']] if q.get('root') else a.roots(self.user) + a.read_roots
+                roots = [q['root']] if q.get('root') else a.analysis_roots(self.user) + a.read_roots
                 self._json(analysis.outline_files(analysis_recording(q['csv']), roots))
             elif url.path == '/api/analysis/file':
-                a.check_read(q['path'], self.user)
+                if not analysis.is_region_file(q['path']):        # those are kept apart from the results
+                    a.check_read(q['path'], self.user)
                 self._json(analysis.read_outline_file(q['path'], q.get('name') or None))
             elif url.path == '/api/analysis/saved':
-                self._json(analysis.list_analyses(a.out(self.user)))
+                self._json(analysis.list_analyses(a.saves(self.user)))
             elif url.path == '/api/analysis/load':
-                self._json(analysis.load_analysis(a.out(self.user), q['name']))
+                self._json(analysis.load_analysis(a.saves(self.user), q['name']))
             elif url.path == '/api/analysis/export':
-                folder = analysis.analysis_dir(a.out(self.user), q['name'])
+                folder = analysis.analysis_dir(a.saves(self.user), q['name'])
                 self._json({'state': jobs.state(folder), 'log': jobs.log_tail(folder),
                             'files': analysis_outputs(folder)})
             elif url.path == '/api/analysis/zip':
-                folder = analysis.analysis_dir(a.out(self.user), q['name'])
+                folder = analysis.analysis_dir(a.saves(self.user), q['name'])
                 if jobs.state(folder) == 'running':
                     raise ValueError(f'{q["name"]} is still being exported')
                 if not os.path.exists(os.path.join(folder, 'cells.csv')):
@@ -556,9 +622,11 @@ class Handler(viewer.Handler):
                     self._send(f.read(), kind)
             elif url.path == '/api/config':
                 self._json({'data_roots': a.roots(self.user), 'out_root': a.out(self.user),
+                            'runs_root': a.runs_root(self.user),
                             'gpus': gpus(), 'form': a.forms.get(self.user, {}),
                             'lab': bool(a.workspace), 'user': self.user, 'version': a.version,
-                            'analysis_only': bool(a.roots_file)})
+                            'analysis_only': bool(a.roots_file),
+                            'browse': bool(a.analysis_folders)})      # the Analysis page's ms2_web browser
             elif url.path == '/api/ls':
                 self.check(q['path'])
                 self._json({'path': os.path.realpath(q['path']),
@@ -634,7 +702,8 @@ class Handler(viewer.Handler):
             if url.path != '/api/upload' or not self.app.workspace:
                 return self.send_error(404)
             name = parse_qs(url.query)['name'][0]
-            folder = os.path.join(self.app.workspace, self.user, 'uploads')
+            # into the folder its run will have, <name>/<DDMMYY>/<recording>: the CZI beside its results
+            folder = os.path.join(self.app.out(self.user), os.path.splitext(os.path.basename(name))[0])
             self._json({'path': save_upload(self.rfile, int(self.headers['Content-Length']),
                                             folder, name)})
         except Exception as exc:
@@ -724,14 +793,24 @@ class Handler(viewer.Handler):
                 jobs.start(cmd, d, 'compare.log')
                 self._json({'ok': True})
             elif url.path == '/api/analysis/save':
-                self._json({'path': analysis.save_analysis(a.out(self.user), body['name'], body['analysis'])})
+                self._json({'path': analysis.save_analysis(a.saves(self.user), body['name'], body['analysis'])})
             elif url.path == '/api/analysis/export':
                 # saved first, then exported in the background: the comparison takes a minute
-                folder = os.path.dirname(analysis.save_analysis(a.out(self.user), body['name'], body['analysis']))
+                folder = os.path.dirname(analysis.save_analysis(a.saves(self.user), body['name'], body['analysis']))
                 if jobs.state(folder) == 'running':
                     raise ValueError(f'{body["name"]} is already being exported')
                 jobs.start([sys.executable, '-m', 'ms2.app.analysis', 'export', folder], folder, 'export.log')
                 self._json({'ok': True, 'folder': folder})
+            elif url.path == '/api/analysis/region':
+                # into analysis.REGION_ROOT, for results in the user's own folders, not read-only ones
+                s = body['sample']
+                a.check_read(s['csv'], self.user)
+                if not a.allowed(s['csv'], self.user, a.analysis_readable(self.user)):
+                    raise PermissionError(f'{s["csv"]} is in a read-only folder; its outlines are not saved')
+                self._json(analysis.save_region(analysis_recording(s['csv']), s))
+            elif url.path == '/api/analysis/joined_roi':
+                # the ROI is the sample's segments joined into one outline per frame
+                self._json(analysis.joined_roi(body.get('segments')))
             elif url.path == '/api/analysis/ladder':
                 # the automatic ladder: KMeans as classify_cells fits it, given as rate cuts;
                 # one fit at a time (see warm_up)
@@ -776,6 +855,11 @@ def main():
     p.add_argument('--analysis-only', metavar='FOLDERS_FILE',
                    help='serve the Analysis page alone, over the result folders listed in this '
                         'file, one per line (needs --password-file and --out-root)')
+    p.add_argument('--analysis-folders', metavar='FOLDERS_FILE',
+                   help='lab mode: the joint site -- the Analysis page also shows the result folders '
+                        'listed here, one per line, and everyone\'s runs (needs --analysis-saves)')
+    p.add_argument('--analysis-saves', metavar='DIR',
+                   help='lab mode: where the Analysis page keeps the analyses, shared by everyone')
     p.add_argument('--host', default='127.0.0.1',
                    help='address to listen on; 0.0.0.0 to be reached from other computers')
     args = p.parse_args()
@@ -783,6 +867,8 @@ def main():
         p.error('--workspace needs --password-file: the name people log in with picks their folder')
     if args.analysis_only and not (args.password_file and args.out_root):
         p.error('--analysis-only needs --password-file, and --out-root for the saved analyses')
+    if bool(args.analysis_folders) != bool(args.analysis_saves) or args.analysis_folders and not args.workspace:
+        p.error('--analysis-folders and --analysis-saves go together, with --workspace')
     password = None
     if args.password_file:
         with open(args.password_file) as f:
@@ -793,9 +879,12 @@ def main():
     # lab mode reads the --data-root folders only when they are given, never a default home
     Handler.app = App(roots, args.out_root or roots[0], args.workspace, password,
                       read_roots=(args.data_root or []) if args.workspace else [],
-                      roots_file=args.analysis_only and os.path.realpath(args.analysis_only))
-    if args.analysis_only:
-        read_roots_file(args.analysis_only)     # a missing or empty list fails here, not at login
+                      roots_file=args.analysis_only and os.path.realpath(args.analysis_only),
+                      analysis_folders=args.analysis_folders and os.path.realpath(args.analysis_folders),
+                      analysis_saves=args.analysis_saves)
+    for listed in (args.analysis_only, args.analysis_folders):
+        if listed:
+            read_roots_file(listed)             # a missing or empty list fails here, not at login
     warm_up()
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
@@ -807,7 +896,9 @@ def main():
               f'(result folders listed in {args.analysis_only})', flush=True)
     elif args.workspace:
         print(f'ms2 app (lab mode) on port {args.port}, listening on {args.host}   '
-              f'(user folders in {Handler.app.workspace})', flush=True)
+              f'(user folders in {Handler.app.workspace}'
+              + (f'; analysis also over {args.analysis_folders}' if args.analysis_folders else '') + ')',
+              flush=True)
     else:
         print(f'ms2 app on http://localhost:{args.port}   (data folders: {", ".join(Handler.app.data_roots)})',
               flush=True)

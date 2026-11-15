@@ -281,7 +281,9 @@ class MS2GeneExpressionProcessor:
 
             masked_ms2 = cell_region_ms2 * \
                 mask_region.astype(ms2_projection.dtype)
-            max_intensity = max(max_intensity, masked_ms2.max())
+            # a mask one pixel thin leaves an empty region: the box's far edge is inclusive
+            if masked_ms2.size:
+                max_intensity = max(max_intensity, masked_ms2.max())
 
         self.max_cell_intensity = max_intensity
 
@@ -413,8 +415,11 @@ class MS2GeneExpressionProcessor:
 
         Rejects a fit that collapsed onto a hot pixel (narrower than a real PSF), one that
         railed to the upper sigma bound (a diffuse blob rather than a point source), and a
-        peak whose angle around the nucleus is an outlier.
+        peak whose angle around the nucleus is an outlier.  A fit that did not converge (NaN
+        sigmas) is not an emitter either: every comparison below is False for NaN.
         """
+        if not (np.isfinite(row['gauss_sigma_x']) and np.isfinite(row['gauss_sigma_y'])):
+            return False
         # TODO: Threshold optimization
         return not ((row['gauss_sigma_x'] <= 0.48 and row['gauss_sigma_y'] <= 0.48)
                     or row['circular_z_score'] > 2.8
