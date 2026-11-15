@@ -78,6 +78,7 @@
     <button data-tab="runs">Runs &amp; results</button>
     <button data-tab="about">About</button>
   </nav>
+  <a href="/" id="home" hidden>⌂ Home</a>
   <a href="/analysis" style="font-weight:600">Analysis →</a>
   <span class="hint" id="who"></span>
   <button id="logout" hidden>Log out</button>
@@ -250,6 +251,8 @@ $('cziFile').onchange = () => {
     if (xhr.status !== 200) return say('uploadMsg', esc(d.error || xhr.statusText), 'bad');
     say('uploadMsg', '✓ uploaded', 'ok');
     $('czi').value = d.path;
+    // on the server it sits in its run's own folder, <name>/<date>/<recording>/: the run goes there too
+    $('out').value = d.path.split('/').slice(0, -2).join('/');
     runStatus();
   };
   xhr.onerror = () => say('uploadMsg', 'the upload broke off; try again', 'bad');
@@ -279,7 +282,7 @@ $('runBtn').onclick = async () => {
   $('runBtn').disabled = true;
   try {
     const d = await api('/api/run/start', f);
-    $('runsRoot').value = f.out;
+    if (!config.lab) $('runsRoot').value = f.out;     // the lab site lists all of the user's runs
     selected = d.dir;
     tab('runs');
     say('runMsg', 'started', 'ok');
@@ -387,10 +390,11 @@ setInterval(() => {
   } else $('verInfo').textContent = 'Not from a git checkout: version unknown.';
   $('device').innerHTML = config.gpus.map(g => `<option value="${esc(g.id)}">${esc(g.label)}</option>`).join('');
   $('out').value = config.out_root;
-  $('runsRoot').value = config.out_root;
+  $('runsRoot').value = config.runs_root || config.out_root;     // every dated folder of the user's
   if (config.lab) {                  // everything lives in the user's own folder on the server
     $('who').textContent = 'logged in as ' + config.user;
     $('logout').hidden = false;
+    $('home').hidden = false;
     $('logout').onclick = async () => { await api('/api/logout', {}); location.href = '/login'; };
     $('uploadRow').hidden = false;
     $('browseBtn').hidden = true;

@@ -120,6 +120,9 @@ def test_lab_login_and_folders():
                     f'other={app.cookie("omer")}'):
             assert app.user_of(bad) is None, bad
         assert App([ws], ws, workspace=ws, password='new').user_of(good) is None
+        # a password-only page's cookie on the same host is not a lab login, though the password is
+        visitor = App([ws], ws, password='s3cret', roots_file='folders.txt').cookie('visitor')
+        assert app.user_of(f'ms2login={visitor}') is None
         app.check(os.path.join(ws, 'omer', 'runs', 'r'), user='omer')
         try:
             app.check(os.path.join(ws, 'dana', 'runs', 'r'), user='omer')
@@ -127,7 +130,9 @@ def test_lab_login_and_folders():
             pass
         else:
             raise AssertionError("one user opened another's folder")
-        assert app.out('omer') == os.path.join(os.path.realpath(ws), 'omer', 'runs')
+        # a run goes to the user's folder for the day it starts, <name>/<DDMMYY>
+        assert app.out('omer') == os.path.join(os.path.realpath(ws), 'omer', time.strftime('%d%m%y'))
+        assert app.runs_root('omer') == os.path.join(os.path.realpath(ws), 'omer')
     passed('lab login gives a folder name; a user stays inside their own folder')
 
 
@@ -219,9 +224,14 @@ def test_lab_server():
                 assert r.url.endswith('/login') and b'Lab password' in r.read()
             cfg = json.loads(get('/api/config'))
             assert cfg['lab'] and cfg['user'] == 'dana', cfg
-            assert cfg['out_root'] == os.path.join(os.path.realpath(ws), 'users', 'dana', 'runs'), cfg
+            today = os.path.join(os.path.realpath(ws), 'users', 'dana', time.strftime('%d%m%y'))
+            assert cfg['out_root'] == today and cfg['runs_root'] == os.path.dirname(today), cfg
             up = json.loads(get('/api/upload?name=e.czi', method='PUT', data=b'abc'))
-            assert open(up['path'], 'rb').read() == b'abc'
+            # the CZI goes into the folder its run will have, beside its results
+            assert up['path'] == os.path.join(today, 'e', 'e.czi') and open(up['path'], 'rb').read() == b'abc'
+            with request('/', dana) as r:                   # the lab site opens on its home page
+                assert b'Run pipeline' in r.read()
+            assert b'New analysis' in get('/pipeline')
             assert cfg['version'] == code_version(), cfg['version']
             assert get('/static/explainer.webp')[:4] == b'RIFF'
             for bad in ('/static/../server.py', '/static/nothing.png'):
@@ -249,6 +259,41 @@ def test_lab_server():
             server.server_close()
     passed('lab server: login form, upload, server files opened read-only, results zipped '
            'for their owner only, logout')
+
+
+def test_joint_site():
+    """Lab mode with --analysis-folders: the Analysis page lists the listed folders and everyone's
+    runs, may read both, and keeps the analyses in the shared saves folder."""
+    with tempfile.TemporaryDirectory() as root:
+        ws, listed_dir, saves = (os.path.join(root, n) for n in ('ws', 'lab', 'saves'))
+        for d in (os.path.join(ws, 'dana'), listed_dir, saves):
+            os.makedirs(d)
+        listed = os.path.join(root, 'folders.txt')
+        with open(listed, 'w') as f:
+            f.write(listed_dir + '\n')
+        app = App([ws], ws, workspace=ws, password='pw', analysis_folders=listed, analysis_saves=saves)
+        # listed: the lab folders; readable too: everyone's runs, added from the page's browser
+        assert app.analysis_roots('omer') == [os.path.realpath(listed_dir)]
+        assert app.analysis_readable('omer') == [os.path.realpath(listed_dir), os.path.realpath(ws)]
+        assert app.saves('omer') == saves
+        # read: the listed folders and everyone's runs; write: still only one's own folder
+        app.check_read(os.path.join(listed_dir, 'x.csv'), 'omer')
+        app.check_read(os.path.join(ws, 'dana', '101126', 'r', 'x.csv'), 'omer')
+        for bad in ('/etc/hostname', os.path.join(root, 'other', 'x')):
+            try:
+                app.check_read(bad, 'omer')
+                raise AssertionError(f'{bad} readable')
+            except PermissionError:
+                pass
+        try:
+            app.check(os.path.join(ws, 'dana', 'x'), user='omer')
+            raise AssertionError("one user wrote into another's folder")
+        except PermissionError:
+            pass
+        # without the folder list, lab mode is as before
+        plain = App([ws], ws, workspace=ws, password='pw')
+        assert plain.analysis_roots('omer') == plain.roots('omer') and plain.saves('omer') == plain.out('omer')
+    passed('joint site: Analysis over the listed folders and everyone\'s runs, analyses shared')
 
 
 def test_analysis_only_server():

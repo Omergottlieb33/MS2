@@ -11,6 +11,12 @@ Outlines are in the image's own pixel coordinates -- those of cells.csv x and y 
 orientation they were drawn at, so the cells inside a segment are found without undoing any
 turn.  A recording need not have every segment: the field of view can cut some off.
 
+The Analysis page draws a segment as the ROI is drawn, on the window's first, middle and last
+frame: "2": {"first": [[x, y], ...], "mid": [...], "last": [...]}, any of them null.  A cell is
+in it when it lies inside any outline on that outline's frame (cells.csv x_start, y_start, x_mid,
+y_mid, x_end, y_end); a single outline is tested on the cell's average position.  Either way the
+box is cut around all of a segment's outline points.
+
 A recording's own segments, marked on the ROI page when the run is set up, sit beside its
 ROI in a segments.json holding one such entry, {t, orientation, segments}.  A comparison
 starts from them (ms2/pipeline_compare.py carries them into its config as "segments").
@@ -66,6 +72,7 @@ from matplotlib.patches import Rectangle
 
 SEGMENT_LABELS = ('2', '3', '4', '5')
 SEGMENTS_NAME = 'segments.json'
+FRAMES = ('first', 'mid', 'last')        # the window frames a segment can be outlined on
 
 
 def load_segments(out_dir):
@@ -77,14 +84,22 @@ def load_segments(out_dir):
 
 
 def clean_polygons(name, polygons):
-    """{label: [[x, y], ...]} checked -- labels 2..5, 3 points or more -- in label order."""
+    """{label: [[x, y], ...] or {first, mid, last}} checked -- labels 2..5, 3 points or more --
+    in label order."""
+    def points(label, pts):
+        if len(pts) < 3:
+            raise ValueError(f'{name}: segment {label} needs at least 3 points')
+        return [[float(x), float(y)] for x, y in pts]
     clean = {}
-    for label, points in polygons.items():
+    for label, outline in polygons.items():
         if label not in SEGMENT_LABELS:
             raise ValueError(f'{name}: segment {label!r} is not one of {", ".join(SEGMENT_LABELS)}')
-        if len(points) < 3:
-            raise ValueError(f'{name}: segment {label} needs at least 3 points')
-        clean[label] = [[float(x), float(y)] for x, y in points]
+        if isinstance(outline, dict):
+            if not any(outline.get(w) for w in FRAMES):
+                raise ValueError(f'{name}: segment {label} has no outline')
+            clean[label] = {w: points(label, outline[w]) if outline.get(w) else None for w in FRAMES}
+        else:
+            clean[label] = points(label, outline)
     return dict(sorted(clean.items()))
 
 
@@ -161,6 +176,24 @@ def normalise(xy, frame):
 
 def inside(polygon, xy):
     return Path(np.asarray(polygon, dtype=float)).contains_points(np.asarray(xy, dtype=float))
+
+
+def segment_hit(outline, cells):
+    """Which rows of cells (cells.csv) a segment takes in.  One outline is tested on their
+    average position (x, y); {first, mid, last} outlines on their position on the window's first,
+    middle and last frame, inside any as the ROI is (see in_roi in ms2/cell_activity_compare.py)."""
+    if not isinstance(outline, dict):
+        return inside(outline, cells[['x', 'y']].to_numpy())
+    from ms2.cell_activity_compare import in_roi
+    at = lambda name: cells[[f'x_{name}', f'y_{name}']].to_numpy() if f'x_{name}' in cells else None
+    return in_roi({f'roi_{w}': outline.get(w) for w in FRAMES}, at('start'), at('end'), at('mid'))
+
+
+def outline_points(outline):
+    """A segment's outline points: all of {first, mid, last} together, for its box."""
+    if not isinstance(outline, dict):
+        return outline
+    return [p for w in FRAMES for p in outline.get(w) or []]
 
 
 def grid_bin(uv, bins):
@@ -240,9 +273,9 @@ def segment_activity(name, rec, entry, rec_cells, bins, time_bins, labels=None,
     for label, polygon in entry['segments'].items():
         if labels and label not in labels:
             continue
-        hit = inside(polygon, xy)
+        hit = segment_hit(polygon, rec_cells)
         cells = rec_cells['cell'].to_numpy()[hit]
-        uv = normalise(xy[hit], box_frame(polygon, xy[hit], entry['orientation'], box_from))
+        uv = normalise(xy[hit], box_frame(outline_points(polygon), xy[hit], entry['orientation'], box_from))
         ids, rects = (equal_count_bins(uv, cells_per_bin) if cells_per_bin
                       else grid_bins(uv, bins))
         idx = np.array([row_of[c] for c in cells], dtype=int)
@@ -443,11 +476,16 @@ def plot_segment_boxes(entries, cells, labels, path_stem, box_from='outline'):
         for label, polygon in entry['segments'].items():
             if labels and label not in labels:
                 continue
-            hit = inside(polygon, xy)
-            m, centre, half = box_frame(polygon, xy[hit], entry['orientation'], box_from)
+            hit = segment_hit(polygon, c)
+            m, centre, half = box_frame(outline_points(polygon), xy[hit], entry['orientation'], box_from)
             ax.scatter(*(xy[hit] @ m.T).T, s=6, color='#2a78d6', zorder=2)
-            p = np.vstack([polygon, polygon[:1]]) @ m.T
-            ax.plot(p[:, 0], p[:, 1], color='#eb6834', lw=1.2, zorder=3)
+            # the start-frame outline solid, the middle one dotted, the end one dashed
+            drawn = ([(polygon, '-')] if not isinstance(polygon, dict) else
+                     [(polygon[w], ls) for w, ls in (('first', '-'), ('mid', ':'), ('last', '--'))
+                      if polygon.get(w)])
+            for outline, ls in drawn:
+                p = np.vstack([outline, outline[:1]]) @ m.T
+                ax.plot(p[:, 0], p[:, 1], color='#eb6834', lw=1.2, ls=ls, zorder=3)
             ax.add_patch(Rectangle(centre - half, *(2 * half), fill=False, ls='--', lw=1,
                                    color='#0b0b0b', zorder=4))
             ax.text(*centre, label, ha='center', va='center', fontsize=11, weight='bold', zorder=5)
@@ -459,8 +497,8 @@ def plot_segment_boxes(entries, cells, labels, path_stem, box_from='outline'):
         ax.invert_yaxis()
         ax.axis('off')
         ax.set_title(name, fontsize=9)
-    fig.suptitle('Segments in the aligned view: outline (orange), grid box (dashed) and its '
-                 '(u, v) corners, cells inside (blue)', fontsize=10)
+    fig.suptitle('Segments in the aligned view: outline (orange; middle frame dotted, end dashed), grid box '
+                 '(dashed) and its (u, v) corners, cells inside (blue)', fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     save_figure(fig, path_stem, eps=False)
 

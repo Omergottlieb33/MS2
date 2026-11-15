@@ -15,9 +15,9 @@ from fixtures import passed, write_recording
 
 from ms2.cell_activity import NOISE_FLOOR
 from ms2.cell_activity_compare import compare_recordings
-from ms2.cell_activity_segments import (Layout, analyse_segments, plot_segment_gif,
-                                        equal_count_bins, mean_cells_per_bin, normalise,
-                                        segment_activity, segment_frame)
+from ms2.cell_activity_segments import (Layout, analyse_segments, clean_polygons, outline_points,
+                                        plot_segment_gif, equal_count_bins, mean_cells_per_bin,
+                                        normalise, segment_activity, segment_frame, segment_hit)
 
 # 20 wide, 10 tall in the image; y points down, so (30, 10) is the image's right-upper corner
 RECT = [[10, 10], [30, 10], [30, 20], [10, 20]]
@@ -201,6 +201,39 @@ def test_gif_frames_at_each_tenth_of_the_window():
     assert longs == [0, 2, 5, 7, 10, 12, 14, 17, 19, 22, 24], longs
     assert shorts == list(range(11)), shorts
     passed('the GIF shows every recording at 0%, 10%, .. 100% of its own window')
+
+
+def test_start_and_end_outlines():
+    """{first, mid, last} outlines take in a cell inside any on its own frame, as the ROI does; a
+    single outline still tests the average position; the box spans all the outlines."""
+    left, right = [[0, 0], [10, 0], [10, 10], [0, 10]], [[20, 0], [30, 0], [30, 10], [20, 10]]
+    cells = pd.DataFrame({  # x, y: average; _start / _mid / _end: on the window's first / middle / last frame
+        'cell': ['moves right', 'stays right', 'only at the end', 'outside'],
+        'x': [15, 25, 25, 50], 'y': [5, 5, 5, 50],
+        'x_start': [5, 25, np.nan, 50], 'y_start': [5, 5, np.nan, 50],
+        'x_mid': [5, 25, np.nan, 50], 'y_mid': [5, 5, np.nan, 50],
+        'x_end': [25, 25, 25, 50], 'y_end': [5, 5, 5, 50]})
+    assert list(segment_hit({'first': left, 'last': None}, cells)) == [True, False, False, False]
+    assert list(segment_hit({'first': None, 'last': right}, cells)) == [True, True, True, False]
+    assert list(segment_hit({'first': left, 'last': right}, cells)) == [True, True, True, False]
+    assert list(segment_hit({'mid': left}, cells)) == [True, False, False, False]
+    assert list(segment_hit({'mid': right}, cells)) == [False, True, False, False]
+    assert list(segment_hit(right, cells)) == [False, True, True, False]       # average position
+    # an ROI made from segments: several outlines on a frame, a cell inside any of them
+    from ms2.cell_activity_compare import in_roi
+    xy = cells[['x_end', 'y_end']].to_numpy()
+    assert list(in_roi({'roi_last': [left, right]}, xy, xy)) == [True, True, True, False]
+    assert list(in_roi({'roi_last': [left]}, xy, xy)) == [False, False, False, False]
+    assert len(outline_points({'first': left, 'mid': left, 'last': right})) == 12
+    assert clean_polygons('A', {'2': {'first': left, 'last': None}}) == {
+        '2': {'first': [[float(x), float(y)] for x, y in left], 'mid': None, 'last': None}}
+    for bad in ({'first': None, 'last': None}, {'first': left[:2], 'last': None}, {'mid': left[:2]}):
+        try:
+            clean_polygons('A', {'2': bad})
+            raise AssertionError(f'{bad} was accepted')
+        except ValueError:
+            pass
+    passed('a segment drawn on the start, middle and end frames takes in the cells inside any, as the ROI')
 
 
 def main():
