@@ -3,7 +3,7 @@
 Turns live-imaging recordings of embryos (Zeiss `.czi`, MS2 + cell channel) into per-cell
 transcriptional activity, and compares it across embryos and developmental stages.
 
-![The pipeline on one recording: segmentation, tracking, one cell's MS2 signal and activity, and the activity heatmap](ms2/app/static/pipeline.gif)
+![The pipeline on one recording: segmentation, tracking, one cell's MS2 signal and activity, and the activity heatmap](images/pipeline.gif)
 
 Everything runs on the lab's GPU server (`golgi`) and is used from a web browser. The lab site
 has a home page with two ways in:
@@ -15,8 +15,7 @@ has a home page with two ways in:
 
 Contents:
 - [Install the environment](#install-the-environment)
-- [Run the app from the repo](#run-the-app-from-the-repo)
-- [Run the web site on a server](#run-the-web-site-on-a-server)
+- [Run the app](#run-the-app): from the terminal, or as a web page on a new server
 - [Run the pipeline from the web page](#run-the-pipeline-from-the-web-page)
 - [Analyse the results on the web page](#analyse-the-results-on-the-web-page)
 - [Command line](#command-line)
@@ -42,69 +41,153 @@ conda env create -p /zjbd/zd1/shechtmanlab/conda_envs/ms2 -f environment.yml
 The repo is installed in editable mode, so `git pull` updates the code for everyone using
 the env.
 
-## Run the app from the repo
+## Run the app
 
-This runs a private copy of the app for yourself, from your checkout. The app runs on the
-server and your computer reaches it through an SSH tunnel.
+### 1. Pipeline and analysis from the terminal
 
-**With the launcher (Windows or Linux).** Do this once:
+Everything below runs on the GPU server, from the repo directory:
 
-1. Let your computer log in to golgi with an SSH key:
-   - Windows (PowerShell):
-     ```powershell
-     ssh-keygen -t ed25519      # press Enter at every question
-     type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh your-username@golgi "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
-     ```
-   - Linux:
-     ```bash
-     ssh-keygen -t ed25519
-     ssh-copy-id your-username@golgi
-     ```
-2. In `launchers/ms2_settings.txt`, set `SSH_USER` to your golgi username and `PORT` to a
-   number between 8700 and 8799 that nobody else uses.
+```bash
+cd ~/MS2 && conda activate ms2
+```
 
-Then double-click `launchers/MS2.bat` on Windows, or run `launchers/ms2.sh` on Linux. The
-browser opens by itself. Keep the black window open while you work.
+**Run the pipeline on a recording.** Start it in `tmux`, so it keeps running after you log out:
 
-**By hand.** From your computer:
+```bash
+tmux new -s ms2run
+python -m ms2.pipeline /path/to/data/STAGE-15/New-15-v2.czi \
+    --out /path/to/outputs/STAGE-15 --device cuda:0
+```
+
+- **Results:** each recording gets `<out>/<recording>/`.
+- **Several recordings:** run each in its own tmux window, on its own GPU. `nvidia-smi` shows
+  each GPU's free memory.
+- **Resuming:** each step marks itself done, so running the same command again resumes where it
+  stopped.
+- **Stopping early:** `--stop-after STEP` stops after that step (for example `segment`).
+
+The run measures every cell tracked for 10 frames or more, so its result appears on the
+Analysis page.
+
+**Open the pipeline and Analysis pages.** Start the app from the repo directory, in tmux:
+
+```bash
+python -m ms2.app.server --port 8765 --data-root /zjbd/zd1/shechtmanlab
+```
+
+From your own computer, open a tunnel to it:
 
 ```bash
 ssh -L 8765:localhost:8765 your-username@golgi
 ```
 
-Then, in that SSH session on the server:
+Then open http://localhost:8765 for the pipeline page, and http://localhost:8765/analysis for
+the Analysis page.
 
-```bash
-cd MS2 && conda activate ms2
-ms2 app --data-root /zjbd/zd1/shechtmanlab --port 8765
-```
-
-Open http://localhost:8765 for the pipeline page, and http://localhost:8765/analysis for the
-Analysis page.
-
-- **Port:** use your own number, the same on both sides of `-L` and in `--port`.
+- **Analysis list:** type your results folder in the folder box at the top of the recording
+  list and press **Scan**.
+- **Port:** use your own number, the same in `--port` and on both sides of `-L`.
 - **Data root:** the folder the app may browse for CZI files and write results into.
-- **Closing:** closing the app or the SSH session doesn't stop runs that have already started.
+- **Closing:** closing the app or the tunnel doesn't stop runs that have already started.
 
-## Run the web site on a server
+**A stage comparison without the page.** `python -m ms2.pipeline_compare experiment.json
+--device cuda:0` runs several recordings through the pipeline and compares them, writing the
+tables and figures into `<out>/_comparison/`. See `configs/experiment_stage11.json` for the
+format.
 
-One always-on site serves the whole lab. Users open `http://golgi:<port>` on the lab network
-or VPN, with nothing installed, and log in with their name and a shared lab password.
+### 2. Build the web page on a new server
 
-```bash
-echo 'the-lab-password' > ~/.ms2_password && chmod 600 ~/.ms2_password
-# the result folders the Analysis page always shows, one per line (# for comments)
-echo /zjbd/zd1/shechtmanlab/omer/MS2/outputs/020626 > ~/ms2_analysis_folders.txt
-mkdir -p ~/ms2_analysis_saves
+This sets up one always-on site for the whole lab: a home page with **Run pipeline** and
+**Analysis**, behind a name and a shared password. Users then need only a browser.
 
-tmux new -s ms2site
-conda activate ms2 && cd ~/MS2
-ms2 app --host 0.0.0.0 --port 8800 \
-    --workspace /zjbd/zd1/shechtmanlab/omer/ms2_web --password-file ~/.ms2_password \
-    --analysis-folders ~/ms2_analysis_folders.txt --analysis-saves ~/ms2_analysis_saves
-```
+1. **The server.** You need:
+   - Linux, with conda and an NVIDIA GPU (CUDA 12.4 driver)
+   - an account to run the site under
+   - a free port, for example 8800
+   - users able to reach that port, over the lab network or VPN
 
-Detach with `Ctrl-b d`; the site keeps running. The options:
+2. **The code and environment.** See [Install the environment](#install-the-environment):
+
+   ```bash
+   git clone https://github.com/Omergottlieb33/MS2.git ~/MS2
+   cd ~/MS2 && conda env create -f environment.yml
+   ```
+
+3. **The site's files:**
+
+   ```bash
+   # the lab password, asked at login
+   echo 'the-lab-password' > ~/.ms2_password && chmod 600 ~/.ms2_password
+   # where users' runs go: <workspace>/<name>/<DDMMYY>/<recording>/
+   mkdir -p /path/to/ms2_web
+   # result folders the Analysis page always shows, one per line (# for comments)
+   echo /path/to/outputs > ~/ms2_analysis_folders.txt
+   # analyses saved from the Analysis page, shared by everyone
+   mkdir -p ~/ms2_analysis_saves
+   ```
+
+4. **Start the site** in tmux:
+
+   ```bash
+   tmux new -s ms2site
+   cd ~/MS2 && conda activate ms2
+   ms2 app --host 0.0.0.0 --port 8800 \
+       --workspace /path/to/ms2_web --password-file ~/.ms2_password \
+       --analysis-folders ~/ms2_analysis_folders.txt --analysis-saves ~/ms2_analysis_saves
+   ```
+
+   Detach with `Ctrl-b d`; the site keeps running.
+
+5. **Check it can be reached:**
+   - On the server, `curl -sI http://localhost:8800/login` should answer `200 OK`.
+   - From another computer, open `http://<server name or address>:8800`.
+   - If the server answers but the other computer times out, a firewall blocks the port. Open it
+     (for example `sudo ufw allow 8800/tcp`), or ask IT.
+
+6. **Give users the address and the password.** They log in with their name and the password.
+
+7. **Keep it running all the time.** The tmux session from step 4 stops at a reboot. To run the
+   site all the time, make it a `systemd --user` service: it starts at boot and restarts
+   after a crash.
+
+   First stop the tmux copy (`Ctrl-c` in its session), so the port is free.
+   - **Allow your services to run when you are logged out.** An admin does this once:
+     ```bash
+     sudo loginctl enable-linger your-username
+     ```
+   - **Find the `ms2` command of the environment:**
+     ```bash
+     conda activate ms2 && which ms2      # e.g. /home/you/miniconda3/envs/ms2/bin/ms2
+     ```
+   - **Save the service** as `~/.config/systemd/user/ms2-site.service`, with that path in
+     `ExecStart` and the paths of step 3:
+     ```ini
+     [Unit]
+     Description=MS2 lab site
+
+     [Service]
+     WorkingDirectory=%h/MS2
+     ExecStart=/home/you/miniconda3/envs/ms2/bin/ms2 app --host 0.0.0.0 --port 8800 --workspace /path/to/ms2_web --password-file %h/.ms2_password --analysis-folders %h/ms2_analysis_folders.txt --analysis-saves %h/ms2_analysis_saves
+     Restart=on-failure
+     KillMode=process
+
+     [Install]
+     WantedBy=default.target
+     ```
+     `%h` is your home folder. `KillMode=process` stops only the site on a restart, never a run in progress.
+   - **Start it, and have it start at every boot:**
+     ```bash
+     systemctl --user daemon-reload
+     systemctl --user enable --now ms2-site
+     systemctl --user status ms2-site       # should say "active (running)"
+     ```
+
+   Day to day:
+   ```bash
+   systemctl --user restart ms2-site      # after a git pull that changes Python code
+   systemctl --user stop ms2-site         # stop the site
+   journalctl --user -u ms2-site -f       # the site's log
+   ```
 
 | Option | What it does |
 |---|---|
@@ -114,20 +197,19 @@ Detach with `Ctrl-b d`; the site keeps running. The options:
 | `--analysis-saves DIR` | where saved analyses are kept, shared by everyone |
 | `--host 0.0.0.0` | reachable from other computers, not only from the server |
 
-The page files are read from the checkout on every request, so a change to a page shows
-after a browser refresh. A change to the Python code needs a restart: in the tmux session,
-press `Ctrl-c` and run the command again. Runs already started keep going.
+**Updating.** Run `git pull` in `~/MS2`.
+- A change to a page shows after a browser refresh, because the page files are read on every request.
+- A change to the Python code needs a restart: `systemctl --user restart ms2-site`, or, in tmux,
+  `Ctrl-c` and the command again. Runs already started keep going.
+- Every site running from the checkout (each port) needs its own restart.
 
-The password travels as plain http, so keep the site on the lab network and VPN. There is
-no GPU queue: two runs on one GPU can run out of memory, and the processor list shows each
-GPU's free memory. Uploads and runs are never deleted automatically.
+**Only the Analysis page.** `--analysis-only FILE --password-file FILE --out-root SAVES` serves
+the Analysis page alone, behind the password, over the folders listed in `FILE`.
 
-**Only the Analysis page.** `--analysis-only FILE --password-file FILE --out-root SAVES`
-serves the Analysis page alone, behind the password, over the folders listed in `FILE`.
-
-**After a reboot.** A tmux session doesn't survive a reboot; start the site again. To restart
-it automatically, run the same command as a `systemd --user` service with `Restart=on-failure`
-and `KillMode=process`. This needs `loginctl enable-linger <you>` once, from an admin.
+**Limits:**
+- The password travels as plain http, so keep the site on the lab network and VPN.
+- There is no GPU queue: two runs on one GPU can run out of memory. The processor list shows each GPU's free memory.
+- Uploads and runs are never deleted automatically.
 
 ## Run the pipeline from the web page
 
@@ -295,10 +377,9 @@ Tests are plain scripts: `for f in tests/test_*.py; do python $f; done`.
 
 | What you see | What to do |
 |---|---|
-| The site doesn't open | You are outside the Technion network: connect to the VPN. Or the site isn't running: start it again ([Run the web site on a server](#run-the-web-site-on-a-server)). |
+| The site doesn't open | You are outside the Technion network: connect to the VPN. Or the site isn't running: start it again ([Build the web page on a new server](#2-build-the-web-page-on-a-new-server)). |
 | A new page feature doesn't work, but the page shows it | The server runs older Python code: restart it. |
-| `Permission denied (publickey,password)` | The SSH key isn't set up; repeat step 1 of [Run the app from the repo](#run-the-app-from-the-repo). |
-| `Could not resolve hostname golgi` | Use `HOST=132.68.106.73` in the launcher settings. |
+| `Could not resolve hostname golgi` | Use its address, `132.68.106.73`. |
 | `port … is in use` | Someone else uses your port number; pick another. |
 | A run **failed** at *segment* with "out of memory" | The GPU was busy: pick another GPU and press **Resume**. |
 | A recording is grey on the Analysis page | Its tracks, masks or cell image weren't found; the list says which. |
