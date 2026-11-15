@@ -1,5 +1,6 @@
 #!/bin/sh
-# Runs on the server, from the analysis page's own checkout (see docs/REFERENCE.md): brings it
+# Runs on the server, from the analysis page's own checkout (a clone that follows BRANCH, run
+# every few minutes by a systemd --user timer, the page itself a service named ms2-analysis): brings it
 # up to the newest commit of BRANCH and restarts the page if that changed anything.
 #     update_analysis_page.sh [BRANCH]          (default: main)
 # Only fast-forwards: local edits or a rewritten branch stop it with an error in the journal,
