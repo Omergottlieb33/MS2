@@ -349,10 +349,10 @@ def segments_state(cmp_dir):
     return {'recordings': rows, 'segments': segments, 'labels': SEGMENT_LABELS}
 
 
-def frame_png(frame, size=512):
-    """A cell-channel frame as a greyscale png, its contrast from the 1st-99.5th percentile;
-    shrunk to fit size, or at full resolution when size is None."""
-    lo, hi = np.percentile(frame, [1, 99.5])
+def frame_png(frame, size=512, percentiles=(1, 99.5)):
+    """A frame as a greyscale png, its contrast from the given percentiles (the cell channel's
+    by default); shrunk to fit size, or at full resolution when size is None."""
+    lo, hi = np.percentile(frame, percentiles)
     img = Image.fromarray((np.clip((frame - lo) / max(hi - lo, 1e-9), 0, 1) * 255).astype(np.uint8))
     if size:
         img.thumbnail((size, size))
@@ -601,6 +601,22 @@ class Handler(viewer.Handler):
                 if not 0 <= t < len(frames):
                     raise ValueError(f'frame {t} is outside 0..{len(frames) - 1}')
                 self._send(frame_png(np.asarray(frames[t], dtype=float), int(q.get('size', 512)) or None),
+                           'image/png', cache=True)
+            elif url.path == '/api/analysis/ms2frame':
+                # the MS2 channel after background subtraction, at its brightest through z:
+                # the spots stand out from the 50th to the 99.9th percentile, the embryo still shows
+                a.check_read(q['csv'], self.user)
+                rec = analysis_recording(q['csv'])
+                if not rec['ms2']:
+                    raise FileNotFoundError(f'no background-subtracted MS2 stack found for {q["csv"]}')
+                a.check_read(rec['ms2'], self.user)
+                import tifffile
+                stack = tifffile.memmap(rec['ms2'])
+                t = int(q['t'])
+                if not 0 <= t < len(stack):
+                    raise ValueError(f'frame {t} is outside 0..{len(stack) - 1}')
+                frame = stack[t] if stack.ndim == 3 else stack[t].max(axis=0)
+                self._send(frame_png(np.asarray(frame, dtype=float), int(q.get('size', 512)) or None, (50, 99.9)),
                            'image/png', cache=True)
             elif url.path == '/segments':
                 with open(os.path.join(STATIC, 'segments.html'), 'rb') as f:

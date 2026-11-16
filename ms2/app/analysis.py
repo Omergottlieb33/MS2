@@ -62,7 +62,23 @@ def resolve(csv_path):
                  if roi_info.get('projection') and os.path.exists(roi_info['projection']) else None})
         except FileNotFoundError:
             pass
+    rec['ms2'] = ms2_stack(rec)
     return rec
+
+
+def ms2_stack(rec):
+    """The (T, Z, Y, X) MS2 channel after the rolling-ball background subtraction: beside the
+    cell-channel projection (C1-<rec>_bg_removed.tif; _bg_removal.tif in the older hand-run
+    folders), else in the recording's preprocess/.  None where not found."""
+    found = []
+    if rec['projection']:
+        folder, name = os.path.split(rec['projection'])
+        if name.startswith('SUM_C2-'):
+            stem = os.path.splitext(name[len('SUM_C2-'):])[0]
+            found += [os.path.join(folder, f'C1-{stem}_bg_removed.tif'),
+                      os.path.join(folder, f'C1-{stem}_bg_removal.tif')]
+    found += sorted(glob.glob(os.path.join(glob.escape(rec['rec_dir']), 'preprocess', 'C1-*_bg_removed.tif')))
+    return next((p for p in found if os.path.isfile(p)), None)
 
 
 def find_matrices(root, depth=MAX_DEPTH):

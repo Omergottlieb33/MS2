@@ -95,7 +95,8 @@
   .sketch .pair > div { display: grid; gap: 6px; min-width: 0; }
   .skrow { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
   .skrow > div { display: grid; gap: 6px; max-width: 360px; }
-  .sketch canvas { width: 100%; max-width: 520px; flex: 1 1 380px; aspect-ratio: 1; background: #000; border-radius: 3px; cursor: crosshair; }
+  .sketch canvas { width: 100%; aspect-ratio: 1; background: #000; border-radius: 3px; cursor: crosshair; display: block; }
+  .skimg { margin: 0; flex: 1 1 380px; max-width: 520px; display: grid; gap: 4px; }
   .tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
   .tools button { padding: 6px 12px; font-size: 13px; }
   .tools button.on { color: #000; font-weight: 600; }
@@ -618,6 +619,19 @@ function frameImage(csv, t, full = false) {
   }
   return frames[k];
 }
+// the MS2 channel after background subtraction, at its brightest through z, beside the embryo in
+// the region panel; ms2Failed: the recordings whose stack the server could not give
+const ms2Failed = {};
+function ms2Image(csv, t, full = false) {
+  const k = `ms2|${csv}|${t}|${full ? 'full' : 512}`;
+  if (!frames[k]) {
+    frames[k] = new Image();
+    frames[k].onload = () => drawSketches();
+    frames[k].onerror = () => { ms2Failed[csv] = true; drawSketches(); };
+    frames[k].src = `/api/analysis/ms2frame?csv=${enc(csv)}&t=${t}&size=${full ? 0 : 512}`;
+  }
+  return frames[k];
+}
 function drawCells() {
   const f = state.filters;
   $('presVal').textContent = Math.round(f.presence * 100) + '%';
@@ -658,11 +672,11 @@ function toImage(v, px, py) {
   if (v.flip) dx = -dx;
   return [(dx + v.cx) / v.k, (dy + v.cy) / v.k];
 }
-function drawFrame(g, s, t, zkey) {
+function drawFrame(g, s, t, zkey, imageOf = frameImage) {
   const v = view(s, zkey);
   // zoomed in, the full-resolution frame, once it has arrived
-  let img = frameImage(s.csv, t);
-  if (v.z > 1.5) { const full = frameImage(s.csv, t, true); if (full.complete && full.naturalWidth) img = full; }
+  let img = imageOf(s.csv, t);
+  if (v.z > 1.5) { const full = imageOf(s.csv, t, true); if (full.complete && full.naturalWidth) img = full; }
   g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#000'; g.fillRect(0, 0, C, C);
   if (img.complete && img.naturalWidth) {
     g.save(); g.translate(v.zx, v.zy); g.scale(v.z, v.z);
@@ -926,13 +940,16 @@ function drawSketches(cells) {
         <select class="loadSeg"><option value="">load segments from a file…</option></select>
         <button data-a="saveRegion" title="the window, ROI and segments, to ms2_web/region_and_segment/&lt;today, DDMMYY&gt;/ on the server">save to server</button></div>
       <span class="hint saveMsg"></span>
-      <div class="skrow"><canvas width="${C}" height="${C}" data-z="sk|${i}"></canvas>
+      <div class="skrow"><figure class="skimg"><figcaption class="hint">embryo (cell channel)</figcaption>
+          <canvas width="${C}" height="${C}" data-z="sk|${i}"></canvas></figure>
+        <figure class="skimg"><figcaption class="hint">MS2 channel after rolling-ball background subtraction, brightest through z</figcaption>
+          <canvas class="ms2" width="${C}" height="${C}" data-z="sk|${i}"></canvas></figure>
         <div><table class="levels segTable"></table><span class="hint cnt"></span></div></div></div>`).join('')
       || '<div class="empty">Add samples above.</div>';
     state.samples.forEach((s, i) => fillFileLists(s, host.querySelector(`.sketch[data-i="${i}"]`)));
   }
   $('levelLegend').innerHTML = `<span><i style="background:${ROI_COLOR}"></i>ROI: the segments joined</span>` +
-    (state.show_emitters ? `<span><i style="background:${EMITTER_COLOR};border-radius:50%"></i>MS2 emitter on the frame shown, accepted by gene expression, of an analysed cell</span>` : '') +
+    (state.show_emitters ? `<span><i style="background:${EMITTER_COLOR};border-radius:50%"></i>MS2 emitter on the frame shown, accepted by gene expression, of an analysed cell (a ring on the MS2 channel)</span>` : '') +
     `<span class="zoomhint">wheel: zoom · drag: move · fit: whole frame</span>`;
   state.samples.forEach((s, i) => {
     const el = host.querySelector(`.sketch[data-i="${i}"]`);
@@ -948,35 +965,44 @@ function drawSketches(cells) {
       `<button data-w="${ww}" class="${w === ww ? 'on' : ''}">${x.name} frame ${frameOf[ww]}</button>`).join('') + '</span>';
     // the segments are tested on the frame they are drawn on
     const onFrame = frameOf[w];
-    const canvas = el.querySelector('canvas'), g = canvas.getContext('2d'), v = drawFrame(g, s, onFrame, canvas.dataset.z);
     const mine = cells.filter(x => x.si === i);
-    for (const l of SEG_LABELS) {
-      if (!segs[l]) continue;
-      if (segs[l][w]) drawPoly(g, v, segs[l][w], SEG_COLORS[l], true);
-      const [x0, y0, x1, y1] = segmentBox(v, segs[l], mine);
-      g.setLineDash([5, 4]); g.strokeStyle = '#fff'; g.lineWidth = 1; g.strokeRect(x0, y0, x1 - x0, y1 - y0); g.setLineDash([]);
-    }
-    // the ROI over the segments: one outline joining them
-    if (roi[w]) for (const p of polygonsOf(roi[w])) drawPoly(g, v, p, ROI_COLOR, true);
     // the accepted MS2 emitters of the analysed cells, on the frame shown
-    let emit = null;
+    let emit = null, emitAt = [];
     if (state.show_emitters) {
       const E = emittersOf(s.csv);
       if (E) {
         const byCell = new Map(mine.map(x => [x.cell.cell, x.cell]));
-        emit = (E[onFrame] || []).filter(e => byCell.has(e[0]));
-        // a small dot with a dark rim, so neighbouring emitters stay apart where they overlap
-        const r = 1.6 * Math.sqrt(v.z);
-        g.fillStyle = EMITTER_COLOR; g.strokeStyle = 'rgba(0,0,0,.85)'; g.lineWidth = 1.2;
-        for (const [, x, y] of emit) {
-          const [px, py] = toCanvas(v, x, y);
-          g.beginPath(); g.arc(px, py, r, 0, 2 * Math.PI); g.stroke(); g.fill();
-        }
-        emit = emit.map(e => byCell.get(e[0]));
+        emitAt = (E[onFrame] || []).filter(e => byCell.has(e[0]));
+        emit = emitAt.map(e => byCell.get(e[0]));
       }
     }
     const dr = drafts[draftKey(s, t, w)];
-    if (dr && dr.pts.length) drawPoly(g, v, dr.pts, SEG_COLORS[t], false);
+    // the embryo, and beside it the MS2 channel, turned and zoomed together, each with the outlines
+    el.querySelectorAll('canvas').forEach(canvas => {
+      const onMs2 = canvas.classList.contains('ms2'), g = canvas.getContext('2d');
+      const v = drawFrame(g, s, onFrame, canvas.dataset.z, onMs2 ? ms2Image : frameImage);
+      if (onMs2 && ms2Failed[s.csv]) {
+        g.fillStyle = '#aaa'; g.font = '14px sans-serif'; g.textAlign = 'center';
+        g.fillText('no background-subtracted MS2 stack found', C / 2, C / 2); g.textAlign = 'start';
+      }
+      for (const l of SEG_LABELS) {
+        if (!segs[l]) continue;
+        if (segs[l][w]) drawPoly(g, v, segs[l][w], SEG_COLORS[l], true);
+        const [x0, y0, x1, y1] = segmentBox(v, segs[l], mine);
+        g.setLineDash([5, 4]); g.strokeStyle = '#fff'; g.lineWidth = 1; g.strokeRect(x0, y0, x1 - x0, y1 - y0); g.setLineDash([]);
+      }
+      // the ROI over the segments: one outline joining them
+      if (roi[w]) for (const p of polygonsOf(roi[w])) drawPoly(g, v, p, ROI_COLOR, true);
+      // on the embryo a small dot with a dark rim, so neighbouring emitters stay apart where they
+      // overlap; on the MS2 channel an open ring, so the spot under it stays visible
+      g.fillStyle = EMITTER_COLOR; g.strokeStyle = onMs2 ? EMITTER_COLOR : 'rgba(0,0,0,.85)'; g.lineWidth = 1.2;
+      const r = (onMs2 ? 4 : 1.6) * Math.sqrt(v.z);
+      for (const [, x, y] of emitAt) {
+        const [px, py] = toCanvas(v, x, y);
+        g.beginPath(); g.arc(px, py, r, 0, 2 * Math.PI); g.stroke(); if (!onMs2) g.fill();
+      }
+      if (dr && dr.pts.length) drawPoly(g, v, dr.pts, SEG_COLORS[t], false);
+    });
     // beside the panel, once every segment is outlined: the cells each will analyse
     const all = SEG_LABELS.every(l => segs[l]);
     const em = state.show_emitters, emCol = em ? `<th>MS2 emitters, ${VIEWS[w].name} frame</th>` : '';
