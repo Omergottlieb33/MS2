@@ -324,6 +324,26 @@ def test_emitters_per_frame():
     passed("the accepted MS2 emitters are read per frame, the unfiltered peaks not")
 
 
+def test_ms2_stack_found_in_both_layouts():
+    """The background-subtracted MS2 stack shown beside the embryo: next to the cell-channel
+    projection (_bg_removed, or the older hand-run _bg_removal), else in preprocess/."""
+    from ms2.app.analysis import ms2_stack
+    with tempfile.TemporaryDirectory() as root:
+        data, rec_dir = os.path.join(root, 'data'), os.path.join(root, 'out', 'rec')
+        os.makedirs(data); os.makedirs(os.path.join(rec_dir, 'preprocess'))
+        proj = os.path.join(data, 'SUM_C2-rec.tif')
+        rec = {'projection': proj, 'rec_dir': rec_dir}
+        assert ms2_stack(rec) is None
+        mine = os.path.join(rec_dir, 'preprocess', 'C1-rec_bg_removed.tif')
+        open(mine, 'w').close()
+        assert ms2_stack(rec) == mine
+        old = os.path.join(data, 'C1-rec_bg_removal.tif')
+        open(old, 'w').close()
+        assert ms2_stack(rec) == old                 # the one beside the projection comes first
+        assert ms2_stack({'projection': None, 'rec_dir': rec_dir}) == mine
+    passed("the MS2 stack is found beside the embryo image or in preprocess/")
+
+
 def test_save_load_and_export():
     """A single recording over two stages, saved, listed, loaded back and exported: the
     comparison's tables per stage and the segment maps, with the ladder set by hand."""

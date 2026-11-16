@@ -60,10 +60,6 @@
   .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
   .files a { color: var(--accent); font-size: 12px; word-break: break-all; text-decoration: none; }
   .files img { width: 100%; display: block; background: #fff; border-radius: 3px; margin-bottom: 4px; }
-  .about { line-height: 1.55; }
-  .about img { width: 100%; display: block; border-radius: 4px; margin: 10px 0; }
-  .about ol { padding-left: 20px; } .about li { margin: 4px 0; }
-  .about code { font-size: 12px; color: var(--dim); }
   a { color: var(--accent); }
   details summary { cursor: pointer; color: var(--dim); margin-top: 10px; }
   .busy::after { content: ' …'; animation: blink 1s infinite; }
@@ -76,7 +72,6 @@
   <nav>
     <button data-tab="new" class="on">New analysis</button>
     <button data-tab="runs">Runs &amp; results</button>
-    <button data-tab="about">About</button>
   </nav>
   <a href="/" id="home" hidden>⌂ Home</a>
   <a href="/analysis" style="font-weight:600">Analysis →</a>
@@ -117,6 +112,11 @@
     <div class="row" style="margin-top:12px"><button class="primary" id="runBtn">Start analysis</button></div>
     <div class="msg" id="runMsg"></div>
   </div>
+
+  <div class="card">
+    <h2>Version</h2>
+    <p id="verInfo"></p>
+  </div>
 </section>
 
 <!-- ───────────── Runs ───────────── -->
@@ -149,38 +149,6 @@
     <p class="hint" id="dSteps"></p>
     <details id="dLogWrap" open><summary>Log</summary><pre id="dLog"></pre></details>
     <div class="files" id="dFiles"></div>
-  </div>
-</section>
-
-<!-- ───────────── About ───────────── -->
-<section id="about" hidden>
-  <div class="card about">
-    <h2>What this does</h2>
-    <p>MS2 turns a live-imaging recording of an embryo (a Zeiss <code>.czi</code> with an MS2 channel
-      and a cell channel) into how strongly each cell transcribes over time. Everything runs on the
-      lab's GPU server; your browser only shows the page.</p>
-    <img src="/static/explainer.webp?v=2" alt="The pipeline step by step on one recording">
-    <p class="hint">One of the lab's recordings through time, every step side by side: the raw cells,
-      the segmentation, the tracks, the MS2 spots, and the cells grouped by activity.</p>
-    <h2>The steps</h2>
-    <ol>
-      <li><b>Preprocess</b>: splits the two channels and removes the MS2 background.</li>
-      <li><b>Segment</b>: finds every nucleus in 3D with Cellpose, frame by frame (the slow step, on the GPU).</li>
-      <li><b>Track</b>: follows each cell from frame to frame.</li>
-      <li><b>Unify</b>: splits cells that were merged and drops fragments, so each cell is one track.</li>
-      <li><b>Gene expression</b>: finds the MS2 transcription spots and measures them in their cell over time.</li>
-      <li><b>Activity</b>: groups the cells from silent to highly active.</li>
-    </ol>
-    <p>A finished step is kept: a stopped run picks up where it left off.</p>
-    <h2>Using this page</h2>
-    <ol>
-      <li><b>New analysis</b>: choose a CZI and start. Every tracked cell is measured.</li>
-      <li><b>Runs &amp; results</b>: follow the steps and the log, open the viewer, and download the results.</li>
-      <li><b><a href="/analysis">Analysis</a></b>: pick finished recordings, choose each stage's frames, the
-        region, the cells, the activity levels and the segments, and compare them; save and export.</li>
-    </ol>
-    <h2>Version</h2>
-    <p id="verInfo"></p>
   </div>
 </section>
 </main>
