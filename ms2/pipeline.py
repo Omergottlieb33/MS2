@@ -72,7 +72,8 @@ def run_step(rec, step, args):
         from ms2.gene_expression.run import run_gene_expression
         run_gene_expression(rec.czi, rec.unified_masks, rec.unified_tracklets, rec.ms2_bg_removed,
                             rec.gene_expression, args.prominence, roi=args.roi, plots=args.plots,
-                            workers=args.workers or os.cpu_count())
+                            workers=args.workers or os.cpu_count(),
+                            projection=getattr(args, 'ms2_projection', 'sum'))
     elif step == 'activity':
         import pandas as pd
         from ms2.cell_activity import analyze_recording
@@ -138,6 +139,9 @@ def parse_args(argv=None):
     p.add_argument('--roi', help='ROI json from the viewer; selects the cells for gene expression')
     p.add_argument('--stop-after', choices=STEPS)
     p.add_argument('--prominence', type=float, default=18.0, help='MS2 maxima-finder prominence')
+    p.add_argument('--ms2-projection', choices=('sum', 'max'), default='sum',
+                   help='MS2 projection over Z the maxima are found and measured on: sum, or max '
+                        'for noisy recordings (then raise --prominence to suit, e.g. 25-33)')
     p.add_argument('--bg-radius', type=float, default=5, help='background subtraction radius')
     p.add_argument('--workers', type=int,
                    help='parallel workers for background subtraction and gene expression (default: all cores)')

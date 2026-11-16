@@ -31,7 +31,8 @@ class MS2GeneExpressionProcessor:
 
     def __init__(self, tracklets, czi_file_path, masks_paths, ms2_background_removed, output_dir='output', plot=None,
                  ransac_mad_k_th=2, strategy: str | None = 'global', prominence: float | None = 20,
-                 emitter_cells_matches: str | None = None, preload_masks: bool = False):
+                 emitter_cells_matches: str | None = None, preload_masks: bool = False,
+                 projection: str = 'sum'):
         """
         Initialize the MS2 gene expression processor.
 
@@ -46,13 +47,21 @@ class MS2GeneExpressionProcessor:
                 the matching is generated and saved under output_dir.
             preload_masks (bool): Decompress every mask npz once and keep it in memory
                 (~25 MB a frame) instead of re-reading each frame for every cell.
+            projection (str): how the MS2 stack is projected over Z, for finding the maxima and
+                measuring them: 'sum', or 'max' for noisy recordings, where a spot in one or two
+                slices drowns in the noise the sum adds from all the others.
         """
         self.tracklets = tracklets
         self.czi_file_path = czi_file_path
         self.mask_file_paths = masks_paths
         self.ms2_background_removed = ms2_background_removed
-        self.ms2_z_projections = self.ms2_background_removed.sum(
-            axis=1, dtype=np.float32)  # Z projection
+        if projection == 'sum':
+            self.ms2_z_projections = self.ms2_background_removed.sum(axis=1, dtype=np.float32)
+        elif projection == 'max':
+            self.ms2_z_projections = self.ms2_background_removed.max(axis=1).astype(np.float32)
+        else:
+            raise ValueError(f"unknown projection {projection!r}; expected 'sum' or 'max'")
+        self.projection = projection
         self.output_dir = output_dir
         self.plot = plot
         self.ransac_mad_k_th = ransac_mad_k_th
@@ -104,8 +113,10 @@ class MS2GeneExpressionProcessor:
         # Match peaks to cell emitters.  Without a given csv the matching is generated once
         # into the output directory and reused by later runs against the same output.
         if self.emitter_cells_matches is None:
+            # named by the projection too, so a table found on the other one is never reused
+            kind = '' if self.projection == 'sum' else f'{self.projection}_'
             self.emitter_cells_matches = os.path.join(
-                self.output_dir, f'peak_to_cell_matching_prominence_{self.prominence}.csv')
+                self.output_dir, f'peak_to_cell_matching_{kind}prominence_{self.prominence}.csv')
         elif not os.path.exists(self.emitter_cells_matches):
             raise FileNotFoundError(
                 f"emitter_cells_matches csv not found: {self.emitter_cells_matches}")
@@ -656,6 +667,8 @@ def parse_args():
                         help="Skip the per-cell figures; the csv outputs are unchanged")
     parser.add_argument('--workers', type=int, default=1,
                         help="Cells fitted in parallel processes")
+    parser.add_argument('--projection', choices=('sum', 'max'), default='sum',
+                        help="MS2 projection over Z the maxima are found and measured on")
 
     return parser.parse_args()
 
@@ -685,11 +698,12 @@ def _process_cell_worker(cell_id):
 
 def run_gene_expression(czi_file_path, seg_maps_dir, tracklets_path, ms2_background_removed_path,
                         output_dir='output', prominence=18.0, emitter_cells_matches=None, roi=None,
-                        plots=True, workers=1):
+                        plots=True, workers=1, projection='sum'):
     """The expression matrix of one recording; returns the path of gene_expression_results.csv.
 
     plots=False skips every per-cell figure (intensity plot, spatial clustering); the csv
     outputs are the same.  workers > 1 fits cells in that many forked processes.
+    projection: the MS2 projection over Z the maxima are found and measured on, 'sum' or 'max'.
     """
     # Load tracklets
     with open(tracklets_path, 'r') as f:
@@ -711,7 +725,8 @@ def run_gene_expression(czi_file_path, seg_maps_dir, tracklets_path, ms2_backgro
         ransac_mad_k_th=2.0,
         prominence=prominence,
         emitter_cells_matches=emitter_cells_matches,
-        preload_masks=True
+        preload_masks=True,
+        projection=projection
     )
     # Example: Process a specific cell  using 'global' strategy
     # amp, noise, cell_center_of_mass = processor.process_cell(229, 'global')
@@ -793,4 +808,5 @@ if __name__ == "__main__":
     args = parse_args()
     run_gene_expression(args.czi_file_path, args.seg_maps_dir, args.tracklets_path,
                         args.ms2_background_removed, args.output_dir, args.prominence,
-                        args.emitter_cells_matches, args.roi, not args.no_plots, args.workers)
+                        args.emitter_cells_matches, args.roi, not args.no_plots, args.workers,
+                        args.projection)

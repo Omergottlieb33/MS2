@@ -54,6 +54,31 @@ def test_unconverged_gaussian_fit_is_kept_as_nan():
     passed('a spot whose Gaussian fit does not converge is kept with NaN parameters, not as an emitter')
 
 
+def test_max_projection_and_its_own_matching_table():
+    """projection='max' finds and measures the maxima on the brightest slice, and names its
+    peak-to-cell table apart, so one found on the sum is never reused; 'sum' stays as it was."""
+    import os, tempfile
+    from ms2.gene_expression import ms2_peak_strategies
+    ms2 = np.zeros((1, 3, 4, 4), dtype=np.uint8)              # t, z, y, x
+    ms2[0, 1, 2, 2] = 40                                      # a spot in one slice
+    ms2[0, :, 0, 0] = 10                                      # dim in every slice
+    seen = []
+    keep = ms2_peak_strategies.GlobalPeakStrategy.emitter_cell_matching
+    ms2_peak_strategies.GlobalPeakStrategy.emitter_cell_matching = lambda self, proc, path: seen.append(path)
+    try:
+        with tempfile.TemporaryDirectory() as out:
+            made = {kind: MS2GeneExpressionProcessor({}, 'x.czi', [], ms2, out, prominence=25, projection=kind)
+                    for kind in ('sum', 'max')}
+    finally:
+        ms2_peak_strategies.GlobalPeakStrategy.emitter_cell_matching = keep
+    assert made['max'].ms2_z_projections[0, 2, 2] == 40 and made['max'].ms2_z_projections[0, 0, 0] == 10
+    assert made['sum'].ms2_z_projections[0, 2, 2] == 40 and made['sum'].ms2_z_projections[0, 0, 0] == 30
+    assert made['max'].strategy.ms2_z_projections is made['max'].ms2_z_projections
+    assert [os.path.basename(p) for p in seen] == ['peak_to_cell_matching_prominence_25.csv',
+                                                   'peak_to_cell_matching_max_prominence_25.csv'], seen
+    passed('the max projection finds and measures on the brightest slice, with its own matching table')
+
+
 def main():
     for name, test in sorted(globals().items()):
         if name.startswith('test_'):
