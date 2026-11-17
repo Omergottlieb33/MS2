@@ -197,7 +197,21 @@ This sets up one always-on site for the whole lab: a home page with **Run pipeli
 | `--analysis-saves DIR` | where saved analyses are kept, shared by everyone |
 | `--host 0.0.0.0` | reachable from other computers, not only from the server |
 
-**Updating.** Run `git pull` in `~/MS2`.
+**Start and stop a site with the scripts.** From `~/MS2` on any Linux server with the `ms2` env:
+
+```bash
+bash scripts/start_site.sh 8790     # starts in the background; log in ~/ms2_site_8790.log
+bash scripts/stop_site.sh 8790      # stops it; runs already started keep going
+```
+
+`start_site.sh` uses the files of step 3 at their default paths (`~/.ms2_password`, `~/ms2_web`,
+`~/ms2_analysis_folders.txt`, `~/ms2_analysis_saves`). Set other paths as `MS2_WORKSPACE=...`
+lines in `~/.ms2_site.env`. The script's header lists every setting.
+
+**Updating.** On the server, run `bash scripts/update_site.sh [branch]` in `~/MS2`. It pulls the
+branch, reinstalls if the dependencies changed, and restarts the site if it needs to. Set
+`MS2_PORTS="8790 8800"` to the ports served from this checkout (default 8790).
+By hand, run `git pull` in `~/MS2`:
 - A change to a page shows after a browser refresh, because the page files are read on every request.
 - A change to the Python code needs a restart: `systemctl --user restart ms2-site`, or, in tmux,
   `Ctrl-c` and the command again. Runs already started keep going.
