@@ -63,8 +63,26 @@ done < <(find_python)
 say "python: $PY"
 
 # ---------------------------------------------------------------- site files
-[ -s "$PASSWORD_FILE" ] || die "no lab password in $PASSWORD_FILE. Make it with:
+if [ ! -s "$PASSWORD_FILE" ]; then
+    # First start on this server: the person building the site chooses the lab password.
+    [ -t 0 ] || die "no lab password in $PASSWORD_FILE. Make it with:
     echo 'the-lab-password' > $PASSWORD_FILE && chmod 600 $PASSWORD_FILE"
+    say "no lab password on this server yet: choose the password users will log in with"
+    while :; do
+        read -rsp "password: " pw1; echo
+        read -rsp "again:    " pw2; echo
+        if [ -z "$pw1" ] || [[ "$pw1" =~ ^[[:space:]]|[[:space:]]$ ]]; then
+            warn "empty, or starts or ends with a space: try again"
+        elif [ "$pw1" != "$pw2" ]; then
+            warn "the two don't match: try again"
+        else
+            break
+        fi
+    done
+    (umask 077; printf '%s\n' "$pw1" >"$PASSWORD_FILE")
+    unset pw1 pw2
+    say "saved in $PASSWORD_FILE (only you can read it). To change it, edit the file and restart the site."
+fi
 mkdir -p "$WORKSPACE"
 
 ARGS=(-m ms2.cli app --host "$HOST" --port "$PORT"
